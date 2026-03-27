@@ -1,0 +1,18 @@
+{
+  "name": "daffabot2-pepe-futures",
+  "version": "1.0.0",
+  "description": "PEPE/USDT Futures Trading Bot — Bitget + Claude AI",
+  "main": "pepe-futures-bot.js",
+  "scripts": {
+    "start": "node pepe-futures-bot.js",
+    "dry": "node pepe-futures-bot.js",
+    "live": "node -e \"process.env.FORCE_LIVE=1\" pepe-futures-bot.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}

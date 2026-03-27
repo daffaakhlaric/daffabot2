@@ -76,7 +76,7 @@ const CONFIG = {
   DRY_RUN: true,
 
   // Dashboard
-  DASHBOARD_PORT: process.env.MONITOR_PORT ? parseInt(process.env.MONITOR_PORT) : 3000,
+  DASHBOARD_PORT: process.env.MONITOR_PORT ? parseInt(process.env.MONITOR_PORT) : 4000,
 
   // File persistensi
   TRADES_FILE: "trades.json",
@@ -639,6 +639,7 @@ Rules:
         hostname: "api.anthropic.com",
         path:     "/v1/messages",
         method:   "POST",
+        agent:    HTTPS_AGENT,   // pakai DNS bypass yang sama
         headers:  {
           "x-api-key":         apiKey,
           "anthropic-version": "2023-06-01",
@@ -655,8 +656,17 @@ Rules:
       req.end();
     });
 
-    if (!result || !result.content || !result.content[0]) {
-      log("ERROR", "Respons Claude kosong atau tidak valid");
+    // Tampilkan detail error dari API agar mudah debug
+    if (!result) {
+      log("ERROR", "Respons Claude null (parse gagal atau koneksi putus)");
+      return null;
+    }
+    if (result.type === "error") {
+      log("ERROR", `Claude API error: [${result.error?.type}] ${result.error?.message}`);
+      return null;
+    }
+    if (!result.content || !result.content[0]) {
+      log("ERROR", `Respons Claude tidak terduga: ${JSON.stringify(result).substring(0, 200)}`);
       return null;
     }
 

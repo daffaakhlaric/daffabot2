@@ -50,7 +50,7 @@ const CONFIG = {
   MAX_LEVERAGE:     10,
 
   // Ukuran posisi
-  POSITION_SIZE_USDT: 10,   // USDT per trade
+  POSITION_SIZE_USDT: 3,   // USDT per trade
   MAX_POSITIONS:       1,
 
   // Risk management
@@ -383,17 +383,19 @@ async function setMarginMode() {
 
 /**
  * Hitung jumlah kontrak dari USDT
- * Untuk PEPE futures, 1 kontrak = 100 PEPE (cek specs Bitget)
- * Ukuran order = (USDT × leverage) / harga
+ * Bitget PEPE contract: 1 kontrak = 1000 PEPE, minimum order = 1000 PEPE
  */
 function calcOrderSize(price, leverage) {
-  const notional = CONFIG.POSITION_SIZE_USDT * leverage;
-  const qty = notional / price;
-  // PEPE memiliki kontrak minimum, round ke kelipatan tertentu
-  // Bitget PEPE contract size biasanya 100 atau 1000
-  const CONTRACT_SIZE = 1; // 1 PEPE per contract (check Bitget specs)
-  const minQty = 1;
-  return Math.max(minQty, Math.floor(qty / CONTRACT_SIZE) * CONTRACT_SIZE);
+  // BUG #1 FIX: CONTRACT_SIZE = 1000 (bukan 1)
+  // Bitget PEPEUSDT USDT-M: 1 kontrak = 1000 PEPE, minimum 1 kontrak
+  const CONTRACT_SIZE = 1000;
+  const MIN_QTY       = 1000;
+  const notional  = CONFIG.POSITION_SIZE_USDT * leverage;
+  const qty       = notional / price;
+  const contracts = Math.max(1, Math.floor(qty / CONTRACT_SIZE));
+  const finalQty  = contracts * CONTRACT_SIZE;
+  log("INFO", `Kalkulasi order: notional=${notional.toFixed(2)} USDT | qty=${qty.toFixed(0)} PEPE | kontrak=${contracts} | final=${finalQty} PEPE`);
+  return finalQty;
 }
 
 /** Hitung liquidation price */

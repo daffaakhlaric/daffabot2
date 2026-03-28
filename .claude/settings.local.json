@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \":*)",
+      "Bash(timeout /t 18 /nobreak)",
+      "Bash(node -e \"require\\(''''./pepe-futures-bot.js''''\\)\")"
+    ]
+  }
+}

@@ -73,7 +73,7 @@ const CONFIG = {
   CLOSE_CONFIDENCE: 65,
 
   // Dry run (WAJIB true saat testing!)
-  DRY_RUN: true,
+  DRY_RUN: false,
 
   // Dashboard
   DASHBOARD_PORT: process.env.MONITOR_PORT ? parseInt(process.env.MONITOR_PORT) : 4000,
@@ -1477,7 +1477,10 @@ async function tradingLoop() {
   const shouldAnalyze = state.tickCount % CONFIG.CLAUDE_ANALYSIS_INTERVAL === 0;
   if (!shouldAnalyze) {
     broadcastSSE({ type: "tick", price, rsi: indicators.rsi, ema9: indicators.ema9, ema21: indicators.ema21,
-                   fundingRate, fearGreed: externalDataCache?.fearGreed, position: pos });
+                   fundingRate, fearGreed: externalDataCache?.fearGreed, position: pos,
+                   bid: ticker?.bidPrice, ask: ticker?.askPrice,           // BUG #2 FIX
+                   volume24h: ticker?.volume24h, change24h: ticker?.change24h,
+                   isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil) }); // BUG #6 FIX
     return;
   }
 
@@ -1644,6 +1647,8 @@ function recordTrade(type, side, price, size, leverage, liqPrice, reason = "", p
   };
   tradeLog.push(trade);
   fs.writeFileSync(CONFIG.TRADES_FILE, JSON.stringify(tradeLog, null, 2));
+  // Broadcast ke dashboard agar log transaksi terupdate real-time
+  broadcastSSE({ type: "trade", trade, tradeLog: tradeLog.slice(-50) });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1937,6 +1942,30 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       <h3>Analisis Claude AI Terakhir</h3>
       <div id="ai-content"><div class="no-pos">Menunggu analisis pertama...</div></div>
     </div>
+
+    <!-- Log Transaksi -->
+    <div class="card ai-card">
+      <h3>Log Transaksi</h3>
+      <div style="overflow-x:auto">
+        <table id="trade-table" style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="color:#8b949e;border-bottom:1px solid #30363d">
+              <th style="text-align:left;padding:4px 8px">Waktu</th>
+              <th style="text-align:left;padding:4px 8px">Tipe</th>
+              <th style="text-align:left;padding:4px 8px">Side</th>
+              <th style="text-align:right;padding:4px 8px">Harga</th>
+              <th style="text-align:right;padding:4px 8px">Size</th>
+              <th style="text-align:right;padding:4px 8px">Leverage</th>
+              <th style="text-align:right;padding:4px 8px">PnL (USDT)</th>
+              <th style="text-align:left;padding:4px 8px">Alasan</th>
+            </tr>
+          </thead>
+          <tbody id="trade-tbody">
+            <tr><td colspan="8" style="text-align:center;color:#8b949e;padding:16px">Belum ada transaksi</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <!-- Log -->
@@ -1952,6 +1981,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
     function fmt(n, dec = 8) { return Number(n).toFixed(dec); }
     function fmtPct(n) { return (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%'; }
+    // BUG #5 FIX: format harga PEPE dengan presisi yang tepat
+    function formatPepePrice(price) { return price < 0.001 ? Number(price).toFixed(8) : Number(price).toFixed(6); }
+
+    // BUG #6 FIX: track pause state secara lokal
+    let isPaused = false;
 
     // ── Balance chart ──────────────────────────────────────────
     let balHistory = [];
@@ -2036,18 +2070,32 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     function handle(d) {
-      // BUG #5 FIX: dry badge dari server
+      // BUG #4 FIX: simpan posisi & harga terakhir untuk re-render real-time
+      window.currentPosition = d.position !== undefined ? d.position : window.currentPosition;
+      window.lastPrice = d.price || window.lastPrice || 0;
+
       if (d.type === 'init') {
         document.getElementById('dry-badge').style.display = d.dryRun ? 'inline' : 'none';
         if (d.stats) renderWinRate(d.stats);
+        if (d.balance) handleBalance(d.balance);                              // BUG #1b FIX
+        if (d.externalData) handleIntelligence({ externalData: d.externalData }); // BUG #1b FIX
+        if (d.position) renderPosition(d.position, d.price || 0);
+        if (d.tradeLog) renderTradeLog(d.tradeLog);
       }
+      if (d.type === 'trade') { renderTradeLog(d.tradeLog); return; }
       if (d.type === 'pause') {
+        isPaused = true;                                                       // BUG #6 FIX
         const pb = document.getElementById('pause-badge');
         pb.style.display = 'inline';
         pb.title = d.reason + ' — resume dalam ' + d.resumeIn + ' menit';
       }
+      // BUG #6 FIX: gunakan isPaused flag dari server, jangan hapus badge di setiap event
+      if (d.isPaused !== undefined) {
+        isPaused = d.isPaused;
+        document.getElementById('pause-badge').style.display = isPaused ? 'inline' : 'none';
+      }
       if (d.type === 'balance') { handleBalance(d); return; }
-      if (d.price) document.getElementById('price').textContent = fmt(d.price);
+      if (d.price) document.getElementById('price').textContent = formatPepePrice(d.price); // BUG #5 FIX
       if (d.rsi !== undefined) {
         const rsiEl = document.getElementById('rsi');
         rsiEl.textContent = Number(d.rsi).toFixed(2);
@@ -2062,15 +2110,23 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         el.className = Math.abs(d.fundingRate) > 0.001 ? 'val red' : 'val';
       }
       if (d.fearGreed) document.getElementById('feargreed').textContent = d.fearGreed.value + ' (' + d.fearGreed.classification + ')';
-      if (d.position) renderPosition(d.position, d.price);
+      // BUG #2 FIX: tampilkan bid/ask real-time
+      if (d.bid) document.getElementById('bid').textContent = formatPepePrice(d.bid);
+      if (d.ask) document.getElementById('ask').textContent = formatPepePrice(d.ask);
+      if (d.position) renderPosition(d.position, d.price || window.lastPrice);
       else if (d.type === 'analysis' && !d.position) document.getElementById('position-content').innerHTML = '<div class="no-pos">Tidak ada posisi aktif</div>';
       if (d.analysis) renderAI(d.analysis);
       if (d.type === 'analysis') { renderMTF(d); renderBB(d); handleIntelligence(d); }
       if (d.type === 'log') addLog(d);
       if (d.type === 'stats') { renderStats(d); renderWinRate(d); }
-      // hide pause badge jika tidak pause
-      if (d.type !== 'pause') document.getElementById('pause-badge').style.display = 'none';
     }
+
+    // BUG #4 FIX: refresh PnL posisi setiap 1 detik dengan harga terbaru
+    setInterval(() => {
+      if (window.currentPosition && window.lastPrice) {
+        renderPosition(window.currentPosition, window.lastPrice);
+      }
+    }, 1000);
 
     function handleIntelligence(d) {
       if (!d.externalData) return;
@@ -2119,12 +2175,12 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       const pnlClass = pnlPct >= 0 ? 'green' : 'red';
       document.getElementById('position-content').innerHTML = \`
         <div class="row"><span class="label">Side</span><span class="val \${pos.side === 'LONG' ? 'green' : 'red'}">\${pos.side}</span></div>
-        <div class="row"><span class="label">Entry</span><span class="val">\${fmt(pos.entryPrice)}</span></div>
+        <div class="row"><span class="label">Entry</span><span class="val">\${formatPepePrice(pos.entryPrice)}</span></div>
         <div class="row"><span class="label">Leverage</span><span class="val">\${pos.leverage}x</span></div>
-        <div class="row"><span class="label">Stop Loss</span><span class="val yellow">\${fmt(pos.stopLoss)}</span></div>
-        <div class="row"><span class="label">Take Profit</span><span class="val green">\${fmt(pos.takeProfit)}</span></div>
+        <div class="row"><span class="label">Stop Loss</span><span class="val yellow">\${formatPepePrice(pos.stopLoss)}</span></div>
+        <div class="row"><span class="label">Take Profit</span><span class="val green">\${formatPepePrice(pos.takeProfit)}</span></div>
         <div class="row"><span class="label">PnL</span><span class="val \${pnlClass}">\${fmtPct(pnlPct)}</span></div>
-        <div class="liq-warning">⚠ LIQUIDATION: \${fmt(pos.liqPrice)} — jangan biarkan harga mencapai ini!</div>
+        <div class="liq-warning">⚠ LIQUIDATION: \${formatPepePrice(pos.liqPrice)} — jangan biarkan harga mencapai ini!</div>
       \`;
     }
 
@@ -2163,6 +2219,33 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       pnlEl.textContent = (s.totalPnL >= 0 ? '+' : '') + pnl;
       pnlEl.className = 'stat-num ' + (s.totalPnL >= 0 ? 'green' : 'red');
     }
+
+    function renderTradeLog(trades) {
+      if (!trades || trades.length === 0) return;
+      const tbody = document.getElementById('trade-tbody');
+      // Tampilkan urutan terbaru di atas
+      const sorted = [...trades].reverse();
+      tbody.innerHTML = sorted.map(t => {
+        const dt   = new Date(t.time);
+        const tStr = dt.toLocaleDateString('id-ID', { day:'2-digit', month:'2-digit' })
+                   + ' ' + dt.toLocaleTimeString('id-ID', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
+        const isOpen  = t.type === 'OPEN';
+        const pnlStr  = isOpen ? '—' : ((t.pnlUSDT >= 0 ? '+' : '') + Number(t.pnlUSDT).toFixed(4));
+        const pnlCls  = isOpen ? 'val' : (t.pnlUSDT >= 0 ? 'green' : 'red');
+        const sideCls = t.side === 'LONG' ? 'green' : 'red';
+        const typeCls = isOpen ? 'blue' : (t.pnlUSDT >= 0 ? 'green' : 'red');
+        return \`<tr style="border-bottom:1px solid #21262d">
+          <td style="padding:4px 8px;color:#8b949e;white-space:nowrap">\${tStr}</td>
+          <td style="padding:4px 8px" class="\${typeCls}">\${t.type}</td>
+          <td style="padding:4px 8px" class="\${sideCls}">\${t.side}</td>
+          <td style="padding:4px 8px;text-align:right">\${formatPepePrice(t.price)}</td>
+          <td style="padding:4px 8px;text-align:right">\${Number(t.size).toLocaleString()}</td>
+          <td style="padding:4px 8px;text-align:right">\${t.leverage}x</td>
+          <td style="padding:4px 8px;text-align:right" class="\${pnlCls}">\${pnlStr}</td>
+          <td style="padding:4px 8px;color:#8b949e;font-size:11px">\${t.reason || '—'}</td>
+        </tr>\`;
+      }).join('');
+    }
   </script>
 </body>
 </html>`;
@@ -2186,17 +2269,33 @@ function startDashboard() {
       res.write("data: {\"type\":\"connected\"}\n\n");
       state.dashboardClients.push(res);
 
-      // Kirim state awal — BUG #5 FIX: sertakan dryRun agar dashboard badge akurat
+      // Kirim state awal
+      const _initBal = {
+        currentBalance: state.currentBalance,
+        initialBalance: state.initialBalance,
+        available:      state.available || state.currentBalance,
+        unrealizedPnL:  state.unrealizedPnL || 0,
+        peakBalance:    state.peakBalance   || state.currentBalance,
+        lowestBalance:  state.lowestBalance || state.currentBalance,
+        changeUSDT:     state.currentBalance - state.initialBalance,
+        changePct:      state.initialBalance > 0 ? ((state.currentBalance - state.initialBalance) / state.initialBalance) * 100 : 0,
+        drawdown:       (state.peakBalance || 0) > 0 ? (((state.peakBalance - state.currentBalance) / state.peakBalance) * 100) : 0,
+        history:        state.balanceHistory || [],
+      };
       res.write(`data: ${JSON.stringify({
-        type:       "init",
-        price:      state.lastPrice,
-        rsi:        state.lastRSI,
-        ema9:       state.lastEMA9,
-        ema21:      state.lastEMA21,
+        type:        "init",
+        price:       state.lastPrice,
+        rsi:         state.lastRSI,
+        ema9:        state.lastEMA9,
+        ema21:       state.lastEMA21,
         fundingRate: state.lastFundingRate,
-        position:   state.activePosition,
+        position:    state.activePosition,
         stats,
-        dryRun:     CONFIG.DRY_RUN,
+        dryRun:      CONFIG.DRY_RUN,
+        balance:     _initBal,               // BUG #1a FIX
+        externalData: externalDataCache,     // BUG #1a FIX
+        isPaused:    !!(state.pausedUntil && Date.now() < state.pausedUntil), // BUG #6 FIX
+        tradeLog:    tradeLog.slice(-50),    // Log transaksi 50 terakhir
       })}\n\n`);
 
       req.on("close", () => {
@@ -2306,6 +2405,9 @@ async function main() {
       log("WARN", `Gagal set margin mode: ${err.message}`);
     }
   }
+
+  // BUG #3 FIX: fetch data eksternal SEBELUM startDashboard agar init event sudah punya data
+  await fetchAllExternalData();
 
   // Mulai dashboard
   startDashboard();

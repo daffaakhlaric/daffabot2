@@ -144,6 +144,8 @@ let state = {
   lastBalanceUpdate: 0,
   peakBalance:      0,
   lowestBalance:    0,
+  // Chart data
+  lastKlines:       [],   // klines 1m terakhir untuk chart dashboard
 };
 
 let stats = {
@@ -1331,6 +1333,7 @@ async function tradingLoop() {
   state.lastPrice       = price;
   state.lastFundingRate = fundingRate;
   state.lastBidAsk      = { bid: ticker.bidPrice, ask: ticker.askPrice };
+  state.lastKlines      = klines; // simpan untuk chart dashboard
 
   const indicators = calcIndicators(klines);
   state.lastRSI   = indicators.rsi;
@@ -1478,9 +1481,10 @@ async function tradingLoop() {
   if (!shouldAnalyze) {
     broadcastSSE({ type: "tick", price, rsi: indicators.rsi, ema9: indicators.ema9, ema21: indicators.ema21,
                    fundingRate, fearGreed: externalDataCache?.fearGreed, position: pos,
-                   bid: ticker?.bidPrice, ask: ticker?.askPrice,           // BUG #2 FIX
+                   bid: ticker?.bidPrice, ask: ticker?.askPrice,
                    volume24h: ticker?.volume24h, change24h: ticker?.change24h,
-                   isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil) }); // BUG #6 FIX
+                   isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
+                   latestCandle: klines[klines.length - 1] }); // update chart candle terbaru
     return;
   }
 
@@ -1624,7 +1628,8 @@ async function tradingLoop() {
     vwapPct,
     volProf,
     candlePatterns,
-    externalData: externalDataCache,
+    externalData:  externalDataCache,
+    latestCandle:  klines[klines.length - 1], // update chart candle terbaru
   });
 }
 
@@ -1782,6 +1787,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PEPE Futures Bot | Daffabot2</title>
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #0d1117; color: #c9d1d9; font-family: 'Courier New', monospace; font-size: 13px; }
@@ -1822,6 +1828,15 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     .stats-row { display: flex; gap: 16px; flex-wrap: wrap; }
     .stat-item { text-align: center; flex: 1; min-width: 80px; }
     .stat-num  { font-size: 20px; font-weight: bold; }
+    .chart-card { grid-column: 1 / -1; }
+    #price-chart { width: 100%; height: 320px; }
+    .price-bar { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; }
+    .price-change-pos { color: #3fb950; font-size: 14px; }
+    .price-change-neg { color: #f85149; font-size: 14px; }
+    .price-meta { display: flex; gap: 24px; flex-wrap: wrap; margin-top: 8px; }
+    .price-meta-item { display: flex; flex-direction: column; }
+    .price-meta-label { font-size: 10px; color: #8b949e; }
+    .price-meta-val { font-size: 13px; color: #c9d1d9; }
   </style>
 </head>
 <body>
@@ -1884,14 +1899,23 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       </div>
       <div style="margin-top:12px"><div style="font-size:10px;color:#8b949e;margin-bottom:4px">RIWAYAT SALDO</div><canvas id="balanceChart" height="50" style="width:100%"></canvas></div>
     </div>
-    <!-- Harga -->
-    <div class="card">
-      <h3>Harga Real-time</h3>
-      <div class="big-price" id="price">--</div>
-      <div class="row"><span class="label">Bid</span><span id="bid" class="val">--</span></div>
-      <div class="row"><span class="label">Ask</span><span id="ask" class="val">--</span></div>
-      <div class="row"><span class="label">Funding Rate</span><span id="funding" class="val">--</span></div>
-      <div class="row"><span class="label">Fear & Greed</span><span id="feargreed" class="val">--</span></div>
+    <!-- Harga + Chart -->
+    <div class="card chart-card">
+      <h3>PEPE/USDT — Harga Real-time (1m)</h3>
+      <div class="price-bar">
+        <span class="big-price" id="price">--</span>
+        <span id="price-change" class="price-change-pos">--</span>
+        <span style="font-size:11px;color:#8b949e">USDT</span>
+      </div>
+      <div class="price-meta">
+        <div class="price-meta-item"><span class="price-meta-label">BID</span><span class="price-meta-val" id="bid">--</span></div>
+        <div class="price-meta-item"><span class="price-meta-label">ASK</span><span class="price-meta-val" id="ask">--</span></div>
+        <div class="price-meta-item"><span class="price-meta-label">FUNDING RATE</span><span class="price-meta-val" id="funding">--</span></div>
+        <div class="price-meta-item"><span class="price-meta-label">VOLUME 24J</span><span class="price-meta-val" id="vol24h">--</span></div>
+        <div class="price-meta-item"><span class="price-meta-label">FEAR & GREED</span><span class="price-meta-val" id="feargreed">--</span></div>
+        <div class="price-meta-item"><span class="price-meta-label">VWAP</span><span class="price-meta-val" id="vwap-price">--</span></div>
+      </div>
+      <div id="price-chart" style="margin-top:12px"></div>
     </div>
 
     <!-- Indikator -->
@@ -1972,8 +1996,6 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <div id="log-box"></div>
 
   <script>
-    // BUG #5 FIX: DRY badge dikontrol dari server via SSE event 'init'
-
     const sse = new EventSource('/events');
     sse.onmessage = (e) => {
       try { handle(JSON.parse(e.data)); } catch {}
@@ -1981,8 +2003,82 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
     function fmt(n, dec = 8) { return Number(n).toFixed(dec); }
     function fmtPct(n) { return (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%'; }
-    // BUG #5 FIX: format harga PEPE dengan presisi yang tepat
     function formatPepePrice(price) { return price < 0.001 ? Number(price).toFixed(8) : Number(price).toFixed(6); }
+    function fmtVol(v) {
+      if (!v || v === 0) return '--';
+      if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+      if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+      if (v >= 1e3) return (v / 1e3).toFixed(2) + 'K';
+      return Number(v).toFixed(2);
+    }
+
+    // ── TradingView Lightweight Chart ──────────────────────────
+    let chart = null, candleSeries = null, volSeries = null;
+
+    function initChart() {
+      const container = document.getElementById('price-chart');
+      if (!container || chart) return;
+      chart = LightweightCharts.createChart(container, {
+        width:  container.offsetWidth || 800,
+        height: 320,
+        layout: { background: { color: '#161b22' }, textColor: '#c9d1d9' },
+        grid:   { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        rightPriceScale: { borderColor: '#30363d' },
+        timeScale: {
+          borderColor: '#30363d',
+          timeVisible: true,
+          secondsVisible: false,
+        },
+      });
+      candleSeries = chart.addCandlestickSeries({
+        upColor:        '#3fb950',
+        downColor:      '#f85149',
+        borderUpColor:  '#3fb950',
+        borderDownColor:'#f85149',
+        wickUpColor:    '#3fb950',
+        wickDownColor:  '#f85149',
+      });
+      volSeries = chart.addHistogramSeries({
+        color: '#8b949e66',
+        priceFormat:   { type: 'volume' },
+        priceScaleId:  'vol',
+        scaleMargins:  { top: 0.8, bottom: 0 },
+      });
+      chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
+
+      // Responsive resize
+      const ro = new ResizeObserver(() => {
+        if (chart) chart.applyOptions({ width: container.offsetWidth });
+      });
+      ro.observe(container);
+    }
+
+    function setChartData(klines) {
+      if (!klines || klines.length === 0) return;
+      if (!chart) initChart();
+      const candles = klines.map(k => ({
+        time:  Math.floor(k.time / 1000),
+        open:  k.open, high: k.high, low: k.low, close: k.close,
+      })).filter((c, i, arr) => i === 0 || c.time > arr[i-1].time); // deduplicate
+      const volumes = klines.map(k => ({
+        time:  Math.floor(k.time / 1000),
+        value: k.volume,
+        color: k.close >= k.open ? '#3fb95044' : '#f8514944',
+      })).filter((c, i, arr) => i === 0 || c.time > arr[i-1].time);
+      candleSeries.setData(candles);
+      volSeries.setData(volumes);
+      chart.timeScale().fitContent();
+    }
+
+    function updateChartCandle(candle) {
+      if (!candleSeries || !candle) return;
+      if (!chart) initChart();
+      const c = { time: Math.floor(candle.time / 1000), open: candle.open, high: candle.high, low: candle.low, close: candle.close };
+      const v = { time: Math.floor(candle.time / 1000), value: candle.volume, color: candle.close >= candle.open ? '#3fb95044' : '#f8514944' };
+      candleSeries.update(c);
+      volSeries.update(v);
+    }
 
     // BUG #6 FIX: track pause state secara lokal
     let isPaused = false;
@@ -2070,19 +2166,34 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     function handle(d) {
-      // BUG #4 FIX: simpan posisi & harga terakhir untuk re-render real-time
       window.currentPosition = d.position !== undefined ? d.position : window.currentPosition;
-      window.lastPrice = d.price || window.lastPrice || 0;
 
       if (d.type === 'init') {
         document.getElementById('dry-badge').style.display = d.dryRun ? 'inline' : 'none';
         if (d.stats) renderWinRate(d.stats);
-        if (d.balance) handleBalance(d.balance);                              // BUG #1b FIX
-        if (d.externalData) handleIntelligence({ externalData: d.externalData }); // BUG #1b FIX
+        if (d.balance) handleBalance(d.balance);
+        if (d.externalData) handleIntelligence({ externalData: d.externalData });
         if (d.position) renderPosition(d.position, d.price || 0);
         if (d.tradeLog) renderTradeLog(d.tradeLog);
+        if (d.klines && d.klines.length > 0) setChartData(d.klines);
       }
       if (d.type === 'trade') { renderTradeLog(d.tradeLog); return; }
+      // Fast price update (tiap 3 detik)
+      if (d.type === 'price') {
+        if (d.price) {
+          document.getElementById('price').textContent = formatPepePrice(d.price);
+          window.lastPrice = d.price;
+          if (d.change24h !== undefined) {
+            const el = document.getElementById('price-change');
+            el.textContent = fmtPct(d.change24h * 100);
+            el.className   = d.change24h >= 0 ? 'price-change-pos' : 'price-change-neg';
+          }
+        }
+        if (d.bid) document.getElementById('bid').textContent = formatPepePrice(d.bid);
+        if (d.ask) document.getElementById('ask').textContent = formatPepePrice(d.ask);
+        if (d.volume24h) document.getElementById('vol24h').textContent = fmtVol(d.volume24h);
+        return;
+      }
       if (d.type === 'pause') {
         isPaused = true;                                                       // BUG #6 FIX
         const pb = document.getElementById('pause-badge');
@@ -2095,7 +2206,18 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         document.getElementById('pause-badge').style.display = isPaused ? 'inline' : 'none';
       }
       if (d.type === 'balance') { handleBalance(d); return; }
-      if (d.price) document.getElementById('price').textContent = formatPepePrice(d.price); // BUG #5 FIX
+      if (d.price) {
+        document.getElementById('price').textContent = formatPepePrice(d.price);
+        window.lastPrice = d.price;
+        if (d.change24h !== undefined) {
+          const el = document.getElementById('price-change');
+          el.textContent = fmtPct(d.change24h * 100);
+          el.className   = d.change24h >= 0 ? 'price-change-pos' : 'price-change-neg';
+        }
+      }
+      if (d.volume24h) document.getElementById('vol24h').textContent = fmtVol(d.volume24h);
+      if (d.vwap) document.getElementById('vwap-price').textContent = formatPepePrice(d.vwap);
+      if (d.latestCandle) updateChartCandle(d.latestCandle);
       if (d.rsi !== undefined) {
         const rsiEl = document.getElementById('rsi');
         rsiEl.textContent = Number(d.rsi).toFixed(2);
@@ -2110,7 +2232,6 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         el.className = Math.abs(d.fundingRate) > 0.001 ? 'val red' : 'val';
       }
       if (d.fearGreed) document.getElementById('feargreed').textContent = d.fearGreed.value + ' (' + d.fearGreed.classification + ')';
-      // BUG #2 FIX: tampilkan bid/ask real-time
       if (d.bid) document.getElementById('bid').textContent = formatPepePrice(d.bid);
       if (d.ask) document.getElementById('ask').textContent = formatPepePrice(d.ask);
       if (d.position) renderPosition(d.position, d.price || window.lastPrice);
@@ -2296,6 +2417,7 @@ function startDashboard() {
         externalData: externalDataCache,     // BUG #1a FIX
         isPaused:    !!(state.pausedUntil && Date.now() < state.pausedUntil), // BUG #6 FIX
         tradeLog:    tradeLog.slice(-50),    // Log transaksi 50 terakhir
+        klines:      state.lastKlines.slice(-150), // Data chart 150 candle terakhir
       })}\n\n`);
 
       req.on("close", () => {
@@ -2318,6 +2440,24 @@ function startDashboard() {
   setInterval(() => {
     broadcastSSE({ type: "stats", ...stats, compoundBalance: compoundedBalance });
   }, 30000);
+
+  // Fast price ticker tiap 3 detik — harga real-time di dashboard
+  setInterval(async () => {
+    if (state.dashboardClients.length === 0) return; // skip kalau tidak ada client
+    try {
+      const ticker = await getTicker();
+      state.lastPrice  = ticker.lastPrice;
+      state.lastBidAsk = { bid: ticker.bidPrice, ask: ticker.askPrice };
+      broadcastSSE({
+        type:      "price",
+        price:     ticker.lastPrice,
+        bid:       ticker.bidPrice,
+        ask:       ticker.askPrice,
+        change24h: ticker.change24h,
+        volume24h: ticker.volume24h,
+      });
+    } catch { /* abaikan error — trading loop tetap jalan */ }
+  }, 3000);
 }
 
 // ─────────────────────────────────────────────────────────────

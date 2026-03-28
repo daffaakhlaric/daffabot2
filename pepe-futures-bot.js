@@ -82,13 +82,46 @@ const CONFIG = {
   TRADES_FILE: "trades.json",
   STATS_FILE:  "stats.json",
   STATE_FILE:  "state.json",
+
+  // ── Fitur #1: Multi-Timeframe Analysis ────────────────────
+  REQUIRE_MTF_CONSENSUS: true,   // false = matikan fitur MTF
+
+  // ── Fitur #2: Bollinger Bands ─────────────────────────────
+  BB_PERIOD:  20,
+  BB_STDDEV:  2,
+
+  // ── Fitur #3: VWAP ────────────────────────────────────────
+  VWAP_BIAS_THRESHOLD: 0.5,   // % di atas/bawah VWAP untuk bias
+
+  // ── Fitur #5: Partial Close ───────────────────────────────
+  PARTIAL_CLOSE_ENABLED: true,
+  PARTIAL_CLOSE_PCT:     50,    // tutup 50% posisi
+  PARTIAL_CLOSE_TRIGGER: 1.5,   // trigger saat profit ≥ 1.5%
+
+  // ── Fitur #6: Auto Compound ───────────────────────────────
+  AUTO_COMPOUND:       true,
+  COMPOUND_MIN_PROFIT: 0.5,   // compound mulai kalau profit > 0.5 USDT
+  COMPOUND_RATIO:      0.5,   // 50% profit di-compound
+  MAX_POSITION_USDT:   50,    // batas maksimal posisi setelah compound
+
+  // ── Fitur #7: Auto Pause saat Market Crash ────────────────
+  AUTO_PAUSE_ENABLED:   true,
+  PAUSE_BTC_DROP_PCT:   5.0,      // pause kalau BTC turun > 5% dalam 1 jam
+  PAUSE_PEPE_DROP_PCT:  10.0,     // pause kalau PEPE turun > 10% dalam 1 jam
+  PAUSE_DURATION_MS:    3600000,  // pause 1 jam
+
+  // ── Fitur #9: Backtest ────────────────────────────────────
+  BACKTEST_MODE:      false,
+  BACKTEST_DAYS:      7,
+  BACKTEST_SYMBOL:    "PEPEUSDT",
+  BACKTEST_TIMEFRAME: "1m",
 };
 
 // ─────────────────────────────────────────────────────────────
 // STATE GLOBAL
 // ─────────────────────────────────────────────────────────────
 let state = {
-  activePosition:   null,   // { side, entryPrice, size, leverage, stopLoss, takeProfit, trailingHigh, trailingLow, openTime }
+  activePosition:   null,   // { side, entryPrice, size, leverage, stopLoss, takeProfit, trailingHigh, trailingLow, openTime, partialClosed }
   lastAnalysis:     null,   // response terakhir dari Claude
   lastPrice:        0,
   lastFundingRate:  0,
@@ -101,18 +134,36 @@ let state = {
   dashboardClients: [],     // SSE clients
   initialBalance:   0,
   currentBalance:   0,
+  available:        0,
+  unrealizedPnL:    0,
+  // Fitur #7: Auto Pause
+  pausedUntil:      null,
+  pauseReason:      "",
+  // Balance Monitoring
+  balanceHistory:   [],
+  lastBalanceUpdate: 0,
+  peakBalance:      0,
+  lowestBalance:    0,
 };
 
 let stats = {
-  totalTrades:  0,
-  wins:         0,
-  losses:       0,
-  totalPnL:     0,
-  maxDrawdown:  0,
-  startTime:    new Date().toISOString(),
+  totalTrades:   0,
+  wins:          0,
+  losses:        0,
+  totalPnL:      0,
+  maxDrawdown:   0,
+  startTime:     new Date().toISOString(),
+  // Fitur #8: Win Rate Tracker
+  recentTrades:  [],   // 20 trade terakhir
+  winRate7d:     0,
+  avgProfitPct:  0,
+  avgLossPct:    0,
+  currentStreak: 0,   // + = win streak, - = loss streak
 };
 
 let tradeLog = [];
+// Fitur #6: balance yang di-compound setelah tiap trade
+let compoundedBalance = CONFIG.POSITION_SIZE_USDT;
 
 // ─────────────────────────────────────────────────────────────
 // UTILITAS UMUM
@@ -250,14 +301,21 @@ async function getKlines(granularity = "1m", limit = 100) {
   });
   if (res.code !== "00000") throw new Error(`Klines error: ${res.msg}`);
   // Format: [timestamp, open, high, low, close, volume, ...]
-  return res.data.map((c) => ({
+  const candles = res.data.map((c) => ({
     time:   parseInt(c[0]),
     open:   parseFloat(c[1]),
     high:   parseFloat(c[2]),
     low:    parseFloat(c[3]),
     close:  parseFloat(c[4]),
     volume: parseFloat(c[5]),
-  })).reverse(); // Bitget returns newest first
+  })).reverse(); // Bitget returns newest first → reverse ke oldest first
+
+  // BUG #6 FIX: validasi urutan agar RSI/EMA dihitung oldest→newest
+  if (candles.length >= 2 && candles[0].time > candles[candles.length - 1].time) {
+    log("WARN", "Klines urutan terbalik! Re-reverse...");
+    candles.reverse();
+  }
+  return candles;
 }
 
 async function getFundingRate() {
@@ -282,13 +340,15 @@ async function getOrderBook() {
   return { bids, asks, totalBid, totalAsk, bidAskRatio: totalBid / (totalAsk || 1) };
 }
 
+/** Fear & Greed dengan tren 7 hari */
 async function getFearGreedIndex() {
   try {
     const res = await new Promise((resolve, reject) => {
       const req = https.request({
         hostname: "api.alternative.me",
-        path:     "/fng/",
+        path:     "/fng/?limit=7",
         method:   "GET",
+        headers:  { "User-Agent": "Mozilla/5.0", "Accept": "application/json" },
       }, (response) => {
         let data = "";
         response.on("data", (chunk) => (data += chunk));
@@ -298,14 +358,170 @@ async function getFearGreedIndex() {
       req.setTimeout(5000, () => { req.destroy(); resolve(null); });
       req.end();
     });
-    if (!res || !res.data) return { value: 50, classification: "Neutral" };
-    return {
-      value:          parseInt(res.data[0].value),
-      classification: res.data[0].value_classification,
-    };
+
+    const data = res?.data || [];
+    if (data.length === 0) return { value: 50, classification: "Neutral", trend: "STABLE", avg7d: 50, yesterday: 50 };
+
+    const latest    = parseInt(data[0].value);
+    const oldest    = parseInt(data[data.length - 1].value);
+    const yesterday = parseInt(data[1]?.value || latest);
+    const avg7d     = Math.round(data.reduce((s, d) => s + parseInt(d.value), 0) / data.length);
+    const trend     = latest > oldest + 5 ? "IMPROVING" : latest < oldest - 5 ? "WORSENING" : "STABLE";
+
+    return { value: latest, classification: data[0].value_classification, trend, avg7d, yesterday };
   } catch {
-    return { value: 50, classification: "Neutral" };
+    return { value: 50, classification: "Neutral", trend: "STABLE", avg7d: 50, yesterday: 50 };
   }
+}
+
+// ─────────────────────────────────────────────────────────────
+// SOURCE DATA EKSTERNAL (CoinGecko, CMC, Fear & Greed)
+// ─────────────────────────────────────────────────────────────
+
+// Cache 10 menit — hemat quota CoinGecko public & CMC free plan
+let externalDataCache  = null;
+let externalDataLastTs = 0;
+const EXTERNAL_CACHE_MS = 10 * 60 * 1000;
+let cmcDisabledUntil   = 0; // disable CMC sementara kalau quota habis
+
+/** Source #1: CoinGecko — data PEPE global (tanpa API key) */
+async function fetchCoinGeckoData() {
+  try {
+    const [coinData, trendingData] = await Promise.all([
+      httpsRequest({
+        hostname: "api.coingecko.com",
+        path:     "/api/v3/coins/pepe?localization=false&tickers=false&community_data=true&developer_data=false",
+        method:   "GET",
+        headers:  { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0", "Accept": "application/json" },
+      }),
+      httpsRequest({
+        hostname: "api.coingecko.com",
+        path:     "/api/v3/search/trending",
+        method:   "GET",
+        headers:  { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0", "Accept": "application/json" },
+      }),
+    ]);
+
+    // Handle rate limit 429 — pakai cache
+    if (coinData?.status?.error_code === 429 || trendingData?.status?.error_code === 429) {
+      log("WARN", "CoinGecko rate limit (429) — pakai cache terakhir");
+      return null;
+    }
+
+    const md = coinData?.market_data;
+    if (!md) { log("WARN", "CoinGecko: data tidak valid"); return null; }
+
+    const trendingCoins = trendingData?.coins || [];
+    const pepeTrend     = trendingCoins.find(c => c.item?.id === "pepe" || c.item?.symbol?.toLowerCase() === "pepe");
+
+    return {
+      priceUSD:          md.current_price?.usd || 0,
+      change1h:          md.price_change_percentage_1h_in_currency?.usd || 0,
+      change24h:         md.price_change_percentage_24h || 0,
+      change7d:          md.price_change_percentage_7d || 0,
+      volume24h:         md.total_volume?.usd || 0,
+      marketCap:         md.market_cap?.usd || 0,
+      marketCapRank:     coinData.market_cap_rank || 0,
+      twitterFollowers:  coinData.community_data?.twitter_followers || 0,
+      redditSubscribers: coinData.community_data?.reddit_subscribers || 0,
+      redditPosts48h:    coinData.community_data?.reddit_average_posts_48h || 0,
+      redditComments48h: coinData.community_data?.reddit_average_comments_48h || 0,
+      isPepeTrending:    !!pepeTrend,
+      trendingRank:      pepeTrend ? (trendingCoins.indexOf(pepeTrend) + 1) : null,
+    };
+  } catch (err) {
+    log("WARN", `CoinGecko gagal: ${err.message} — pakai cache`);
+    return null;
+  }
+}
+
+/** Source #2: CoinMarketCap — global crypto metrics (butuh API key gratis) */
+async function fetchCMCData() {
+  if (!process.env.CMC_API_KEY || process.env.CMC_API_KEY === "your_key_here") return null;
+  if (Date.now() < cmcDisabledUntil) return null; // sementara dinonaktifkan
+
+  try {
+    const [globalData, pepeData] = await Promise.all([
+      httpsRequest({
+        hostname: "pro-api.coinmarketcap.com",
+        path:     "/v1/global-metrics/quotes/latest",
+        method:   "GET",
+        headers:  { "X-CMC_PRO_API_KEY": process.env.CMC_API_KEY, "Content-Type": "application/json", "Accept": "application/json" },
+      }),
+      httpsRequest({
+        hostname: "pro-api.coinmarketcap.com",
+        path:     "/v2/cryptocurrency/quotes/latest?symbol=PEPE&convert=USD",
+        method:   "GET",
+        headers:  { "X-CMC_PRO_API_KEY": process.env.CMC_API_KEY, "Content-Type": "application/json", "Accept": "application/json" },
+      }),
+    ]);
+
+    // Quota habis → disable CMC sisa hari ini
+    if (globalData?.status?.error_code === 402 || pepeData?.status?.error_code === 402) {
+      cmcDisabledUntil = new Date().setHours(24, 0, 0, 0); // reset tengah malam
+      log("ERROR", "CMC quota habis — nonaktifkan CMC sampai tengah malam");
+      return null;
+    }
+    if (globalData?.status?.error_code === 429 || pepeData?.status?.error_code === 429) {
+      log("WARN", "CMC rate limit (429) — pakai cache");
+      return null;
+    }
+
+    const g = globalData?.data;
+    const p = pepeData?.data?.PEPE?.[0]?.quote?.USD;
+    if (!g || !p) return null;
+
+    return {
+      btcDominance:        g.btc_dominance || 0,
+      ethDominance:        g.eth_dominance || 0,
+      totalMarketCap:      g.total_market_cap?.USD || 0,
+      totalVolume24h:      g.total_volume_24h?.USD || 0,
+      marketCapChange24h:  g.total_market_cap_yesterday_percentage_change || 0,
+      defiMarketCap:       g.defi_market_cap || 0,
+      stablecoinMarketCap: g.stablecoin_market_cap || 0,
+      pepeChange1h:        p.percent_change_1h || 0,
+      pepeChange24h:       p.percent_change_24h || 0,
+      pepeVolumeChange24h: p.volume_change_24h || 0,
+      pepeCMCRank:         pepeData?.data?.PEPE?.[0]?.cmc_rank || 0,
+    };
+  } catch (err) {
+    log("WARN", `CoinMarketCap gagal: ${err.message} — pakai cache`);
+    return null;
+  }
+}
+
+/** Fetch & cache semua data eksternal (update tiap 10 menit) */
+async function fetchAllExternalData() {
+  if (externalDataCache && Date.now() - externalDataLastTs < EXTERNAL_CACHE_MS) {
+    return externalDataCache;
+  }
+
+  log("INFO", "Memperbarui data eksternal (CoinGecko + CMC + F&G)...");
+  const [geckoData, cmcData, fearGreedNew] = await Promise.all([
+    fetchCoinGeckoData(),
+    fetchCMCData(),
+    getFearGreedIndex(),
+  ]);
+
+  // Pertahankan cache lama jika data baru null
+  externalDataCache = {
+    geckoData: geckoData || externalDataCache?.geckoData || null,
+    cmcData:   cmcData   || externalDataCache?.cmcData   || null,
+    fearGreed: fearGreedNew || externalDataCache?.fearGreed || { value: 50, classification: "Neutral", trend: "STABLE", avg7d: 50, yesterday: 50 },
+  };
+  externalDataLastTs = Date.now();
+
+  // Log ringkasan data baru
+  if (geckoData) {
+    log("INFO", `CoinGecko: PEPE 24h=${geckoData.change24h.toFixed(2)}% | Vol=$${(geckoData.volume24h/1e6).toFixed(1)}M | Trending: ${geckoData.isPepeTrending ? "YA #"+geckoData.trendingRank : "Tidak"}`);
+  }
+  if (cmcData) {
+    log("INFO", `CMC: BTC Dom=${cmcData.btcDominance.toFixed(1)}% | Market ${cmcData.marketCapChange24h >= 0 ? "+" : ""}${cmcData.marketCapChange24h.toFixed(2)}%`);
+  }
+  const fg = externalDataCache.fearGreed;
+  log("INFO", `F&G: ${fg.value} (${fg.classification}) | Trend: ${fg.trend} | Avg7d: ${fg.avg7d}`);
+
+  return externalDataCache;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -503,10 +719,18 @@ async function closePosition(reason, currentPrice) {
   if (pnlPct >= 0) stats.wins++; else stats.losses++;
   if (stats.totalPnL < stats.maxDrawdown) stats.maxDrawdown = stats.totalPnL;
 
+  // BUG #4 FIX: update currentBalance setiap posisi ditutup
+  state.currentBalance = state.initialBalance + stats.totalPnL;
+
+  updateCompoundBalance(pnlUSDT);
+  updateWinRateTracker(pnlUSDT, pnlPct);
+  autoAdjustStrategy();
+
   recordTrade("CLOSE", pos.side, currentPrice, pos.size, pos.leverage, pos.liqPrice, reason, pnlUSDT);
   state.activePosition = null;
   saveState();
   saveStats();
+  await fetchAndUpdateBalance();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -560,6 +784,316 @@ function calcIndicators(klines) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// INDIKATOR TAMBAHAN: BB, VWAP, VOLUME PROFILE, CANDLE PATTERN
+// ─────────────────────────────────────────────────────────────
+
+/** Fitur #2: Bollinger Bands */
+function calcBollingerBands(closes, period = 20, stdDevMult = 2) {
+  if (closes.length < period) return null;
+  const slice  = closes.slice(-period);
+  const middle = slice.reduce((a, b) => a + b, 0) / period;
+  const variance = slice.reduce((s, v) => s + Math.pow(v - middle, 2), 0) / period;
+  const sd     = Math.sqrt(variance);
+  const upper  = middle + stdDevMult * sd;
+  const lower  = middle - stdDevMult * sd;
+  const bandwidth = (upper - lower) / middle * 100;
+  const price  = closes[closes.length - 1];
+  const pctB   = (upper - lower) !== 0 ? (price - lower) / (upper - lower) : 0.5;
+  return { upper, middle, lower, bandwidth, pctB };
+}
+
+function detectSqueeze(klines) {
+  const closes = klines.map(k => k.close);
+  const bb     = calcBollingerBands(closes);
+  if (!bb) return { squeeze: false, bandwidthPct: 0, pricePosition: "MIDDLE", breakoutDirection: "NONE" };
+
+  // Hitung rata-rata bandwidth 20 candle terakhir
+  const bwHistory = [];
+  for (let i = Math.max(20, closes.length - 20); i <= closes.length; i++) {
+    const b = calcBollingerBands(closes.slice(0, i));
+    if (b) bwHistory.push(b.bandwidth);
+  }
+  const avgBw  = bwHistory.length ? bwHistory.reduce((a, b) => a + b, 0) / bwHistory.length : bb.bandwidth;
+  const squeeze = bb.bandwidth < avgBw * 0.5;
+
+  const price = closes[closes.length - 1];
+  let pricePosition = "MIDDLE";
+  let breakoutDirection = "NONE";
+  if (price > bb.upper) { pricePosition = "UPPER"; breakoutDirection = "UP"; }
+  else if (price < bb.lower) { pricePosition = "LOWER"; breakoutDirection = "DOWN"; }
+
+  return { squeeze, bandwidthPct: bb.bandwidth, pricePosition, breakoutDirection, bb };
+}
+
+/** Fitur #3: VWAP */
+function calcVWAP(klines) {
+  let cumTP = 0, cumVol = 0;
+  // Gunakan semua klines yang ada (reset harian tidak bisa tanpa timestamp hari)
+  for (const k of klines) {
+    const tp = (k.high + k.low + k.close) / 3;
+    cumTP  += tp * k.volume;
+    cumVol += k.volume;
+  }
+  return cumVol > 0 ? cumTP / cumVol : 0;
+}
+
+function calcVolumeProfile(klines, buckets = 10) {
+  const prices  = klines.map(k => k.close);
+  const minP    = Math.min(...prices);
+  const maxP    = Math.max(...prices);
+  const range   = maxP - minP || 1;
+  const size    = range / buckets;
+
+  const profile = Array.from({ length: buckets }, (_, i) => ({
+    low:    minP + i * size,
+    high:   minP + (i + 1) * size,
+    mid:    minP + (i + 0.5) * size,
+    volume: 0,
+  }));
+
+  for (const k of klines) {
+    const idx = Math.min(Math.floor((k.close - minP) / size), buckets - 1);
+    profile[idx].volume += k.volume;
+  }
+
+  const avgVol = profile.reduce((s, b) => s + b.volume, 0) / buckets;
+  const poc    = profile.reduce((a, b) => b.volume > a.volume ? b : a, profile[0]);
+  const hvn    = profile.filter(b => b.volume > avgVol * 1.5).map(b => b.mid);
+  const lvn    = profile.filter(b => b.volume < avgVol * 0.5).map(b => b.mid);
+
+  return { poc: poc.mid, hvn, lvn, avgVol };
+}
+
+/** Fitur #4: Candle Pattern Detection */
+function detectCandlePatterns(klines) {
+  if (klines.length < 3) return { bullishPatterns: [], bearishPatterns: [], dominantBias: "NEUTRAL", strength: "WEAK" };
+  const [c1, c2, c3] = klines.slice(-3); // oldest → newest
+  const bullishPatterns = [];
+  const bearishPatterns = [];
+
+  const body = (c) => Math.abs(c.close - c.open);
+  const isGreen = (c) => c.close > c.open;
+  const wickDown = (c) => Math.min(c.open, c.close) - c.low;
+  const wickUp   = (c) => c.high - Math.max(c.open, c.close);
+
+  // Hammer: body kecil, wick bawah > 2× body
+  if (body(c3) > 0 && wickDown(c3) > body(c3) * 2 && wickUp(c3) < body(c3)) bullishPatterns.push("Hammer");
+  // Shooting Star: body kecil, wick atas > 2× body
+  if (body(c3) > 0 && wickUp(c3) > body(c3) * 2 && wickDown(c3) < body(c3)) bearishPatterns.push("Shooting Star");
+  // Bullish Engulfing
+  if (!isGreen(c2) && isGreen(c3) && c3.open < c2.close && c3.close > c2.open) bullishPatterns.push("Bullish Engulfing");
+  // Bearish Engulfing
+  if (isGreen(c2) && !isGreen(c3) && c3.open > c2.close && c3.close < c2.open) bearishPatterns.push("Bearish Engulfing");
+  // Morning Star: merah-doji/kecil-hijau
+  if (!isGreen(c1) && body(c2) < body(c1) * 0.3 && isGreen(c3) && c3.close > (c1.open + c1.close) / 2) bullishPatterns.push("Morning Star");
+  // Evening Star: hijau-doji/kecil-merah
+  if (isGreen(c1) && body(c2) < body(c1) * 0.3 && !isGreen(c3) && c3.close < (c1.open + c1.close) / 2) bearishPatterns.push("Evening Star");
+  // Piercing Line
+  if (!isGreen(c2) && isGreen(c3) && c3.close > (c2.open + c2.close) / 2 && c3.open < c2.close) bullishPatterns.push("Piercing Line");
+  // Dark Cloud
+  if (isGreen(c2) && !isGreen(c3) && c3.close < (c2.open + c2.close) / 2 && c3.open > c2.close) bearishPatterns.push("Dark Cloud");
+
+  const dominantBias = bullishPatterns.length > bearishPatterns.length ? "BULLISH"
+    : bearishPatterns.length > bullishPatterns.length ? "BEARISH" : "NEUTRAL";
+  const strength = (bullishPatterns.length + bearishPatterns.length) >= 2 ? "STRONG" : "WEAK";
+
+  return { bullishPatterns, bearishPatterns, dominantBias, strength };
+}
+
+/** Fitur #1: Multi-Timeframe Analysis */
+async function fetchMultiTimeframe() {
+  const [kl1m, kl5m, kl15m] = await Promise.all([
+    getKlines("1m",  50),
+    getKlines("5m",  50),
+    getKlines("15m", 30),
+  ]);
+  const analyze = (klines) => {
+    const closes = klines.map(k => k.close);
+    const rsi    = calcRSI(closes);
+    const ema9   = calcEMA(closes, 9);
+    const ema21  = calcEMA(closes, 21);
+    return { rsi, ema9, ema21, trend: ema9 > ema21 ? "BULLISH" : "BEARISH" };
+  };
+  return { tf1m: analyze(kl1m), tf5m: analyze(kl5m), tf15m: analyze(kl15m), kl1m };
+}
+
+function getTimeframeConsensus(tf1m, tf5m, tf15m) {
+  const bulls = [tf1m, tf5m, tf15m].filter(t => t.trend === "BULLISH").length;
+  const bears = [tf1m, tf5m, tf15m].filter(t => t.trend === "BEARISH").length;
+  if (bulls === 3) return "STRONG_LONG";
+  if (bears === 3) return "STRONG_SHORT";
+  if (bulls === 2) return "WEAK_LONG";
+  if (bears === 2) return "WEAK_SHORT";
+  return "MIXED";
+}
+
+/** Fitur #7: Ambil perubahan BTC 1 jam */
+async function fetchBTCChange() {
+  try {
+    const res = await bitgetRequest("GET", "/api/v2/mix/market/candles", {
+      symbol: "BTCUSDT", productType: CONFIG.PRODUCT_TYPE, granularity: "1m", limit: "61",
+    });
+    if (res.code !== "00000" || !res.data || res.data.length < 2) return 0;
+    const candles = res.data.map(c => parseFloat(c[4])).reverse();
+    return ((candles[candles.length - 1] - candles[0]) / candles[0]) * 100;
+  } catch { return 0; }
+}
+
+async function checkMarketCrash(ticker, klines) {
+  if (!CONFIG.AUTO_PAUSE_ENABLED) return;
+  // Hitung perubahan PEPE 1 jam dari 60 candle 1m
+  if (klines.length < 60) return;
+  const pepeChange1h = ((klines[klines.length - 1].close - klines[klines.length - 60].close)
+    / klines[klines.length - 60].close) * 100;
+  const btcChange1h  = await fetchBTCChange();
+
+  if (btcChange1h < -CONFIG.PAUSE_BTC_DROP_PCT || pepeChange1h < -CONFIG.PAUSE_PEPE_DROP_PCT) {
+    state.pausedUntil = Date.now() + CONFIG.PAUSE_DURATION_MS;
+    state.pauseReason = btcChange1h < -CONFIG.PAUSE_BTC_DROP_PCT
+      ? `BTC crash ${btcChange1h.toFixed(2)}%`
+      : `PEPE crash ${pepeChange1h.toFixed(2)}%`;
+    log("WARN", `AUTO PAUSE! ${state.pauseReason} — resume dalam 1 jam`);
+    if (state.activePosition) await closePosition("AUTO_PAUSE_CRASH", state.lastPrice);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// FITUR #5: PARTIAL CLOSE
+// ─────────────────────────────────────────────────────────────
+
+async function closePartialPosition(reason, currentPrice) {
+  const pos = state.activePosition;
+  if (!pos || pos.partialClosed) return;
+
+  const halfSize   = Math.floor(pos.size * (CONFIG.PARTIAL_CLOSE_PCT / 100) / 1000) * 1000;
+  if (halfSize <= 0) return;
+
+  const pnlPct  = pos.side === "LONG"
+    ? ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100 * pos.leverage
+    : ((pos.entryPrice - currentPrice) / pos.entryPrice) * 100 * pos.leverage;
+  const lockedPnL = (compoundedBalance * (CONFIG.PARTIAL_CLOSE_PCT / 100)) * (pnlPct / 100);
+
+  log("TRADE", `PARTIAL CLOSE ${CONFIG.PARTIAL_CLOSE_PCT}% | Alasan: ${reason} | Lock PnL: +${lockedPnL.toFixed(4)} USDT`);
+
+  if (!CONFIG.DRY_RUN) {
+    await bitgetRequest("POST", "/api/v2/mix/order/place-order", {}, {
+      symbol:      CONFIG.SYMBOL,
+      productType: CONFIG.PRODUCT_TYPE,
+      marginMode:  CONFIG.MARGIN_MODE,
+      marginCoin:  CONFIG.MARGIN_COIN,
+      size:        halfSize.toString(),
+      side:        pos.side === "LONG" ? "sell" : "buy",
+      tradeSide:   "close",
+      orderType:   "market",
+    });
+  } else {
+    log("INFO", `[DRY RUN] Simulasi partial close ${halfSize} PEPE`);
+  }
+
+  pos.partialClosed = true;
+  pos.size          = pos.size - halfSize;
+  saveState();
+}
+
+// ─────────────────────────────────────────────────────────────
+// FITUR #6: AUTO COMPOUND
+// ─────────────────────────────────────────────────────────────
+
+function updateCompoundBalance(pnlUSDT) {
+  if (!CONFIG.AUTO_COMPOUND) return;
+  if (pnlUSDT > CONFIG.COMPOUND_MIN_PROFIT) {
+    const add      = pnlUSDT * CONFIG.COMPOUND_RATIO;
+    compoundedBalance = Math.min(compoundedBalance + add, CONFIG.MAX_POSITION_USDT);
+    log("INFO", `Auto compound: +${add.toFixed(4)} USDT → posisi berikutnya: ${compoundedBalance.toFixed(4)} USDT`);
+  } else if (pnlUSDT < 0) {
+    compoundedBalance = Math.max(
+      compoundedBalance + pnlUSDT * CONFIG.COMPOUND_RATIO,
+      CONFIG.POSITION_SIZE_USDT
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// FITUR #8: WIN RATE TRACKER & AUTO-ADJUST STRATEGY
+// ─────────────────────────────────────────────────────────────
+
+function updateWinRateTracker(pnlUSDT, pnlPct) {
+  stats.recentTrades.push({ pnlUSDT, pnlPct, time: Date.now(), win: pnlUSDT > 0 });
+  if (stats.recentTrades.length > 20) stats.recentTrades.shift();
+
+  const recentWins   = stats.recentTrades.filter(t => t.win).length;
+  stats.winRate7d    = (recentWins / stats.recentTrades.length) * 100;
+
+  const profits = stats.recentTrades.filter(t => t.win).map(t => t.pnlPct);
+  const losses  = stats.recentTrades.filter(t => !t.win).map(t => t.pnlPct);
+  stats.avgProfitPct = profits.length ? profits.reduce((a, b) => a + b, 0) / profits.length : 0;
+  stats.avgLossPct   = losses.length  ? losses.reduce((a, b) => a + b, 0) / losses.length   : 0;
+
+  stats.currentStreak = pnlUSDT > 0
+    ? (stats.currentStreak > 0 ? stats.currentStreak + 1 : 1)
+    : (stats.currentStreak < 0 ? stats.currentStreak - 1 : -1);
+}
+
+function autoAdjustStrategy() {
+  if (stats.recentTrades.length < 10) return;
+  if (stats.totalTrades % 10 !== 0)   return;
+
+  if (stats.winRate7d < 40) {
+    CONFIG.OPEN_CONFIDENCE = Math.min(CONFIG.OPEN_CONFIDENCE + 5, 90);
+    log("WARN", `Win rate rendah (${stats.winRate7d.toFixed(1)}%) → naikkan confidence ke ${CONFIG.OPEN_CONFIDENCE}%`);
+  }
+  if (stats.winRate7d > 65 && stats.recentTrades.length >= 15) {
+    CONFIG.OPEN_CONFIDENCE = Math.max(CONFIG.OPEN_CONFIDENCE - 5, 65);
+    log("INFO", `Win rate bagus (${stats.winRate7d.toFixed(1)}%) → turunkan confidence ke ${CONFIG.OPEN_CONFIDENCE}%`);
+  }
+  if (stats.currentStreak <= -3) {
+    state.pausedUntil = Date.now() + 1800000;
+    state.pauseReason = `Loss streak ${Math.abs(stats.currentStreak)}x berturut`;
+    log("WARN", `Loss streak! Pause 30 menit untuk recovery...`);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// BALANCE MONITORING
+// ─────────────────────────────────────────────────────────────
+
+async function fetchAndUpdateBalance() {
+  if (CONFIG.DRY_RUN) {
+    state.currentBalance = compoundedBalance + stats.totalPnL;
+    if (!state.initialBalance) state.initialBalance = CONFIG.POSITION_SIZE_USDT * 10;
+  } else {
+    try {
+      const info = await getAccountInfo();
+      state.currentBalance = info.equity;
+      state.available      = info.available;
+      state.unrealizedPnL  = info.unrealizedPnL;
+      if (!state.initialBalance) state.initialBalance = info.equity;
+    } catch (err) {
+      log("WARN", `Gagal update saldo: ${err.message}`);
+      return;
+    }
+  }
+
+  if (state.currentBalance > (state.peakBalance || 0))    state.peakBalance   = state.currentBalance;
+  if (!state.lowestBalance || state.currentBalance < state.lowestBalance) state.lowestBalance = state.currentBalance;
+
+  state.balanceHistory.push({ time: Date.now(), balance: state.currentBalance });
+  if (state.balanceHistory.length > 100) state.balanceHistory.shift();
+
+  const changeUSDT = state.currentBalance - state.initialBalance;
+  const changePct  = state.initialBalance > 0 ? (changeUSDT / state.initialBalance) * 100 : 0;
+  const drawdown   = state.peakBalance > 0 ? ((state.peakBalance - state.currentBalance) / state.peakBalance) * 100 : 0;
+
+  broadcastSSE({
+    type: "balance", currentBalance: state.currentBalance, initialBalance: state.initialBalance,
+    available: state.available || state.currentBalance, unrealizedPnL: state.unrealizedPnL || 0,
+    changeUSDT, changePct, peakBalance: state.peakBalance, lowestBalance: state.lowestBalance,
+    drawdown, history: state.balanceHistory.slice(-20),
+  });
+  state.lastBalanceUpdate = Date.now();
+}
+
+// ─────────────────────────────────────────────────────────────
 // CLAUDE AI ANALYSIS
 // ─────────────────────────────────────────────────────────────
 
@@ -594,8 +1128,27 @@ async function analyzeWithClaude(marketData) {
 - Interpretasi   : ${marketData.fundingRate > 0 ? "Positif → long bayar short" : "Negatif → short bayar long"}
 - Threshold      : >0.1% pertimbangkan tutup posisi
 
-## Sentimen Pasar
-- Fear & Greed Index: ${marketData.fearGreed.value} (${marketData.fearGreed.classification})
+## Sentimen & Makro Market
+
+### Fear & Greed Index
+- Sekarang   : ${marketData.fearGreed.value} — ${marketData.fearGreed.classification}
+- Kemarin    : ${marketData.fearGreed.yesterday}
+- Rata 7 hari: ${marketData.fearGreed.avg7d}
+- Tren 7h    : ${marketData.fearGreed.trend} (IMPROVING=membaik, WORSENING=memburuk, STABLE=stabil)
+
+### CoinGecko — PEPE Global
+${marketData.geckoData ? `- Perubahan 1j   : ${marketData.geckoData.change1h.toFixed(2)}%
+- Perubahan 24j  : ${marketData.geckoData.change24h.toFixed(2)}%
+- Perubahan 7h   : ${marketData.geckoData.change7d.toFixed(2)}%
+- Volume 24j     : $${(marketData.geckoData.volume24h / 1e6).toFixed(1)}M
+- Market Cap     : $${(marketData.geckoData.marketCap / 1e6).toFixed(0)}M (Rank #${marketData.geckoData.marketCapRank})
+- Reddit Posts 48j: ${marketData.geckoData.redditPosts48h.toFixed(1)}
+- TRENDING       : ${marketData.geckoData.isPepeTrending ? "YA — Rank #" + marketData.geckoData.trendingRank + " (potensi hype!)" : "Tidak trending"}` : "- Data tidak tersedia (pakai cache)"}
+
+### CoinMarketCap — Global Market
+${marketData.cmcData ? `- BTC Dominance   : ${marketData.cmcData.btcDominance.toFixed(2)}% ${marketData.cmcData.btcDominance > 60 ? "⚠ >60% = BTC season, hindari long altcoin" : marketData.cmcData.btcDominance < 45 ? "✓ <45% = Altcoin season, PEPE berpeluang naik" : "(Netral)"}
+- Market Cap 24j  : ${marketData.cmcData.marketCapChange24h >= 0 ? "+" : ""}${marketData.cmcData.marketCapChange24h.toFixed(2)}%
+- Vol PEPE change : ${marketData.cmcData.pepeVolumeChange24h >= 0 ? "+" : ""}${marketData.cmcData.pepeVolumeChange24h.toFixed(2)}% ${Math.abs(marketData.cmcData.pepeVolumeChange24h) > 50 ? "⚡ Volume spike signifikan!" : ""}` : "- Data tidak tersedia (pakai cache)"}
 
 ## Posisi Aktif
 ${marketData.activePosition
@@ -627,6 +1180,46 @@ Rules:
 - confidence ≥ 75 untuk buka posisi baru
 - confidence ≥ 65 untuk tutup posisi
 - Pertimbangkan funding rate saat ada posisi aktif
+- BTC Dominance >60% → hindari LONG altcoin seperti PEPE
+- PEPE trending CoinGecko → potensi hype pump, pertimbangkan LONG tapi waspadai dump setelah hype
+- Fear & Greed WORSENING 7 hari → lebih konservatif
+- Volume PEPE naik >50% + harga naik → konfirmasi LONG kuat
+- Volume PEPE naik >50% + harga turun → konfirmasi SHORT kuat
+- Altcoin season (BTC Dom <45%) → lebih agresif di PEPE
+
+## Multi-Timeframe Analysis
+${marketData.mtf ? `- 1m  : RSI=${marketData.mtf.tf1m.rsi.toFixed(1)} | EMA9${marketData.mtf.tf1m.ema9 > marketData.mtf.tf1m.ema21 ? ">" : "<"}EMA21 | Tren=${marketData.mtf.tf1m.trend}
+- 5m  : RSI=${marketData.mtf.tf5m.rsi.toFixed(1)} | EMA9${marketData.mtf.tf5m.ema9 > marketData.mtf.tf5m.ema21 ? ">" : "<"}EMA21 | Tren=${marketData.mtf.tf5m.trend}
+- 15m : RSI=${marketData.mtf.tf15m.rsi.toFixed(1)} | EMA9${marketData.mtf.tf15m.ema9 > marketData.mtf.tf15m.ema21 ? ">" : "<"}EMA21 | Tren=${marketData.mtf.tf15m.trend}
+- Consensus: ${marketData.consensus}` : "- Data MTF tidak tersedia"}
+
+## Bollinger Bands & Squeeze
+${marketData.bb ? `- Upper/Middle/Lower: ${marketData.bb.upper.toFixed(8)} / ${marketData.bb.middle.toFixed(8)} / ${marketData.bb.lower.toFixed(8)}
+- Bandwidth: ${marketData.bb.bandwidth.toFixed(2)}% | Squeeze: ${marketData.squeeze?.squeeze ? "AKTIF ⚠" : "tidak"}
+- %B: ${marketData.bb.pctB.toFixed(3)} (>1=di atas upper, <0=di bawah lower)
+- Breakout: ${marketData.squeeze?.breakoutDirection || "NONE"}` : "- Data BB tidak tersedia"}
+
+## Volume Profile & VWAP
+- VWAP: ${marketData.vwap.toFixed(8)} | Harga vs VWAP: ${marketData.vwapPct >= 0 ? "+" : ""}${marketData.vwapPct.toFixed(3)}%
+- Point of Control (POC): ${marketData.volProf?.poc.toFixed(8) || "N/A"}
+- HVN terdekat: ${marketData.volProf?.hvn.length ? marketData.volProf.hvn.slice(0, 2).map(v => v.toFixed(8)).join(", ") : "tidak ada"}
+
+## Candle Patterns (3 candle terakhir)
+- Bullish: ${marketData.candlePatterns?.bullishPatterns.join(", ") || "tidak ada"}
+- Bearish: ${marketData.candlePatterns?.bearishPatterns.join(", ") || "tidak ada"}
+- Dominant Bias: ${marketData.candlePatterns?.dominantBias} (Strength: ${marketData.candlePatterns?.strength})
+
+## Performa Bot (20 trade terakhir)
+- Win Rate   : ${marketData.winRate.toFixed(1)}%
+- Streak     : ${marketData.streak > 0 ? "+" : ""}${marketData.streak} (+ = win streak, - = loss streak)
+- Total PnL  : ${marketData.totalPnL >= 0 ? "+" : ""}${marketData.totalPnL.toFixed(4)} USDT
+
+Instruksi tambahan:
+- Pertimbangkan MTF consensus sebelum rekomendasikan LONG/SHORT
+- JANGAN rekomendasikan entry saat Bollinger Squeeze aktif
+- Gunakan VWAP sebagai bias directional (harga di atas VWAP = bias LONG)
+- Konfirmasi dengan candle pattern sebelum entry
+- Sesuaikan confidence dengan win rate bot (win rate rendah = lebih konservatif)
 `;
 
   const bodyStr = JSON.stringify({
@@ -693,15 +1286,41 @@ Rules:
 async function tradingLoop() {
   state.tickCount++;
 
+  // ── BUG #2 FIX: Hard stop — berhenti total jika total loss > threshold ──────
+  if (stats.totalPnL < 0) {
+    const lossPercent = Math.abs(stats.totalPnL) / CONFIG.POSITION_SIZE_USDT * 100;
+    if (lossPercent >= CONFIG.HARD_STOP_TOTAL) {
+      log("ERROR", `HARD STOP! Total loss ${lossPercent.toFixed(2)}% melebihi batas ${CONFIG.HARD_STOP_TOTAL}%`);
+      log("ERROR", `Bot dihentikan otomatis. Total PnL: ${stats.totalPnL.toFixed(4)} USDT`);
+      if (state.activePosition) {
+        log("ERROR", "Menutup posisi aktif karena hard stop...");
+        await closePosition("HARD_STOP", state.lastPrice || 0);
+      }
+      state.running = false;
+      process.exit(1);
+    }
+  }
+
+  // ── Fitur #7: Cek auto pause ──────────────────────────────
+  if (state.pausedUntil && Date.now() < state.pausedUntil) {
+    const sisaMin = Math.ceil((state.pausedUntil - Date.now()) / 60000);
+    if (state.tickCount % 6 === 0) log("WARN", `Bot PAUSE (${state.pauseReason}) — resume dalam ${sisaMin} menit`);
+    broadcastSSE({ type: "pause", reason: state.pauseReason, resumeIn: sisaMin });
+    return;
+  }
+  if (state.pausedUntil && Date.now() >= state.pausedUntil) {
+    state.pausedUntil = null; state.pauseReason = "";
+    log("INFO", "Bot RESUME dari pause otomatis");
+  }
+
   // ── 1. Ambil data market ──────────────────────────────────
-  let ticker, klines, fundingRate, orderBook, fearGreed;
+  let ticker, klines, fundingRate, orderBook;
   try {
-    [ticker, klines, fundingRate, orderBook, fearGreed] = await Promise.all([
+    [ticker, klines, fundingRate, orderBook] = await Promise.all([
       getTicker(),
       getKlines("1m", 50),
       getFundingRate(),
       getOrderBook(),
-      getFearGreedIndex(),
     ]);
   } catch (err) {
     log("ERROR", `Gagal ambil data market: ${err.message}`);
@@ -714,9 +1333,46 @@ async function tradingLoop() {
   state.lastBidAsk      = { bid: ticker.bidPrice, ask: ticker.askPrice };
 
   const indicators = calcIndicators(klines);
-  state.lastRSI  = indicators.rsi;
-  state.lastEMA9 = indicators.ema9;
+  state.lastRSI   = indicators.rsi;
+  state.lastEMA9  = indicators.ema9;
   state.lastEMA21 = indicators.ema21;
+
+  // ── Fitur #2: Bollinger Bands & Squeeze ───────────────────
+  const squeezeData = detectSqueeze(klines);
+  const bbData      = squeezeData.bb || calcBollingerBands(indicators.closes);
+
+  // ── Fitur #3: VWAP & Volume Profile ──────────────────────
+  const vwap    = calcVWAP(klines);
+  const vwapPct = vwap > 0 ? ((price - vwap) / vwap) * 100 : 0;
+  const volProf = calcVolumeProfile(klines);
+
+  // ── Fitur #4: Candle Pattern ──────────────────────────────
+  const candlePatterns = detectCandlePatterns(klines);
+
+  // ── Fitur #1: Multi-Timeframe (setiap 2 tick) ─────────────
+  let mtfData = null;
+  let consensus = "MIXED";
+  if (CONFIG.REQUIRE_MTF_CONSENSUS && state.tickCount % 2 === 0) {
+    try {
+      mtfData   = await fetchMultiTimeframe();
+      consensus = getTimeframeConsensus(mtfData.tf1m, mtfData.tf5m, mtfData.tf15m);
+    } catch { consensus = "MIXED"; }
+  }
+
+  // ── Fitur #7: Cek market crash setiap 6 tick ─────────────
+  if (CONFIG.AUTO_PAUSE_ENABLED && state.tickCount % 6 === 0) {
+    await checkMarketCrash(ticker, klines);
+    if (state.pausedUntil) return;
+  }
+
+  // ── Balance log setiap 6 tick ─────────────────────────────
+  if (state.tickCount % 6 === 0) {
+    await fetchAndUpdateBalance();
+    const chg = state.currentBalance - state.initialBalance;
+    const chgPct = state.initialBalance > 0 ? (chg / state.initialBalance) * 100 : 0;
+    const chgColor = chg >= 0 ? C.green : C.red;
+    log("INFO", `Saldo: ${C.bold}${state.currentBalance.toFixed(4)} USDT${C.reset} | Awal: ${state.initialBalance.toFixed(4)} | P&L: ${chgColor}${chg >= 0 ? "+" : ""}${chg.toFixed(4)} USDT (${chgPct >= 0 ? "+" : ""}${chgPct.toFixed(2)}%)${C.reset}`);
+  }
 
   // ── 2. Cek posisi aktif (live mode) ──────────────────────
   let livePosition = null;
@@ -741,7 +1397,8 @@ async function tradingLoop() {
   // ── 3. Tampilkan status di log ────────────────────────────
   if (state.tickCount % 3 === 0) { // setiap 30 detik
     log("INFO", `Harga: ${C.bold}${price.toFixed(8)}${C.reset} USDT | RSI: ${indicators.rsi.toFixed(1)} | EMA9: ${indicators.ema9.toFixed(8)} | EMA21: ${indicators.ema21.toFixed(8)}`);
-    log("INFO", `Funding: ${(fundingRate * 100).toFixed(4)}% | F&G: ${fearGreed.value} (${fearGreed.classification}) | Vol: ${indicators.volumeRatio.toFixed(2)}x`);
+    const _fg = externalDataCache?.fearGreed;
+    log("INFO", `Funding: ${(fundingRate * 100).toFixed(4)}% | F&G: ${_fg ? _fg.value + " (" + _fg.classification + ")" : "N/A"} | Vol: ${indicators.volumeRatio.toFixed(2)}x`);
     if (pos) {
       const pnlPct = pos.side === "LONG"
         ? ((price - pos.entryPrice) / pos.entryPrice) * 100 * pos.leverage
@@ -803,15 +1460,32 @@ async function tradingLoop() {
         log("WARN", `Funding rate tinggi (${(fundingRate * 100).toFixed(4)}%) — posisi ${pos.side} membayar. Pertimbangkan tutup.`);
       }
     }
+
+    // Fitur #5: Partial close trigger
+    if (CONFIG.PARTIAL_CLOSE_ENABLED && !pos.partialClosed) {
+      const profitPct = pos.side === "LONG"
+        ? ((price - pos.entryPrice) / pos.entryPrice) * 100 * pos.leverage
+        : ((pos.entryPrice - price) / pos.entryPrice) * 100 * pos.leverage;
+      if (profitPct >= CONFIG.PARTIAL_CLOSE_TRIGGER) {
+        await closePartialPosition("PARTIAL_PROFIT_LOCK", price);
+        pos.trailingHigh = price; pos.trailingLow = price; // longgarkan trailing
+      }
+    }
   }
 
   // ── 5. Claude AI Analysis ─────────────────────────────────
   const shouldAnalyze = state.tickCount % CONFIG.CLAUDE_ANALYSIS_INTERVAL === 0;
   if (!shouldAnalyze) {
     broadcastSSE({ type: "tick", price, rsi: indicators.rsi, ema9: indicators.ema9, ema21: indicators.ema21,
-                   fundingRate, fearGreed, position: pos });
+                   fundingRate, fearGreed: externalDataCache?.fearGreed, position: pos });
     return;
   }
+
+  // ── Fetch data eksternal setiap siklus analisis ───────────
+  const extData   = await fetchAllExternalData();
+  const fearGreed = extData.fearGreed;
+  const geckoData = extData.geckoData;
+  const cmcData   = extData.cmcData;
 
   log("AI", "Meminta analisis dari Claude AI...");
 
@@ -828,13 +1502,44 @@ async function tradingLoop() {
     orderBook,
     fundingRate,
     fearGreed,
+    // Data eksternal
+    geckoData,
+    cmcData,
+    // Fitur #1: MTF
+    mtf:        mtfData,
+    consensus,
+    // Fitur #2: BB
+    squeeze:    squeezeData,
+    bb:         bbData,
+    // Fitur #3: VWAP
+    vwap,
+    vwapPct,
+    volProf,
+    // Fitur #4: Candle
+    candlePatterns,
+    // Fitur #8: performa bot
+    winRate:    stats.winRate7d,
+    streak:     stats.currentStreak,
+    totalPnL:   stats.totalPnL,
     activePosition: pos ? {
       side:       pos.side,
       entryPrice: pos.entryPrice,
       leverage:   pos.leverage,
       liqPrice:   pos.liqPrice,
-      unrealPnL:  livePosition ? livePosition.unrealPnL : undefined,
-      pnlPct:     livePosition ? livePosition.pnlPct    : undefined,
+      // BUG #3 FIX: hitung PnL manual saat DRY RUN agar Claude punya data lengkap
+      unrealPnL: livePosition
+        ? livePosition.unrealPnL
+        : (() => {
+            const pct = pos.side === "LONG"
+              ? ((price - pos.entryPrice) / pos.entryPrice) * pos.leverage
+              : ((pos.entryPrice - price) / pos.entryPrice) * pos.leverage;
+            return compoundedBalance * pct;
+          })(),
+      pnlPct: livePosition
+        ? livePosition.pnlPct
+        : pos.side === "LONG"
+          ? ((price - pos.entryPrice) / pos.entryPrice) * 100 * pos.leverage
+          : ((pos.entryPrice - price) / pos.entryPrice) * 100 * pos.leverage,
     } : null,
   };
 
@@ -849,11 +1554,28 @@ async function tradingLoop() {
 
   // Tidak ada posisi aktif → coba buka
   if (!pos) {
+    // Fitur #1: tentukan minimum confidence berdasarkan MTF consensus
+    let requiredConf = CONFIG.OPEN_CONFIDENCE;
+    if (CONFIG.REQUIRE_MTF_CONSENSUS) {
+      if (consensus === "MIXED") {
+        log("INFO", `MTF consensus MIXED → skip entry`);
+        return;
+      }
+      if (consensus === "WEAK_LONG" || consensus === "WEAK_SHORT") requiredConf = 80;
+      // STRONG_LONG/SHORT pakai CONFIG.OPEN_CONFIDENCE (default 75)
+    }
+
+    // Fitur #2: jangan entry saat BB squeeze aktif
+    if (squeezeData.squeeze) {
+      log("INFO", `Bollinger Squeeze aktif (bandwidth ${squeezeData.bandwidthPct.toFixed(2)}%) → tunggu breakout`);
+      return;
+    }
+
     if ((analysis.action === "LONG" || analysis.action === "SHORT") &&
-        analysis.confidence >= CONFIG.OPEN_CONFIDENCE) {
+        analysis.confidence >= requiredConf) {
 
       const leverage = Math.min(Math.max(analysis.leverage || CONFIG.DEFAULT_LEVERAGE, CONFIG.DEFAULT_LEVERAGE), CONFIG.MAX_LEVERAGE);
-      log("TRADE", `Membuka posisi ${analysis.action} dengan leverage ${leverage}x...`);
+      log("TRADE", `Membuka posisi ${analysis.action} | leverage ${leverage}x | MTF: ${consensus} | Candle: ${candlePatterns.dominantBias}`);
       await openPosition(analysis.action, leverage, price);
 
       // Override stop/tp dari AI jika lebih konservatif
@@ -891,6 +1613,15 @@ async function tradingLoop() {
     fearGreed,
     analysis,
     position: state.activePosition,
+    mtf:      mtfData,
+    consensus,
+    bb:       bbData,
+    squeeze:  squeezeData,
+    vwap,
+    vwapPct,
+    volProf,
+    candlePatterns,
+    externalData: externalDataCache,
   });
 }
 
@@ -913,6 +1644,107 @@ function recordTrade(type, side, price, size, leverage, liqPrice, reason = "", p
   };
   tradeLog.push(trade);
   fs.writeFileSync(CONFIG.TRADES_FILE, JSON.stringify(tradeLog, null, 2));
+}
+
+// ─────────────────────────────────────────────────────────────
+// FITUR #9: BACKTESTING MODE
+// ─────────────────────────────────────────────────────────────
+
+async function runBacktest() {
+  log("INFO", `Memulai backtest ${CONFIG.BACKTEST_DAYS} hari...`);
+  const totalCandles = CONFIG.BACKTEST_DAYS * 24 * 60;
+  const pageSize     = 1000;
+  let   allCandles   = [];
+
+  // Ambil data historis dengan pagination
+  let endTime = Date.now();
+  for (let i = 0; i < Math.ceil(totalCandles / pageSize); i++) {
+    try {
+      const res = await bitgetRequest("GET", "/api/v2/mix/market/history-candles", {
+        symbol:      CONFIG.BACKTEST_SYMBOL,
+        productType: CONFIG.PRODUCT_TYPE,
+        granularity: CONFIG.BACKTEST_TIMEFRAME,
+        limit:       pageSize.toString(),
+        endTime:     endTime.toString(),
+      });
+      if (res.code !== "00000" || !res.data || res.data.length === 0) break;
+      const batch = res.data.map(c => ({
+        time: parseInt(c[0]), open: parseFloat(c[1]), high: parseFloat(c[2]),
+        low: parseFloat(c[3]), close: parseFloat(c[4]), volume: parseFloat(c[5]),
+      })).reverse();
+      allCandles = [...batch, ...allCandles];
+      endTime    = batch[0].time - 1;
+      if (res.data.length < pageSize) break;
+      await sleep(200);
+    } catch (err) { log("WARN", `Backtest fetch error: ${err.message}`); break; }
+  }
+
+  if (allCandles.length < 60) {
+    log("ERROR", `Data historis tidak cukup: hanya ${allCandles.length} candle`);
+    return;
+  }
+  log("INFO", `Total candle historis: ${allCandles.length}`);
+
+  // Simulasi trading
+  const bs = { trades: 0, wins: 0, pnl: 0, maxDrawdown: 0, bestTrade: 0, worstTrade: 0, peak: 0 };
+  let btPos = null;
+
+  for (let i = 50; i < allCandles.length; i++) {
+    const window  = allCandles.slice(i - 50, i);
+    const closes  = window.map(c => c.close);
+    const price   = closes[closes.length - 1];
+    const rsi     = calcRSI(closes);
+    const ema9    = calcEMA(closes, 9);
+    const ema21   = calcEMA(closes, 21);
+    const bb      = calcBollingerBands(closes);
+
+    // Cek close posisi aktif
+    if (btPos) {
+      const pnlPct = btPos.side === "LONG"
+        ? ((price - btPos.entry) / btPos.entry) * 100 * CONFIG.DEFAULT_LEVERAGE
+        : ((btPos.entry - price) / btPos.entry) * 100 * CONFIG.DEFAULT_LEVERAGE;
+      const hit = (btPos.side === "LONG" && (price >= btPos.tp || price <= btPos.sl))
+               || (btPos.side === "SHORT" && (price <= btPos.tp || price >= btPos.sl));
+      if (hit) {
+        const pnlUSDT = CONFIG.POSITION_SIZE_USDT * pnlPct / 100;
+        bs.trades++; bs.pnl += pnlUSDT;
+        if (pnlUSDT > 0) bs.wins++;
+        if (pnlUSDT > bs.bestTrade)  bs.bestTrade  = pnlUSDT;
+        if (pnlUSDT < bs.worstTrade) bs.worstTrade = pnlUSDT;
+        if (bs.pnl > bs.peak) bs.peak = bs.pnl;
+        const dd = bs.peak - bs.pnl;
+        if (dd > bs.maxDrawdown) bs.maxDrawdown = dd;
+        btPos = null;
+      }
+    }
+
+    // Cari sinyal entry (aturan sederhana tanpa Claude API)
+    if (!btPos && bb) {
+      if (rsi < 35 && ema9 > ema21 && price < bb.lower) {
+        btPos = { side: "LONG",  entry: price, sl: price * (1 - CONFIG.STOP_LOSS_PCT / 100), tp: price * (1 + CONFIG.TAKE_PROFIT_PCT / 100) };
+      } else if (rsi > 65 && ema9 < ema21 && price > bb.upper) {
+        btPos = { side: "SHORT", entry: price, sl: price * (1 + CONFIG.STOP_LOSS_PCT / 100), tp: price * (1 - CONFIG.TAKE_PROFIT_PCT / 100) };
+      }
+    }
+  }
+
+  const winRate      = bs.trades > 0 ? (bs.wins / bs.trades) * 100 : 0;
+  const totalLoss    = Math.abs(bs.pnl < 0 ? bs.pnl : 0) + (bs.wins < bs.trades ? Math.abs(bs.worstTrade) * (bs.trades - bs.wins) : 0.001);
+  const profitFactor = bs.pnl > 0 ? (bs.wins * bs.bestTrade) / Math.max(totalLoss, 0.001) : 0;
+
+  log("INFO", "=== HASIL BACKTEST ===");
+  log("INFO", `Period       : ${CONFIG.BACKTEST_DAYS} hari (${allCandles.length} candle)`);
+  log("INFO", `Total Trade  : ${bs.trades}`);
+  log("INFO", `Win Rate     : ${winRate.toFixed(1)}%`);
+  log("INFO", `Total PnL    : ${bs.pnl >= 0 ? "+" : ""}${bs.pnl.toFixed(4)} USDT`);
+  log("INFO", `Max Drawdown : ${bs.maxDrawdown.toFixed(4)} USDT`);
+  log("INFO", `Best Trade   : +${bs.bestTrade.toFixed(4)} USDT`);
+  log("INFO", `Worst Trade  : ${bs.worstTrade.toFixed(4)} USDT`);
+  log("INFO", `Profit Factor: ${profitFactor.toFixed(2)}`);
+  log("INFO", "====================");
+
+  fs.writeFileSync("backtest_results.json", JSON.stringify({ ...bs, winRate, profitFactor, date: new Date().toISOString() }, null, 2));
+  log("INFO", "Hasil disimpan ke backtest_results.json");
 }
 
 function loadPersistedData() {
@@ -992,9 +1824,61 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <div class="dot"></div>
     <h1>PEPE/USDT Futures Bot</h1>
     <span id="dry-badge" class="dry-badge" style="display:none">DRY RUN</span>
+    <span id="pause-badge" style="display:none;background:#f8514933;color:#f85149;padding:2px 8px;border-radius:4px;font-size:11px;border:1px solid #f8514966">⏸ PAUSED</span>
   </div>
 
   <div class="grid">
+    <!-- Card Market Intelligence -->
+    <div class="card" style="grid-column:1/-1">
+      <h3>Market Intelligence</h3>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px">
+        <div style="text-align:center">
+          <div style="font-size:10px;color:#8b949e;margin-bottom:4px">FEAR & GREED</div>
+          <div id="fg-value" style="font-size:26px;font-weight:bold">--</div>
+          <div id="fg-class" style="font-size:11px;color:#8b949e">--</div>
+          <div id="fg-trend" style="font-size:11px;margin-top:2px">--</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:10px;color:#8b949e;margin-bottom:4px">BTC DOMINANCE</div>
+          <div id="btc-dom" style="font-size:26px;font-weight:bold">--</div>
+          <div id="btc-dom-hint" style="font-size:10px;color:#8b949e;margin-top:2px">--</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:10px;color:#8b949e;margin-bottom:4px">PEPE TRENDING</div>
+          <div id="pepe-trending" style="font-size:26px;font-weight:bold">--</div>
+          <div id="pepe-trend-rank" style="font-size:11px;color:#8b949e;margin-top:2px">--</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:10px;color:#8b949e;margin-bottom:4px">MARKET CAP 24J</div>
+          <div id="mkt-change" style="font-size:26px;font-weight:bold">--</div>
+          <div style="font-size:10px;color:#8b949e;margin-top:2px">Global change</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px;padding-top:10px;border-top:1px solid #30363d">
+        <div class="row"><span class="label">F&G Avg 7 Hari</span><span id="fg-avg" class="val">--</span></div>
+        <div class="row"><span class="label">PEPE Vol Change</span><span id="pepe-vol-chg" class="val">--</span></div>
+        <div class="row"><span class="label">Reddit Posts 48j</span><span id="reddit-posts" class="val">--</span></div>
+        <div class="row"><span class="label">PEPE Rank</span><span id="pepe-rank" class="val">--</span></div>
+      </div>
+    </div>
+
+    <!-- Card Saldo Utama -->
+    <div class="card" style="grid-column:1/-1">
+      <h3>Saldo & Balance</h3>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px">
+        <div style="text-align:center"><div style="font-size:11px;color:#8b949e;margin-bottom:4px">SALDO SEKARANG</div><div id="bal-current" style="font-size:28px;font-weight:bold;color:#58a6ff">--</div><div style="font-size:10px;color:#8b949e">USDT</div></div>
+        <div style="text-align:center"><div style="font-size:11px;color:#8b949e;margin-bottom:4px">P&L TOTAL</div><div id="bal-pnl" style="font-size:28px;font-weight:bold">--</div><div id="bal-pnl-pct" style="font-size:12px;color:#8b949e">--</div></div>
+        <div style="text-align:center"><div style="font-size:11px;color:#8b949e;margin-bottom:4px">AVAILABLE</div><div id="bal-available" style="font-size:28px;font-weight:bold;color:#e6edf3">--</div><div style="font-size:10px;color:#8b949e">USDT</div></div>
+        <div style="text-align:center"><div style="font-size:11px;color:#8b949e;margin-bottom:4px">UNREALIZED PnL</div><div id="bal-unrealized" style="font-size:28px;font-weight:bold">--</div><div style="font-size:10px;color:#8b949e">USDT</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid #30363d">
+        <div class="row"><span class="label">Modal Awal</span><span id="bal-initial" class="val">--</span></div>
+        <div class="row"><span class="label">Tertinggi</span><span id="bal-peak" class="green">--</span></div>
+        <div class="row"><span class="label">Terendah</span><span id="bal-lowest" class="red">--</span></div>
+        <div class="row"><span class="label">Drawdown</span><span id="bal-drawdown" class="yellow">--</span></div>
+      </div>
+      <div style="margin-top:12px"><div style="font-size:10px;color:#8b949e;margin-bottom:4px">RIWAYAT SALDO</div><canvas id="balanceChart" height="50" style="width:100%"></canvas></div>
+    </div>
     <!-- Harga -->
     <div class="card">
       <h3>Harga Real-time</h3>
@@ -1030,6 +1914,24 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- Multi-Timeframe -->
+    <div class="card">
+      <h3>Multi-Timeframe</h3>
+      <div id="mtf-content"><div class="no-pos">Menunggu data MTF...</div></div>
+    </div>
+
+    <!-- Bollinger Bands -->
+    <div class="card">
+      <h3>Bollinger Bands</h3>
+      <div id="bb-content"><div class="no-pos">Menunggu data BB...</div></div>
+    </div>
+
+    <!-- Win Rate -->
+    <div class="card">
+      <h3>Win Rate (20 trade terakhir)</h3>
+      <div id="wr-content"><div class="no-pos">Belum ada trade</div></div>
+    </div>
+
     <!-- AI Analysis -->
     <div class="card ai-card">
       <h3>Analisis Claude AI Terakhir</h3>
@@ -1041,8 +1943,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <div id="log-box"></div>
 
   <script>
-    const isDryRun = true; // akan diupdate oleh server
-    document.getElementById('dry-badge').style.display = 'inline';
+    // BUG #5 FIX: DRY badge dikontrol dari server via SSE event 'init'
 
     const sse = new EventSource('/events');
     sse.onmessage = (e) => {
@@ -1052,10 +1953,101 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     function fmt(n, dec = 8) { return Number(n).toFixed(dec); }
     function fmtPct(n) { return (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%'; }
 
+    // ── Balance chart ──────────────────────────────────────────
+    let balHistory = [];
+    function renderBalanceChart() {
+      const canvas = document.getElementById('balanceChart');
+      if (!canvas || balHistory.length < 2) return;
+      const ctx = canvas.getContext('2d');
+      canvas.width = canvas.offsetWidth || 600;
+      const W = canvas.width, H = 50;
+      const prices = balHistory.map(b => b.balance);
+      const min = Math.min(...prices) * 0.9995, max = Math.max(...prices) * 1.0005;
+      const range = max - min || 1;
+      ctx.clearRect(0, 0, W, H);
+      const isUp = prices[prices.length-1] >= prices[0];
+      const grad = ctx.createLinearGradient(0,0,0,H);
+      grad.addColorStop(0, isUp ? 'rgba(63,185,80,0.3)' : 'rgba(248,81,73,0.3)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.beginPath();
+      prices.forEach((p,i) => { const x=(i/(prices.length-1))*W, y=H-((p-min)/range)*H; i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); });
+      ctx.lineTo(W,H); ctx.lineTo(0,H); ctx.closePath(); ctx.fillStyle=grad; ctx.fill();
+      ctx.beginPath();
+      prices.forEach((p,i) => { const x=(i/(prices.length-1))*W, y=H-((p-min)/range)*H; i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); });
+      ctx.strokeStyle = isUp ? '#3fb950' : '#f85149'; ctx.lineWidth=2; ctx.stroke();
+    }
+
+    function handleBalance(d) {
+      document.getElementById('bal-current').textContent = Number(d.currentBalance).toFixed(4);
+      document.getElementById('bal-initial').textContent = Number(d.initialBalance).toFixed(4) + ' USDT';
+      const pnlEl = document.getElementById('bal-pnl');
+      pnlEl.textContent = (d.changeUSDT >= 0 ? '+' : '') + Number(d.changeUSDT).toFixed(4);
+      pnlEl.className = d.changeUSDT >= 0 ? 'green' : 'red';
+      document.getElementById('bal-pnl-pct').textContent = (d.changePct >= 0 ? '+' : '') + Number(d.changePct).toFixed(2) + '%';
+      document.getElementById('bal-available').textContent = Number(d.available).toFixed(4);
+      const unreal = document.getElementById('bal-unrealized');
+      unreal.textContent = (d.unrealizedPnL >= 0 ? '+' : '') + Number(d.unrealizedPnL).toFixed(4);
+      unreal.className = d.unrealizedPnL >= 0 ? 'green' : 'red';
+      document.getElementById('bal-peak').textContent    = Number(d.peakBalance).toFixed(4) + ' USDT';
+      document.getElementById('bal-lowest').textContent  = Number(d.lowestBalance).toFixed(4) + ' USDT';
+      const ddEl = document.getElementById('bal-drawdown');
+      ddEl.textContent = Number(d.drawdown).toFixed(2) + '%';
+      ddEl.className = d.drawdown > 10 ? 'red' : d.drawdown > 5 ? 'yellow' : 'green';
+      if (d.history) { balHistory = d.history; renderBalanceChart(); }
+    }
+
+    function renderMTF(d) {
+      if (!d.mtf) return;
+      const t = d.mtf; const con = d.consensus || 'MIXED';
+      const conColor = con.includes('STRONG') ? (con.includes('LONG') ? 'green' : 'red') : con === 'MIXED' ? 'yellow' : (con.includes('LONG') ? 'green' : 'red');
+      document.getElementById('mtf-content').innerHTML = \`
+        <div class="row"><span class="label">1m</span><span class="val \${t.tf1m.trend==='BULLISH'?'green':'red'}">\${t.tf1m.trend} | RSI \${t.tf1m.rsi.toFixed(1)}</span></div>
+        <div class="row"><span class="label">5m</span><span class="val \${t.tf5m.trend==='BULLISH'?'green':'red'}">\${t.tf5m.trend} | RSI \${t.tf5m.rsi.toFixed(1)}</span></div>
+        <div class="row"><span class="label">15m</span><span class="val \${t.tf15m.trend==='BULLISH'?'green':'red'}">\${t.tf15m.trend} | RSI \${t.tf15m.rsi.toFixed(1)}</span></div>
+        <div class="row" style="margin-top:6px"><span class="label">Consensus</span><span class="\${conColor}" style="font-weight:bold">\${con}</span></div>
+      \`;
+    }
+
+    function renderBB(d) {
+      if (!d.bb) return;
+      const sq = d.squeeze;
+      document.getElementById('bb-content').innerHTML = \`
+        <div class="row"><span class="label">Upper</span><span class="val red">\${fmt(d.bb.upper)}</span></div>
+        <div class="row"><span class="label">Middle</span><span class="val">\${fmt(d.bb.middle)}</span></div>
+        <div class="row"><span class="label">Lower</span><span class="val green">\${fmt(d.bb.lower)}</span></div>
+        <div class="row"><span class="label">%B</span><span class="val">\${Number(d.bb.pctB).toFixed(3)}</span></div>
+        <div class="row"><span class="label">Squeeze</span><span class="\${sq&&sq.squeeze?'red':'green'}">\${sq&&sq.squeeze?'AKTIF ⚠':'Tidak'}</span></div>
+        <div class="row"><span class="label">Breakout</span><span class="val">\${sq?sq.breakoutDirection:'NONE'}</span></div>
+      \`;
+    }
+
+    function renderWinRate(s) {
+      if (!s || s.totalTrades === 0) return;
+      const wr = s.winRate7d || 0;
+      const fill = wr >= 60 ? '#3fb950' : wr >= 45 ? '#d29922' : '#f85149';
+      const str = s.currentStreak || 0;
+      document.getElementById('wr-content').innerHTML = \`
+        <div class="row"><span class="label">Win Rate (recent)</span><span class="val" style="color:\${fill}">\${wr.toFixed(1)}%</span></div>
+        <div style="background:#21262d;height:6px;border-radius:3px;margin:6px 0;overflow:hidden"><div style="width:\${Math.min(wr,100)}%;height:100%;background:\${fill};border-radius:3px"></div></div>
+        <div class="row"><span class="label">Streak</span><span class="\${str>0?'green':str<0?'red':'val'}">\${str>0?'+':''}\${str}</span></div>
+        <div class="row"><span class="label">Avg Profit</span><span class="green">+\${(s.avgProfitPct||0).toFixed(2)}%</span></div>
+        <div class="row"><span class="label">Avg Loss</span><span class="red">\${(s.avgLossPct||0).toFixed(2)}%</span></div>
+      \`;
+    }
+
     function handle(d) {
-      if (d.price) {
-        document.getElementById('price').textContent = fmt(d.price);
+      // BUG #5 FIX: dry badge dari server
+      if (d.type === 'init') {
+        document.getElementById('dry-badge').style.display = d.dryRun ? 'inline' : 'none';
+        if (d.stats) renderWinRate(d.stats);
       }
+      if (d.type === 'pause') {
+        const pb = document.getElementById('pause-badge');
+        pb.style.display = 'inline';
+        pb.title = d.reason + ' — resume dalam ' + d.resumeIn + ' menit';
+      }
+      if (d.type === 'balance') { handleBalance(d); return; }
+      if (d.price) document.getElementById('price').textContent = fmt(d.price);
       if (d.rsi !== undefined) {
         const rsiEl = document.getElementById('rsi');
         rsiEl.textContent = Number(d.rsi).toFixed(2);
@@ -1069,21 +2061,55 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         el.textContent = fr;
         el.className = Math.abs(d.fundingRate) > 0.001 ? 'val red' : 'val';
       }
-      if (d.fearGreed) {
-        document.getElementById('feargreed').textContent = d.fearGreed.value + ' (' + d.fearGreed.classification + ')';
-      }
-
-      if (d.position) {
-        renderPosition(d.position, d.price);
-      } else if (d.type === 'analysis' && !d.position) {
-        document.getElementById('position-content').innerHTML = '<div class="no-pos">Tidak ada posisi aktif</div>';
-      }
-
+      if (d.fearGreed) document.getElementById('feargreed').textContent = d.fearGreed.value + ' (' + d.fearGreed.classification + ')';
+      if (d.position) renderPosition(d.position, d.price);
+      else if (d.type === 'analysis' && !d.position) document.getElementById('position-content').innerHTML = '<div class="no-pos">Tidak ada posisi aktif</div>';
       if (d.analysis) renderAI(d.analysis);
-
+      if (d.type === 'analysis') { renderMTF(d); renderBB(d); handleIntelligence(d); }
       if (d.type === 'log') addLog(d);
+      if (d.type === 'stats') { renderStats(d); renderWinRate(d); }
+      // hide pause badge jika tidak pause
+      if (d.type !== 'pause') document.getElementById('pause-badge').style.display = 'none';
+    }
 
-      if (d.type === 'stats') renderStats(d);
+    function handleIntelligence(d) {
+      if (!d.externalData) return;
+      const { geckoData, cmcData, fearGreed } = d.externalData;
+
+      if (fearGreed) {
+        const fgEl = document.getElementById('fg-value');
+        fgEl.textContent = fearGreed.value;
+        fgEl.className   = fearGreed.value <= 25 ? 'green' : fearGreed.value >= 75 ? 'red' : 'yellow';
+        document.getElementById('fg-class').textContent = fearGreed.classification;
+        const tEl = document.getElementById('fg-trend');
+        tEl.textContent = '7d: ' + fearGreed.trend;
+        tEl.style.color = fearGreed.trend === 'IMPROVING' ? '#3fb950' : fearGreed.trend === 'WORSENING' ? '#f85149' : '#8b949e';
+        document.getElementById('fg-avg').textContent = fearGreed.avg7d + ' (avg)';
+      }
+
+      if (cmcData) {
+        const domEl = document.getElementById('btc-dom');
+        domEl.textContent = cmcData.btcDominance.toFixed(1) + '%';
+        domEl.className   = cmcData.btcDominance > 60 ? 'red' : cmcData.btcDominance < 45 ? 'green' : 'yellow';
+        document.getElementById('btc-dom-hint').textContent =
+          cmcData.btcDominance > 60 ? 'BTC season' : cmcData.btcDominance < 45 ? 'Altcoin season' : 'Netral';
+        const mEl = document.getElementById('mkt-change');
+        mEl.textContent = (cmcData.marketCapChange24h >= 0 ? '+' : '') + cmcData.marketCapChange24h.toFixed(2) + '%';
+        mEl.className   = cmcData.marketCapChange24h >= 0 ? 'green' : 'red';
+        const vEl = document.getElementById('pepe-vol-chg');
+        vEl.textContent = (cmcData.pepeVolumeChange24h >= 0 ? '+' : '') + cmcData.pepeVolumeChange24h.toFixed(1) + '%';
+        vEl.className   = Math.abs(cmcData.pepeVolumeChange24h) > 50 ? 'yellow' : 'val';
+      }
+
+      if (geckoData) {
+        const tEl = document.getElementById('pepe-trending');
+        tEl.textContent = geckoData.isPepeTrending ? 'YA' : '— Tidak';
+        tEl.className   = geckoData.isPepeTrending ? 'green' : 'val';
+        document.getElementById('pepe-trend-rank').textContent =
+          geckoData.isPepeTrending ? 'Rank #' + geckoData.trendingRank + ' Global' : 'Tidak trending';
+        document.getElementById('reddit-posts').textContent = geckoData.redditPosts48h.toFixed(1) + ' posts';
+        document.getElementById('pepe-rank').textContent   = '#' + geckoData.marketCapRank;
+      }
     }
 
     function renderPosition(pos, price) {
@@ -1160,7 +2186,7 @@ function startDashboard() {
       res.write("data: {\"type\":\"connected\"}\n\n");
       state.dashboardClients.push(res);
 
-      // Kirim state awal
+      // Kirim state awal — BUG #5 FIX: sertakan dryRun agar dashboard badge akurat
       res.write(`data: ${JSON.stringify({
         type:       "init",
         price:      state.lastPrice,
@@ -1170,6 +2196,7 @@ function startDashboard() {
         fundingRate: state.lastFundingRate,
         position:   state.activePosition,
         stats,
+        dryRun:     CONFIG.DRY_RUN,
       })}\n\n`);
 
       req.on("close", () => {
@@ -1188,9 +2215,9 @@ function startDashboard() {
     log("INFO", `Dashboard aktif di http://localhost:${CONFIG.DASHBOARD_PORT}`);
   });
 
-  // Kirim stats setiap 30 detik
+  // Kirim stats + win rate setiap 30 detik
   setInterval(() => {
-    broadcastSSE({ type: "stats", ...stats });
+    broadcastSSE({ type: "stats", ...stats, compoundBalance: compoundedBalance });
   }, 30000);
 }
 
@@ -1245,8 +2272,30 @@ async function main() {
     process.exit(1);
   }
 
+  // Fitur #9: jalankan backtest lalu keluar jika BACKTEST_MODE = true
+  if (CONFIG.BACKTEST_MODE) {
+    await runBacktest();
+    process.exit(0);
+  }
+
   // Load data tersimpan
   loadPersistedData();
+
+  // BUG #4 FIX: ambil balance awal
+  if (!CONFIG.DRY_RUN && CONFIG.API_KEY) {
+    try {
+      const accountInfo = await getAccountInfo();
+      state.initialBalance = accountInfo.equity;
+      state.currentBalance = accountInfo.equity;
+      log("INFO", `Balance akun: ${accountInfo.available.toFixed(4)} USDT available | Equity: ${accountInfo.equity.toFixed(4)} USDT`);
+    } catch (err) {
+      log("WARN", `Gagal ambil balance awal: ${err.message}`);
+    }
+  } else {
+    state.initialBalance = CONFIG.POSITION_SIZE_USDT * 10;
+    state.currentBalance = state.initialBalance;
+    log("INFO", `[DRY RUN] Balance simulasi: ${state.initialBalance} USDT`);
+  }
 
   // Setup margin mode (live only)
   if (!CONFIG.DRY_RUN && CONFIG.API_KEY) {
@@ -1260,6 +2309,7 @@ async function main() {
 
   // Mulai dashboard
   startDashboard();
+  await fetchAndUpdateBalance();
 
   log("INFO", "Bot trading dimulai! Tekan Ctrl+C untuk berhenti.");
   console.log();

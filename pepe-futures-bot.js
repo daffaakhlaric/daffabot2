@@ -1408,6 +1408,149 @@ function calcATR(klines, period = 14) {
   return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
 }
 
+// ── Reversal Detection Functions ──────────────────────────────
+
+/**
+ * B. Liquidity Sweep — wick menembus swing level lalu reject balik.
+ * Berbeda dari detectLiquidityGrab (hanya cek candle terakhir),
+ * fungsi ini scan 5 candle terakhir untuk cari event sweep.
+ */
+function detectLiquiditySweep(klines, swings, side) {
+  if (klines.length < 3) return { detected: false };
+  const recent = klines.slice(-5);
+
+  if (side === "BULLISH") {
+    const level = swings.lastLow?.price;
+    if (!level) return { detected: false };
+    for (let i = recent.length - 1; i >= 0; i--) {
+      const c = recent[i];
+      // Wick tembus di bawah swing low, tapi close kembali di atas
+      if (c.low < level && c.close > level) {
+        const wickSize = level - c.low;
+        return {
+          detected:   true,
+          level,
+          wickSize:   parseFloat(wickSize.toFixed(8)),
+          rejection:  parseFloat((c.close - c.low).toFixed(8)),
+          strong:     c.close > c.open, // candle bullish setelah sweep = kuat
+        };
+      }
+    }
+  } else {
+    const level = swings.lastHigh?.price;
+    if (!level) return { detected: false };
+    for (let i = recent.length - 1; i >= 0; i--) {
+      const c = recent[i];
+      // Wick tembus di atas swing high, tapi close kembali di bawah
+      if (c.high > level && c.close < level) {
+        const wickSize = c.high - level;
+        return {
+          detected:   true,
+          level,
+          wickSize:   parseFloat(wickSize.toFixed(8)),
+          rejection:  parseFloat((c.high - c.close).toFixed(8)),
+          strong:     c.close < c.open, // candle bearish setelah sweep = kuat
+        };
+      }
+    }
+  }
+  return { detected: false, level: side === "BULLISH" ? swings.lastLow?.price : swings.lastHigh?.price };
+}
+
+/**
+ * C. Break of Structure (BOS) — close melampaui swing high/low sebelumnya.
+ * BOS bullish: close > previous swing high → struktur naik.
+ * BOS bearish: close < previous swing low  → struktur turun.
+ */
+function detectBreakOfStructure(klines, swings, side) {
+  if (klines.length < 2) return { detected: false };
+  const last = klines[klines.length - 1];
+  const prev = klines[klines.length - 2];
+
+  if (side === "BULLISH") {
+    const target = swings.prevHigh?.price || swings.lastHigh?.price;
+    if (!target) return { detected: false, type: "BOS_BULLISH" };
+    const broken   = last.close > target;
+    const momentum = broken && last.close > last.open && last.close > prev.close;
+    return {
+      detected:    broken,
+      type:        "BOS_BULLISH",
+      breakLevel:  target,
+      momentum,
+      breakAmount: broken ? parseFloat(((last.close - target) / target * 100).toFixed(4)) : 0,
+    };
+  } else {
+    const target = swings.prevLow?.price || swings.lastLow?.price;
+    if (!target) return { detected: false, type: "BOS_BEARISH" };
+    const broken   = last.close < target;
+    const momentum = broken && last.close < last.open && last.close < prev.close;
+    return {
+      detected:    broken,
+      type:        "BOS_BEARISH",
+      breakLevel:  target,
+      momentum,
+      breakAmount: broken ? parseFloat(((target - last.close) / target * 100).toFixed(4)) : 0,
+    };
+  }
+}
+
+/**
+ * D. Reversal Score 0–100.
+ * Skor komposit dari sinyal reversal kelas institusional.
+ * Grade: A (≥80) · B (≥60) · C (≥40) · D (<40)
+ * Claude hanya dipanggil saat score ≥ 60 (grade B/A).
+ */
+function calculateReversalScore({ sweep, bos, rsi, bbData, price, volumeRatio, candlePatterns, htfStrength }) {
+  let score = 0;
+  const reasons = [];
+
+  // Liquidity sweep: sinyal terkuat, +40–45
+  if (sweep?.detected) {
+    const pts = sweep.strong ? 45 : 35;
+    score += pts;
+    reasons.push(`Liq sweep ${sweep.strong ? "kuat" : "lemah"} +${pts}`);
+  }
+
+  // BOS: konfirmasi perubahan struktur, +25–35
+  if (bos?.detected) {
+    const pts = bos.momentum ? 35 : 25;
+    score += pts;
+    reasons.push(`${bos.type} +${pts}`);
+  }
+
+  // RSI extreme: mean reversion signal
+  if (rsi < 25 || rsi > 75)      { score += 20; reasons.push(`RSI ekstrem (${rsi.toFixed(1)}) +20`); }
+  else if (rsi < 30 || rsi > 70) { score += 12; reasons.push(`RSI OB/OS (${rsi.toFixed(1)}) +12`); }
+
+  // Bollinger band touch / breach
+  if (bbData) {
+    if (price <= bbData.lower || price >= bbData.upper) {
+      score += 12; reasons.push(`Harga di luar BB +12`);
+    } else if (bbData.pctB < 0.1 || bbData.pctB > 0.9) {
+      score += 7;  reasons.push(`%B ekstrem (${bbData.pctB.toFixed(2)}) +7`);
+    }
+  }
+
+  // Volume confirmation
+  if (volumeRatio > 1.5)      { score += 8; reasons.push(`Volume spike ${volumeRatio.toFixed(1)}x +8`); }
+  else if (volumeRatio > 0.8) { score += 3; }
+
+  // HTF strength bonus
+  if (htfStrength === "STRONG") { score += 5; reasons.push("HTF kuat +5"); }
+
+  // Candle pattern
+  const nPat = (candlePatterns?.bullishPatterns?.length || 0) + (candlePatterns?.bearishPatterns?.length || 0);
+  if (nPat > 0) { const pts = Math.min(nPat * 5, 10); score += pts; reasons.push(`Candle pattern +${pts}`); }
+
+  const final = Math.min(100, score);
+  return {
+    score:   final,
+    reasons,
+    grade:   final >= 80 ? "A" : final >= 60 ? "B" : final >= 40 ? "C" : "D",
+    callAI:  final >= 60,
+  };
+}
+
 /** 1J — SMC State */
 const smcState = {
   htfTrend:      null,
@@ -1442,6 +1585,11 @@ SMC SETUP:
 - FVG Zone: ${smcSetup.fvgLower?.toFixed(8) || "N/A"} - ${smcSetup.fvgUpper?.toFixed(8) || "N/A"}
 - Harga sekarang: ${p.price.toFixed(8)} (dalam FVG ✅)
 - Candle konfirmasi: ${smcSetup.candleOK ? "✅" : "❌"}
+- Mode: ${smcSetup.smcMode}
+- Reversal Score: ${smcSetup.revScore}/100 (Grade ${smcSetup.revGrade})
+- Liquidity Sweep: ${smcSetup.sweep}
+- Break of Structure: ${smcSetup.bos}
+- Sinyal reversal: ${smcSetup.revReasons || "tidak ada"}
 
 KONTEKS MARKET:
 - F&G: ${extData?.fearGreed?.value || "N/A"}(${extData?.fearGreed?.classification || "N/A"}) trend:${extData?.fearGreed?.trend || "N/A"}
@@ -1832,23 +1980,38 @@ async function tradingLoop() {
     const inFVG    = isPriceInFVG(price, fvgData, tradeSide);
     const candleOK = confirmEntryCandle(klines5m, tradeSide);
 
-    // Log checklist SMC setiap tick
+    // ── E2. Reversal Detection (tambahan institusional) ────
+    const sweep   = detectLiquiditySweep(klines5m, swings, tradeSide);
+    const bos     = detectBreakOfStructure(klines5m, swings, tradeSide);
+    const revScore = calculateReversalScore({
+      sweep,
+      bos,
+      rsi:           indicators.rsi,
+      bbData,
+      price,
+      volumeRatio:   indicators.volumeRatio,
+      candlePatterns,
+      htfStrength:   htf?.strength,
+    });
+
+    // Log checklist SMC + reversal score setiap tick
     const checks = [
       inducmt.valid      ? "✅Ind"    : "❌Ind",
       liqGrab.detected   ? "✅Liq"    : "❌Liq",
       choch.detected     ? "✅CHoCH"  : "❌CHoCH",
       inFVG.inFVG        ? "✅FVG"    : "❌FVG",
       candleOK.confirmed ? "✅Candle" : "❌Candle",
+      sweep.detected     ? "✅Sweep"  : "❌Sweep",
+      bos.detected       ? "✅BOS"    : "❌BOS",
     ].join(" ");
-    log("INFO", `[${tradeSide}] ${checks} | ATR:${atrPct.toFixed(3)}%`);
+    log("INFO", `[${tradeSide}] ${checks} | ATR:${atrPct.toFixed(3)}% | RevScore:${revScore.score}(${revScore.grade})`);
 
-    // ── F. Cek apakah SEMUA kondisi SMC terpenuhi ──────────
-    const smcReady =
-      inducmt.valid      &&
-      liqGrab.detected   &&
-      choch.detected     &&
-      inFVG.inFVG        &&
-      candleOK.confirmed;
+    // ── F. Cek apakah kondisi cukup untuk entry ────────────
+    // Mode A — SMC Lengkap: semua 5 kondisi SMC terpenuhi
+    // Mode B — Reversal Grade A/B: score ≥ 60 + minimal liqGrab/BOS
+    const smcFull   = inducmt.valid && liqGrab.detected && choch.detected && inFVG.inFVG && candleOK.confirmed;
+    const revReady  = revScore.callAI && (sweep.detected || bos.detected) && (liqGrab.detected || choch.detected);
+    const smcReady  = smcFull || revReady;
 
     // Bangun smcData untuk broadcast (dipakai di kedua cabang)
     const smcData = {
@@ -1863,12 +2026,17 @@ async function tradingLoop() {
       fvgData,
       inFVG,
       candleOK,
+      sweep,
+      bos,
+      revScore,
+      smcFull,
       smcReady,
     };
 
     if (smcReady) {
+      const modeLabel = smcFull ? "FULL SMC" : `REVERSAL Grade-${revScore.grade} (${revScore.score}/100)`;
       log("AI",
-        `🎯 SMC SETUP LENGKAP! [${tradeSide}] ` +
+        `🎯 SETUP LENGKAP [${modeLabel}] [${tradeSide}] ` +
         `Session:${session.session} HTF:${htf.trend} ` +
         `→ Tanya Claude untuk konfirmasi...`
       );
@@ -1882,17 +2050,24 @@ async function tradingLoop() {
       const fvg   = tradeSide === "BULLISH" ? fvgData.lastBullFVG : fvgData.lastBearFVG;
 
       const smcSetup = {
-        side:        tradeSide,
-        htfTrend:    htf.trend,
-        htfStrength: htf.strength,
-        session:     session.session,
-        atrPct:      atrPct.toFixed(3),
-        inducement:  inducmt,
-        grabPrice:   liqGrab.grabPrice,
-        chochLevel:  choch.breakLevel,
-        fvgLower:    fvg?.lower,
-        fvgUpper:    fvg?.upper,
-        candleOK:    candleOK.confirmed,
+        side:         tradeSide,
+        htfTrend:     htf.trend,
+        htfStrength:  htf.strength,
+        session:      session.session,
+        atrPct:       atrPct.toFixed(3),
+        inducement:   inducmt,
+        grabPrice:    liqGrab.grabPrice,
+        chochLevel:   choch.breakLevel,
+        fvgLower:     fvg?.lower,
+        fvgUpper:     fvg?.upper,
+        candleOK:     candleOK.confirmed,
+        // Reversal enrichment
+        sweep:        sweep.detected ? `wick=${sweep.wickSize} strong=${sweep.strong}` : "tidak terdeteksi",
+        bos:          bos.detected   ? `${bos.type} break=${bos.breakAmount}% momentum=${bos.momentum}` : "tidak terdeteksi",
+        revScore:     revScore.score,
+        revGrade:     revScore.grade,
+        revReasons:   revScore.reasons.join(", "),
+        smcMode:      smcFull ? "FULL_SMC" : "REVERSAL_ONLY",
       };
 
       // Fetch data eksternal sebelum tanya Claude
@@ -2487,7 +2662,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           <div id="smc-atr" style="font-size:16px;font-weight:bold">--</div>
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px;margin-bottom:10px">
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:10px">
         <div style="text-align:center;padding:6px 4px;background:#21262d;border-radius:4px">
           <div style="font-size:8px;color:#8b949e">INDUCEMENT</div>
           <div id="smc-ind" style="font-size:18px;margin-top:2px">--</div>
@@ -2508,6 +2683,22 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           <div style="font-size:8px;color:#8b949e">CANDLE</div>
           <div id="smc-candle" style="font-size:18px;margin-top:2px">--</div>
         </div>
+        <div style="text-align:center;padding:6px 4px;background:#21262d;border-radius:4px;border:1px solid #30363d66">
+          <div style="font-size:8px;color:#58a6ff">LIQ SWEEP</div>
+          <div id="smc-sweep" style="font-size:18px;margin-top:2px">--</div>
+        </div>
+        <div style="text-align:center;padding:6px 4px;background:#21262d;border-radius:4px;border:1px solid #30363d66">
+          <div style="font-size:8px;color:#58a6ff">BOS</div>
+          <div id="smc-bos" style="font-size:18px;margin-top:2px">--</div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;padding:6px 10px;background:#21262d;border-radius:6px">
+        <div style="font-size:10px;color:#8b949e;flex-shrink:0">REVERSAL SCORE</div>
+        <div id="smc-rev-score" style="font-size:20px;font-weight:bold;min-width:60px">--</div>
+        <div style="flex:1;background:#161b22;height:6px;border-radius:3px;overflow:hidden">
+          <div id="smc-rev-bar" style="height:100%;border-radius:3px;background:#3fb950;transition:width 0.5s;width:0%"></div>
+        </div>
+        <div style="font-size:9px;color:#8b949e">≥60 = Claude dipanggil</div>
       </div>
       <div id="claude-filter-result" style="display:none;padding:8px;border-radius:6px;font-size:11px;border:1px solid #30363d">
         <div style="font-size:10px;color:#8b949e;margin-bottom:4px">CLAUDE FILTER RESULT</div>
@@ -2933,6 +3124,25 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       setCheck('smc-choch',  s.choch?.detected);
       setCheck('smc-fvg',    s.inFVG?.inFVG);
       setCheck('smc-candle', s.candleOK?.confirmed);
+      setCheck('smc-sweep',  s.sweep?.detected);
+      setCheck('smc-bos',    s.bos?.detected);
+
+      // Reversal Score
+      const rsEl = document.getElementById('smc-rev-score');
+      if (rsEl && s.revScore) {
+        rsEl.textContent  = s.revScore.score + ' ' + (s.revScore.grade || '');
+        rsEl.style.color  = s.revScore.grade === 'A' ? '#3fb950'
+          : s.revScore.grade === 'B' ? '#d29922'
+          : s.revScore.grade === 'C' ? '#f0883e' : '#f85149';
+        rsEl.title = s.revScore.reasons?.join(' | ') || '';
+        const barEl = document.getElementById('smc-rev-bar');
+        if (barEl) {
+          barEl.style.width      = Math.min(100, s.revScore.score) + '%';
+          barEl.style.background = s.revScore.grade === 'A' ? '#3fb950'
+            : s.revScore.grade === 'B' ? '#d29922'
+            : s.revScore.grade === 'C' ? '#f0883e' : '#f85149';
+        }
+      }
 
       // Status bar
       const bar = document.getElementById('smc-status-bar');

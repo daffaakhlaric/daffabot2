@@ -46,7 +46,7 @@ const CONFIG = {
   PRODUCT_TYPE:     "USDT-FUTURES",
   MARGIN_COIN:      "USDT",
   MARGIN_MODE:      "isolated",
-  DEFAULT_LEVERAGE: 5,
+  DEFAULT_LEVERAGE: 7,
   MAX_LEVERAGE:     10,
 
   // Ukuran posisi
@@ -54,8 +54,8 @@ const CONFIG = {
   MAX_POSITIONS:       1,
 
   // Risk management
-  STOP_LOSS_PCT:    1.0,    // scalping: stop loss ketat 1%
-  TAKE_PROFIT_PCT:  1.5,    // scalping: target cepat 1.5%
+  STOP_LOSS_PCT:    1.0,    // SMC: fallback SL (kalkulasi SMC yg tentukan)
+  TAKE_PROFIT_PCT:  2.0,    // SMC: RR 1:2
   TRAILING_STOP:    true,   // aktifkan trailing stop
   TRAILING_OFFSET:  0.3,    // scalping: trailing lebih ketat
   MAX_LOSS_PCT:     5.0,    // force close jika unrealized loss > 5%
@@ -69,15 +69,15 @@ const CONFIG = {
   CLAUDE_ANALYSIS_INTERVAL: 6,    // scalping: setiap 6 tick = ~1 menit (lebih responsif)
 
   // Batas confidence AI
-  OPEN_CONFIDENCE:  65,   // scalping: threshold lebih rendah
-  CLOSE_CONFIDENCE: 55,   // scalping: threshold lebih rendah
+  OPEN_CONFIDENCE:  70,   // SMC: threshold Claude approve
+  CLOSE_CONFIDENCE: 55,   // tidak dipakai SMC (SL/TP auto dari swing)
 
   // Hemat kredit AI: skip panggilan kalau tidak ada sinyal kuat
-  CLAUDE_SMART_FILTER: false,   // scalping: matikan filter supaya lebih responsif
+  CLAUDE_SMART_FILTER: false,   // SMC: Claude hanya dipanggil saat setup lengkap
   CLAUDE_RSI_DEAD_ZONE: 5,     // skip kalau RSI dalam range 50±5 (45-55) = netral
 
-  // Dry run (WAJIB true saat testing!)
-  DRY_RUN: false,
+  // Dry run (WAJIB true saat testing SMC minimal 5 hari!)
+  DRY_RUN: true,
 
   // Dashboard
   DASHBOARD_PORT: process.env.MONITOR_PORT ? parseInt(process.env.MONITOR_PORT) : 4000,
@@ -1221,6 +1221,295 @@ Aturan SCALPING AGRESIF:
 }
 
 // ─────────────────────────────────────────────────────────────
+// SMC — SMART MONEY CONCEPTS
+// ─────────────────────────────────────────────────────────────
+
+/** 1A — HTF Trend Filter (15m EMA50 vs EMA200) */
+async function getHTFTrend() {
+  try {
+    const klines15m = await getKlines("15m", 210);
+    if (klines15m.length < 200) return { trend: "NEUTRAL", strength: "WEAK" };
+    const closes = klines15m.map(k => k.close);
+    function emaLocal(data, period) {
+      const k = 2 / (period + 1);
+      let ema = data.slice(0, period).reduce((a, b) => a + b, 0) / period;
+      for (let i = period; i < data.length; i++) ema = data[i] * k + ema * (1 - k);
+      return ema;
+    }
+    const ema50  = emaLocal(closes, 50);
+    const ema200 = emaLocal(closes, 200);
+    const sep    = Math.abs((ema50 - ema200) / ema200 * 100);
+    return {
+      trend:    ema50 > ema200 ? "BULLISH" : "BEARISH",
+      strength: sep > 1 ? "STRONG" : "WEAK",
+      ema50, ema200, sep: parseFloat(sep.toFixed(3)),
+    };
+  } catch (err) {
+    log("WARN", `HTF trend gagal: ${err.message}`);
+    return { trend: "NEUTRAL", strength: "WEAK" };
+  }
+}
+
+/** 1B — Fractal Swing Detection (5 candle) */
+function detectSwings(klines) {
+  const highs = [], lows = [];
+  for (let i = 2; i < klines.length - 2; i++) {
+    const c = klines[i];
+    if (c.high > klines[i-1].high && c.high > klines[i-2].high &&
+        c.high > klines[i+1].high && c.high > klines[i+2].high) {
+      highs.push({ index: i, price: c.high, time: c.time });
+    }
+    if (c.low < klines[i-1].low && c.low < klines[i-2].low &&
+        c.low < klines[i+1].low && c.low < klines[i+2].low) {
+      lows.push({ index: i, price: c.low, time: c.time });
+    }
+  }
+  const rh = highs.slice(-5), rl = lows.slice(-5);
+  return {
+    swingHighs: rh, swingLows: rl,
+    lastHigh:   rh[rh.length - 1] || null,
+    lastLow:    rl[rl.length - 1] || null,
+    prevHigh:   rh[rh.length - 2] || null,
+    prevLow:    rl[rl.length - 2] || null,
+  };
+}
+
+/** 1C — Inducement Detection */
+function detectInducement(swings, side) {
+  const arr   = side === "BULLISH" ? swings.swingLows : swings.swingHighs;
+  const slice = arr.slice(-4);
+  if (slice.length < 3) return { valid: false, count: 0 };
+  let count = 0;
+  for (let i = 1; i < slice.length; i++) {
+    const ok = side === "BULLISH"
+      ? slice[i].price > slice[i-1].price   // Higher Low
+      : slice[i].price < slice[i-1].price;  // Lower High
+    if (ok) count++;
+  }
+  return { valid: count >= 2, count, type: side === "BULLISH" ? "HIGHER_LOW" : "LOWER_HIGH" };
+}
+
+/** 1D — Liquidity Grab Detection */
+function detectLiquidityGrab(klines, swings, side) {
+  if (klines.length < 5) return { detected: false };
+  const bodies  = klines.slice(-20).map(k => Math.abs(k.close - k.open));
+  const avgBody = bodies.reduce((a, b) => a + b, 0) / bodies.length;
+  const last    = klines[klines.length - 1];
+  const bodySize = Math.abs(last.close - last.open);
+  if (side === "BULLISH") {
+    const sl = swings.lastLow;
+    if (!sl) return { detected: false };
+    return {
+      detected:  last.low < sl.price && last.close > sl.price && bodySize > avgBody * 0.8,
+      grabPrice: sl.price,
+      bodySize:  parseFloat(bodySize.toFixed(8)),
+      avgBody:   parseFloat(avgBody.toFixed(8)),
+    };
+  } else {
+    const sh = swings.lastHigh;
+    if (!sh) return { detected: false };
+    return {
+      detected:  last.high > sh.price && last.close < sh.price && bodySize > avgBody * 0.8,
+      grabPrice: sh.price,
+      bodySize:  parseFloat(bodySize.toFixed(8)),
+      avgBody:   parseFloat(avgBody.toFixed(8)),
+    };
+  }
+}
+
+/** 1E — CHoCH Detection (close + volume wajib) */
+function detectCHoCH(klines, swings, side, avgVol) {
+  if (klines.length < 3) return { detected: false };
+  const last = klines[klines.length - 1];
+  if (side === "BULLISH") {
+    const ph = swings.prevHigh;
+    if (!ph) return { detected: false };
+    const ok = last.close > ph.price && last.volume > avgVol * 0.8;
+    return { detected: ok, breakLevel: ph.price, volume: last.volume, avgVol, confirmed: ok && last.volume > avgVol };
+  } else {
+    const pl = swings.prevLow;
+    if (!pl) return { detected: false };
+    const ok = last.close < pl.price && last.volume > avgVol * 0.8;
+    return { detected: ok, breakLevel: pl.price, volume: last.volume, avgVol, confirmed: ok && last.volume > avgVol };
+  }
+}
+
+/** 1F — FVG Detection */
+function detectFVG(klines, side) {
+  const bullFVGs = [], bearFVGs = [];
+  for (let i = 2; i < klines.length; i++) {
+    const c1 = klines[i-2], c3 = klines[i];
+    const minGap = c1.high * 0.0001;
+    if (side === "BULLISH" && c3.low > c1.high && (c3.low - c1.high) > minGap) {
+      bullFVGs.push({ type: "BULLISH", upper: c3.low, lower: c1.high, mid: (c3.low + c1.high) / 2, time: klines[i-1].time });
+    }
+    if (side === "BEARISH" && c3.high < c1.low && (c1.low - c3.high) > minGap) {
+      bearFVGs.push({ type: "BEARISH", upper: c1.low, lower: c3.high, mid: (c1.low + c3.high) / 2, time: klines[i-1].time });
+    }
+  }
+  const lb = bullFVGs.slice(-3), lbr = bearFVGs.slice(-3);
+  return {
+    lastBullFVG: lb[lb.length - 1] || null,
+    lastBearFVG: lbr[lbr.length - 1] || null,
+    bullFVGs: lb, bearFVGs: lbr,
+  };
+}
+
+function isPriceInFVG(price, fvg, side) {
+  const zone = side === "BULLISH" ? fvg.lastBullFVG : fvg.lastBearFVG;
+  if (!zone) return { inFVG: false };
+  return { inFVG: price >= zone.lower && price <= zone.upper, fvg: zone };
+}
+
+/** 1G — Entry Candle Confirmation */
+function confirmEntryCandle(klines, side) {
+  const c     = klines[klines.length - 1];
+  const body  = c.close - c.open;
+  const range = c.high - c.low || 1;
+  if (side === "BULLISH") {
+    const isGreen       = c.close > c.open;
+    const closeNearHigh = (c.high - c.close) / range < 0.3;
+    return { confirmed: isGreen && closeNearHigh, isGreen, closeNearHigh, bodyPct: parseFloat((Math.abs(body)/range*100).toFixed(1)) };
+  } else {
+    const isRed        = c.close < c.open;
+    const closeNearLow = (c.close - c.low) / range < 0.3;
+    return { confirmed: isRed && closeNearLow, isRed, closeNearLow, bodyPct: parseFloat((Math.abs(body)/range*100).toFixed(1)) };
+  }
+}
+
+/** 1H — Session Filter (WIB) */
+function isActiveSession() {
+  const now   = new Date();
+  const hour  = now.getUTCHours();
+  const min   = now.getUTCMinutes();
+  const t     = hour + min / 60;
+  const inLondon  = t >= 7  && t < 16;
+  const inNY      = t >= 13 && t < 22;
+  const inOverlap = t >= 13 && t < 16;
+  return {
+    active:     inLondon || inNY,
+    session:    inOverlap ? "OVERLAP(TERBAIK)" : inNY ? "NEW_YORK" : inLondon ? "LONDON" : "ASIA(SKIP)",
+    inLondon, inNY, inOverlap,
+    wibHour:    (hour + 7) % 24,
+  };
+}
+
+/** 1I — ATR (Average True Range) */
+function calcATR(klines, period = 14) {
+  if (klines.length < period + 1) return 0;
+  const trs = [];
+  for (let i = 1; i < klines.length; i++) {
+    trs.push(Math.max(
+      klines[i].high - klines[i].low,
+      Math.abs(klines[i].high - klines[i-1].close),
+      Math.abs(klines[i].low  - klines[i-1].close)
+    ));
+  }
+  return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
+}
+
+/** 1J — SMC State */
+const smcState = {
+  htfTrend:      null,
+  htfLastUpdate: 0,
+  setupValid:    false,
+  lastEntryTime: 0,
+  minEntryGap:   3 * 60 * 1000, // minimal 3 menit antar entry
+};
+
+// ─────────────────────────────────────────────────────────────
+// SMC — CLAUDE FILTER
+// ─────────────────────────────────────────────────────────────
+
+async function analyzeWithClaudeSMC(smcSetup, marketData) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return { approve: false, confidence: 0, reason: "Tidak ada API key" };
+
+  const p       = marketData;
+  const extData = externalDataCache;
+
+  const prompt = `Bot PEPE/USDT Bitget. SMC setup sudah terdeteksi.
+Tugasmu: konfirmasi apakah AMAN untuk entry sekarang.
+
+SMC SETUP:
+- Side: ${smcSetup.side}
+- HTF Trend: ${smcSetup.htfTrend} (${smcSetup.htfStrength})
+- Session: ${smcSetup.session}
+- ATR: ${smcSetup.atrPct}%
+- Inducement: ${smcSetup.inducement.count}x ${smcSetup.inducement.type}
+- Liq Grab: harga wick ke ${smcSetup.grabPrice?.toFixed(8) || "N/A"} lalu rebound
+- CHoCH: close melewati level ${smcSetup.chochLevel?.toFixed(8) || "N/A"}
+- FVG Zone: ${smcSetup.fvgLower?.toFixed(8) || "N/A"} - ${smcSetup.fvgUpper?.toFixed(8) || "N/A"}
+- Harga sekarang: ${p.price.toFixed(8)} (dalam FVG ✅)
+- Candle konfirmasi: ${smcSetup.candleOK ? "✅" : "❌"}
+
+KONTEKS MARKET:
+- F&G: ${extData?.fearGreed?.value || "N/A"}(${extData?.fearGreed?.classification || "N/A"}) trend:${extData?.fearGreed?.trend || "N/A"}
+- Funding: ${(p.fundingRate * 100).toFixed(4)}%${p.fundingRate < -0.0001 ? " ⚡negatif=bias LONG" : p.fundingRate > 0.0001 ? " ⚠️positif=bias SHORT" : ""}
+- Volume: ${p.volumeRatio.toFixed(2)}x rata-rata
+- RSI: ${p.rsi.toFixed(1)}
+- BTC dom: ${extData?.cmcData?.btcDominance?.toFixed(1) || "N/A"}%
+- PEPE 1h: ${extData?.geckoData?.change1h?.toFixed(2) || "N/A"}%
+- PEPE 24h: ${extData?.geckoData?.change24h?.toFixed(2) || "N/A"}%
+
+Evaluasi:
+1. Apakah sentimen mendukung arah ${smcSetup.side}?
+2. Ada risiko besar yang terlihat? (funding extreme, F&G extreme, dll)
+3. Volume cukup untuk konfirmasi move?
+
+APPROVE jika tidak ada red flag besar.
+REJECT hanya jika ada risiko jelas yang membatalkan setup.
+
+JSON only:
+{"approve":true|false,"confidence":0-100,"reason":"<max 20 kata>","risk":"LOW|MEDIUM|HIGH"}`;
+
+  const bodyStr = JSON.stringify({
+    model:      "claude-haiku-4-5-20251001",
+    max_tokens: 120,
+    messages:   [{ role: "user", content: prompt }],
+  });
+
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: "api.anthropic.com",
+        path:     "/v1/messages",
+        method:   "POST",
+        agent:    HTTPS_AGENT,
+        headers:  {
+          "x-api-key":         apiKey,
+          "anthropic-version": "2023-06-01",
+          "content-type":      "application/json",
+        },
+      }, (res) => {
+        let data = "";
+        res.on("data", chunk => (data += chunk));
+        res.on("end", () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
+      });
+      req.on("error", reject);
+      req.setTimeout(10000, () => { req.destroy(); reject(new Error("Claude SMC timeout")); });
+      req.write(bodyStr);
+      req.end();
+    });
+
+    if (!result?.content?.[0]?.text) return { approve: false, confidence: 0, reason: "Respons kosong" };
+    const text      = result.content[0].text.trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return { approve: false, confidence: 0, reason: "Parse error" };
+    const parsed = JSON.parse(jsonMatch[0]);
+    return {
+      approve:    parsed.approve === true,
+      confidence: parseInt(parsed.confidence) || 0,
+      reason:     parsed.reason || "-",
+      risk:       parsed.risk   || "MEDIUM",
+    };
+  } catch (err) {
+    log("WARN", `Claude SMC filter error: ${err.message} — approve by default`);
+    return { approve: true, confidence: 60, reason: "Claude timeout — approve by default", risk: "MEDIUM" };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 // LOGIKA TRADING UTAMA
 // ─────────────────────────────────────────────────────────────
 
@@ -1422,20 +1711,6 @@ async function tradingLoop() {
     }
   }
 
-  // ── EXTREME FEAR OPPORTUNITY DETECTOR ────────────────────
-  const _fg = externalDataCache?.fearGreed;
-  if (!pos && _fg && _fg.value <= 15 &&
-      indicators.volumeRatio > 0.2 &&
-      indicators.rsi < 65) {
-    if (state.tickCount % 2 === 0) {
-      log("AI",
-        `⚡ EXTREME FEAR (${_fg.value}) + Vol ${indicators.volumeRatio.toFixed(2)}x ` +
-        `→ Paksa analisis Claude untuk cari peluang LONG`
-      );
-      state._forceAnalyze = true;
-    }
-  }
-
   // ── Kalkulasi prediksi profit (lokal, setiap tick) ───────
   const prediction = calcProfitPrediction(
     indicators, squeezeData, bbData, vwap, vwapPct,
@@ -1443,224 +1718,292 @@ async function tradingLoop() {
     externalDataCache?.fearGreed, pos
   );
 
-  // ── 5. Claude AI Analysis ─────────────────────────────────
-  const shouldAnalyze = state.tickCount % CONFIG.CLAUDE_ANALYSIS_INTERVAL === 0
-    || state._forceAnalyze === true;
-  if (state._forceAnalyze) state._forceAnalyze = false;
-  if (!shouldAnalyze) {
-    broadcastSSE({ type: "tick", price, rsi: indicators.rsi, ema9: indicators.ema9, ema21: indicators.ema21,
-                   fundingRate, fearGreed: externalDataCache?.fearGreed, position: pos,
-                   bid: ticker?.bidPrice, ask: ticker?.askPrice,
-                   volume24h: ticker?.volume24h, change24h: ticker?.change24h,
-                   isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
-                   latestCandle: klines[klines.length - 1], prediction }); // update chart candle terbaru
-    return;
-  }
+  // ═══════════════════════════════════════════════════════════
+  // SMC ANALYSIS + CLAUDE FILTER
+  // ═══════════════════════════════════════════════════════════
 
-  // ── Pre-entry filter: skip AI kalau volume terlalu rendah ─
-  if (!pos && indicators.volumeRatio < 0.1) {
+  if (!pos) {
+
+    // ── A. Update HTF Trend setiap 1 menit ─────────────────
+    if (Date.now() - smcState.htfLastUpdate > 60000 || !smcState.htfTrend) {
+      smcState.htfTrend      = await getHTFTrend();
+      smcState.htfLastUpdate = Date.now();
+    }
+    const htf = smcState.htfTrend;
+
+    // ── B. Session filter ───────────────────────────────────
+    const session = isActiveSession();
+
+    // ── C. ATR filter ───────────────────────────────────────
+    const atr    = calcATR(klines, 14);
+    const atrPct = price > 0 ? atr / price * 100 : 0;
+
+    // Log status SMC setiap 30 detik
     if (state.tickCount % 3 === 0) {
       log("INFO",
-        `Volume terlalu rendah (${indicators.volumeRatio.toFixed(2)}x) ` +
-        `→ skip analisis, tunggu momentum`
+        `SMC: HTF=${htf?.trend || "N/A"}(${htf?.strength || "?"}) | ` +
+        `Session=${session.session}(${session.wibHour}:xx WIB) | ` +
+        `ATR=${atrPct.toFixed(3)}% | ` +
+        `Aktif=${session.active ? "✅" : "❌"}`
       );
     }
-    broadcastSSE({
-      type: "tick", price, rsi: indicators.rsi,
-      ema9: indicators.ema9, ema21: indicators.ema21,
-      fundingRate, fearGreed: externalDataCache?.fearGreed,
-      position: pos, bid: ticker?.bidPrice, ask: ticker?.askPrice,
-      volume24h: ticker?.volume24h, change24h: ticker?.change24h,
-      isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
-      latestCandle: klines[klines.length - 1], prediction,
-    });
-    return;
-  }
 
-  // ── Smart filter: skip AI kalau tidak ada sinyal ─────────
-  if (CONFIG.CLAUDE_SMART_FILTER && !pos) {
-    const deadLow  = 50 - CONFIG.CLAUDE_RSI_DEAD_ZONE;
-    const deadHigh = 50 + CONFIG.CLAUDE_RSI_DEAD_ZONE;
-    const rsiNetral    = indicators.rsi >= deadLow && indicators.rsi <= deadHigh;
-    const emaNeutral   = Math.abs(indicators.ema9 - indicators.ema21) / indicators.ema21 < 0.0003; // spread EMA < 0.03%
-    const mixedOrWeak  = !CONFIG.REQUIRE_MTF_CONSENSUS || consensus === "MIXED";
-    const lastWasHold  = state.lastAnalysis?.action === "HOLD";
-    if (rsiNetral && emaNeutral && (mixedOrWeak || lastWasHold)) {
-      log("INFO", `Smart filter: RSI=${indicators.rsi.toFixed(1)} netral, EMA spread kecil → skip Claude (hemat kredit)`);
-      broadcastSSE({ type: "tick", price, rsi: indicators.rsi, ema9: indicators.ema9, ema21: indicators.ema21,
-                     fundingRate, fearGreed: externalDataCache?.fearGreed, position: pos,
-                     bid: ticker?.bidPrice, ask: ticker?.askPrice,
-                     volume24h: ticker?.volume24h, change24h: ticker?.change24h,
-                     isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
-                     latestCandle: klines[klines.length - 1], prediction });
+    // Skip entry kalau di luar session aktif
+    if (!session.active) {
+      broadcastSSE({
+        type: "tick", price, rsi: indicators.rsi,
+        ema9: indicators.ema9, ema21: indicators.ema21,
+        fundingRate, fearGreed: externalDataCache?.fearGreed,
+        position: pos, bid: ticker?.bidPrice, ask: ticker?.askPrice,
+        volume24h: ticker?.volume24h, change24h: ticker?.change24h,
+        isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
+        latestCandle: klines[klines.length - 1], prediction,
+        smcData: { session: session.session, htfTrend: htf?.trend, active: false, atrPct: parseFloat(atrPct.toFixed(3)) },
+      });
       return;
     }
-  }
 
-  // ── Fetch data eksternal setiap siklus analisis ───────────
-  const extData   = await fetchAllExternalData();
-  const fearGreed = extData.fearGreed;
-  const geckoData = extData.geckoData;
-  const cmcData   = extData.cmcData;
-
-  // Funding rate signal untuk prompt Claude
-  const fundingSignal = fundingRate < -0.0001
-    ? "NEGATIVE_FUNDING_LONG_SIGNAL"
-    : fundingRate > 0.0001
-    ? "POSITIVE_FUNDING_SHORT_SIGNAL"
-    : "NEUTRAL";
-
-  log("AI", "Meminta analisis dari Claude AI...");
-
-  const marketData = {
-    price:          price,
-    bid:            ticker.bidPrice,
-    ask:            ticker.askPrice,
-    volume24h:      ticker.volume24h,
-    change24h:      ticker.change24h,
-    rsi:            indicators.rsi,
-    ema9:           indicators.ema9,
-    ema21:          indicators.ema21,
-    volumeRatio:    indicators.volumeRatio,
-    orderBook,
-    fundingRate,
-    fundingSignal,
-    fearGreed,
-    // Data eksternal
-    geckoData,
-    cmcData,
-    // Fitur #1: MTF
-    mtf:        mtfData,
-    consensus,
-    // Fitur #2: BB
-    squeeze:    squeezeData,
-    bb:         bbData,
-    // Fitur #3: VWAP
-    vwap,
-    vwapPct,
-    volProf,
-    // Fitur #4: Candle
-    candlePatterns,
-    // Fitur #8: performa bot
-    winRate:    stats.winRate7d,
-    streak:     stats.currentStreak,
-    totalPnL:   stats.totalPnL,
-    activePosition: pos ? {
-      side:       pos.side,
-      entryPrice: pos.entryPrice,
-      leverage:   pos.leverage,
-      liqPrice:   pos.liqPrice,
-      // BUG #3 FIX: hitung PnL manual saat DRY RUN agar Claude punya data lengkap
-      unrealPnL: livePosition
-        ? livePosition.unrealPnL
-        : (() => {
-            const pct = pos.side === "LONG"
-              ? ((price - pos.entryPrice) / pos.entryPrice) * pos.leverage
-              : ((pos.entryPrice - price) / pos.entryPrice) * pos.leverage;
-            return compoundedBalance * pct;
-          })(),
-      pnlPct: livePosition
-        ? livePosition.pnlPct
-        : pos.side === "LONG"
-          ? ((price - pos.entryPrice) / pos.entryPrice) * 100 * pos.leverage
-          : ((pos.entryPrice - price) / pos.entryPrice) * 100 * pos.leverage,
-    } : null,
-  };
-
-  const analysis = await analyzeWithClaude(marketData);
-  if (!analysis) return;
-
-  state.lastAnalysis = analysis;
-  log("AI", `Action: ${C.bold}${analysis.action}${C.reset} | Confidence: ${analysis.confidence}% | Sentiment: ${analysis.sentiment} | Leverage: ${analysis.leverage}x`);
-  log("AI", `Alasan: ${analysis.reasoning}`);
-
-  // ── 6. Eksekusi keputusan ─────────────────────────────────
-
-  // Tidak ada posisi aktif → coba buka
-  if (!pos) {
-    // Fitur #1: tentukan minimum confidence berdasarkan MTF consensus
-    let requiredConf = CONFIG.OPEN_CONFIDENCE;
-    if (CONFIG.REQUIRE_MTF_CONSENSUS) {
-      if (consensus === "MIXED") {
-        log("INFO", `MTF consensus MIXED → skip entry`);
-        return;
+    // Skip entry kalau ATR terlalu rendah (market flat)
+    if (atrPct < 0.03) {
+      if (state.tickCount % 6 === 0) {
+        log("INFO", `ATR terlalu rendah (${atrPct.toFixed(3)}%) — market flat, skip`);
       }
-      if (consensus === "WEAK_LONG" || consensus === "WEAK_SHORT") requiredConf = 80;
-      // STRONG_LONG/SHORT pakai CONFIG.OPEN_CONFIDENCE (default 75)
+      broadcastSSE({
+        type: "tick", price, rsi: indicators.rsi,
+        ema9: indicators.ema9, ema21: indicators.ema21,
+        fundingRate, fearGreed: externalDataCache?.fearGreed,
+        position: pos, bid: ticker?.bidPrice, ask: ticker?.askPrice,
+        isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
+        latestCandle: klines[klines.length - 1], prediction,
+        smcData: { atrPct: parseFloat(atrPct.toFixed(3)), flat: true, session: session.session, htfTrend: htf?.trend },
+      });
+      return;
     }
 
-    // Fitur #2: jangan entry saat BB squeeze aktif (kecuali RSI extreme)
-    if (squeezeData.squeeze) {
-      const rsiExtreme = indicators.rsi < 25 || indicators.rsi > 75;
-      const volOk      = indicators.volumeRatio > 0.3;
-      if (!rsiExtreme || !volOk) {
-        log("INFO",
-          `BB Squeeze aktif (${squeezeData.bandwidthPct.toFixed(2)}%) ` +
-          `RSI:${indicators.rsi.toFixed(1)} Vol:${indicators.volumeRatio.toFixed(2)}x ` +
-          `→ skip (butuh RSI extreme + volume)`
-        );
-        return;
+    // Skip kalau baru entry (cooldown 3 menit)
+    if (Date.now() - smcState.lastEntryTime < smcState.minEntryGap) {
+      const sisaSec = Math.ceil((smcState.minEntryGap - (Date.now() - smcState.lastEntryTime)) / 1000);
+      if (state.tickCount % 3 === 0) {
+        log("INFO", `Cooldown entry — tunggu ${sisaSec} detik lagi`);
       }
-      log("INFO",
-        `BB Squeeze aktif TAPI RSI extreme (${indicators.rsi.toFixed(1)}) ` +
-        `+ volume ok → tetap analisis Claude`
+      broadcastSSE({
+        type: "tick", price, rsi: indicators.rsi,
+        ema9: indicators.ema9, ema21: indicators.ema21,
+        fundingRate, fearGreed: externalDataCache?.fearGreed,
+        position: pos, bid: ticker?.bidPrice, ask: ticker?.askPrice,
+        isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
+        latestCandle: klines[klines.length - 1], prediction,
+        smcData: { session: session.session, htfTrend: htf?.trend, cooldown: sisaSec },
+      });
+      return;
+    }
+
+    // Skip kalau HTF netral
+    if (!htf || htf.trend === "NEUTRAL") {
+      if (state.tickCount % 6 === 0) log("INFO", "HTF NEUTRAL — tidak ada trade");
+      broadcastSSE({
+        type: "tick", price, rsi: indicators.rsi,
+        ema9: indicators.ema9, ema21: indicators.ema21,
+        fundingRate, fearGreed: externalDataCache?.fearGreed,
+        position: pos, bid: ticker?.bidPrice, ask: ticker?.askPrice,
+        isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
+        latestCandle: klines[klines.length - 1], prediction,
+        smcData: { htfTrend: "NEUTRAL", session: session.session, atrPct: parseFloat(atrPct.toFixed(3)) },
+      });
+      return;
+    }
+    const tradeSide = htf.trend; // "BULLISH" atau "BEARISH"
+
+    // ── D. Ambil klines 5m untuk SMC ───────────────────────
+    let klines5m = klines; // fallback ke 1m
+    try { klines5m = await getKlines("5m", 100); } catch (_) {}
+
+    const nonZeroVols5m = klines5m.slice(-20).map(k => k.volume).filter(v => v > 0);
+    const avgVol5m = nonZeroVols5m.length > 0
+      ? nonZeroVols5m.reduce((a, b) => a + b, 0) / nonZeroVols5m.length
+      : 1;
+
+    // ── E. Deteksi semua komponen SMC ──────────────────────
+    const swings   = detectSwings(klines5m);
+    const inducmt  = detectInducement(swings, tradeSide);
+    const liqGrab  = detectLiquidityGrab(klines5m, swings, tradeSide);
+    const choch    = detectCHoCH(klines5m, swings, tradeSide, avgVol5m);
+    const fvgData  = detectFVG(klines5m, tradeSide);
+    const inFVG    = isPriceInFVG(price, fvgData, tradeSide);
+    const candleOK = confirmEntryCandle(klines5m, tradeSide);
+
+    // Log checklist SMC setiap tick
+    const checks = [
+      inducmt.valid      ? "✅Ind"    : "❌Ind",
+      liqGrab.detected   ? "✅Liq"    : "❌Liq",
+      choch.detected     ? "✅CHoCH"  : "❌CHoCH",
+      inFVG.inFVG        ? "✅FVG"    : "❌FVG",
+      candleOK.confirmed ? "✅Candle" : "❌Candle",
+    ].join(" ");
+    log("INFO", `[${tradeSide}] ${checks} | ATR:${atrPct.toFixed(3)}%`);
+
+    // ── F. Cek apakah SEMUA kondisi SMC terpenuhi ──────────
+    const smcReady =
+      inducmt.valid      &&
+      liqGrab.detected   &&
+      choch.detected     &&
+      inFVG.inFVG        &&
+      candleOK.confirmed;
+
+    // Bangun smcData untuk broadcast (dipakai di kedua cabang)
+    const smcData = {
+      htfTrend:      htf?.trend,
+      htfStrength:   htf?.strength,
+      tradeSide,
+      session:       session.session,
+      atrPct:        parseFloat(atrPct.toFixed(3)),
+      inducement:    inducmt,
+      liquidityGrab: liqGrab,
+      choch,
+      fvgData,
+      inFVG,
+      candleOK,
+      smcReady,
+    };
+
+    if (smcReady) {
+      log("AI",
+        `🎯 SMC SETUP LENGKAP! [${tradeSide}] ` +
+        `Session:${session.session} HTF:${htf.trend} ` +
+        `→ Tanya Claude untuk konfirmasi...`
       );
-    }
 
-    if ((analysis.action === "LONG" || analysis.action === "SHORT") &&
-        analysis.confidence >= requiredConf) {
+      // ── G. Hitung SL dari swing level ──────────────────
+      const swingLevel = tradeSide === "BULLISH"
+        ? (swings.lastLow?.price  || price * 0.99)
+        : (swings.lastHigh?.price || price * 1.01);
+      const slPct = Math.max(0.3, Math.min(2.0, Math.abs((price - swingLevel) / price * 100)));
+      const tpPct = slPct * 2; // RR 1:2
+      const fvg   = tradeSide === "BULLISH" ? fvgData.lastBullFVG : fvgData.lastBearFVG;
 
-      const leverage = Math.min(Math.max(analysis.leverage || 7, 7), CONFIG.MAX_LEVERAGE); // scalping: minimum 7x
-      log("TRADE", `Membuka posisi ${analysis.action} | leverage ${leverage}x | MTF: ${consensus} | Candle: ${candlePatterns.dominantBias}`);
-      await openPosition(analysis.action, leverage, price);
+      const smcSetup = {
+        side:        tradeSide,
+        htfTrend:    htf.trend,
+        htfStrength: htf.strength,
+        session:     session.session,
+        atrPct:      atrPct.toFixed(3),
+        inducement:  inducmt,
+        grabPrice:   liqGrab.grabPrice,
+        chochLevel:  choch.breakLevel,
+        fvgLower:    fvg?.lower,
+        fvgUpper:    fvg?.upper,
+        candleOK:    candleOK.confirmed,
+      };
 
-      // Override stop/tp dari AI jika lebih konservatif
-      if (state.activePosition) {
-        const slPct = Math.min(analysis.stop_loss_pct || CONFIG.STOP_LOSS_PCT, CONFIG.STOP_LOSS_PCT);
-        const tpPct = Math.max(analysis.take_profit_pct || CONFIG.TAKE_PROFIT_PCT, CONFIG.TAKE_PROFIT_PCT);
-        state.activePosition.stopLoss = analysis.action === "LONG"
-          ? price * (1 - slPct / 100)
-          : price * (1 + slPct / 100);
-        state.activePosition.takeProfit = analysis.action === "LONG"
-          ? price * (1 + tpPct / 100)
-          : price * (1 - tpPct / 100);
+      // Fetch data eksternal sebelum tanya Claude
+      await fetchAllExternalData();
+
+      const claudeFilter = await analyzeWithClaudeSMC(smcSetup, {
+        price,
+        fundingRate,
+        volumeRatio: indicators.volumeRatio,
+        rsi:         indicators.rsi,
+      });
+
+      log("AI",
+        `Claude filter: ${claudeFilter.approve ? "✅ APPROVE" : "❌ REJECT"} ` +
+        `(conf:${claudeFilter.confidence}% risk:${claudeFilter.risk}) ` +
+        `— ${claudeFilter.reason}`
+      );
+
+      smcData.claudeFilter = claudeFilter;
+
+      // ── H. Entry kalau Claude approve ──────────────────
+      if (claudeFilter.approve && claudeFilter.confidence >= CONFIG.OPEN_CONFIDENCE) {
+        const leverage = Math.min(
+          Math.max(Math.round(1 / slPct * 8), CONFIG.DEFAULT_LEVERAGE),
+          CONFIG.MAX_LEVERAGE
+        );
+        log("TRADE",
+          `🚀 ENTRY ${tradeSide} | ` +
+          `SL:${slPct.toFixed(2)}% TP:${tpPct.toFixed(2)}% ` +
+          `Lev:${leverage}x RR:1:2 | ` +
+          `Claude:${claudeFilter.confidence}% (${claudeFilter.risk})`
+        );
+        const opened = await openPosition(
+          tradeSide === "BULLISH" ? "LONG" : "SHORT",
+          leverage,
+          price
+        );
+        if (opened && state.activePosition) {
+          // Override SL/TP dengan kalkulasi SMC (bukan dari Claude)
+          state.activePosition.stopLoss = tradeSide === "BULLISH"
+            ? price * (1 - slPct / 100)
+            : price * (1 + slPct / 100);
+          state.activePosition.takeProfit = tradeSide === "BULLISH"
+            ? price * (1 + tpPct / 100)
+            : price * (1 - tpPct / 100);
+          smcState.lastEntryTime = Date.now();
+          log("TRADE",
+            `SL: ${state.activePosition.stopLoss.toFixed(8)} | ` +
+            `TP: ${state.activePosition.takeProfit.toFixed(8)}`
+          );
+        }
+      } else {
+        log("AI",
+          `Claude REJECT — ${claudeFilter.reason} ` +
+          `(conf:${claudeFilter.confidence}%) — tunggu setup berikutnya`
+        );
       }
+
+      broadcastSSE({
+        type: "analysis",
+        price, rsi: indicators.rsi,
+        ema9: indicators.ema9, ema21: indicators.ema21,
+        fundingRate, fearGreed: externalDataCache?.fearGreed,
+        analysis: {
+          action:          claudeFilter.approve && claudeFilter.confidence >= CONFIG.OPEN_CONFIDENCE
+            ? (tradeSide === "BULLISH" ? "LONG" : "SHORT") : "HOLD",
+          confidence:      claudeFilter.confidence,
+          sentiment:       tradeSide,
+          leverage:        CONFIG.DEFAULT_LEVERAGE,
+          stop_loss_pct:   slPct,
+          take_profit_pct: tpPct,
+          reasoning:       `SMC+Claude: ${claudeFilter.approve ? "✅" : "❌"} — ${claudeFilter.reason}`,
+        },
+        position:    state.activePosition,
+        bb:          bbData,
+        squeeze:     squeezeData,
+        vwap,
+        vwapPct,
+        candlePatterns,
+        externalData: externalDataCache,
+        latestCandle: klines[klines.length - 1],
+        prediction,
+        smcData,
+      });
+
     } else {
-      log("INFO", `HOLD — Confidence: ${analysis.confidence}% (butuh ≥${CONFIG.OPEN_CONFIDENCE}%)`);
+      // SMC belum lengkap — broadcast tick biasa dengan data SMC
+      broadcastSSE({
+        type: "tick", price,
+        rsi: indicators.rsi, ema9: indicators.ema9, ema21: indicators.ema21,
+        fundingRate, fearGreed: externalDataCache?.fearGreed,
+        position: pos, bid: ticker?.bidPrice, ask: ticker?.askPrice,
+        volume24h: ticker?.volume24h, change24h: ticker?.change24h,
+        isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
+        latestCandle: klines[klines.length - 1],
+        prediction, smcData,
+      });
     }
 
-  // Ada posisi aktif → cek apakah perlu tutup
   } else {
-    if (analysis.action === "CLOSE" && analysis.confidence >= CONFIG.CLOSE_CONFIDENCE) {
-      log("TRADE", `Claude rekomendasikan CLOSE (confidence: ${analysis.confidence}%)`);
-      await closePosition("CLAUDE_CLOSE", price);
-    } else {
-      log("INFO", `Posisi dipertahankan — Claude: ${analysis.action} (${analysis.confidence}%)`);
-    }
+    // Ada posisi aktif — broadcast tick saja (SL/TP dihandle risk management di atas)
+    broadcastSSE({
+      type: "tick", price,
+      rsi: indicators.rsi, ema9: indicators.ema9, ema21: indicators.ema21,
+      fundingRate, fearGreed: externalDataCache?.fearGreed,
+      position: pos, bid: ticker?.bidPrice, ask: ticker?.askPrice,
+      isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
+      latestCandle: klines[klines.length - 1],
+      prediction,
+    });
   }
-
-  broadcastSSE({
-    type:     "analysis",
-    price,
-    rsi:      indicators.rsi,
-    ema9:     indicators.ema9,
-    ema21:    indicators.ema21,
-    fundingRate,
-    fearGreed,
-    analysis,
-    position: state.activePosition,
-    mtf:      mtfData,
-    consensus,
-    bb:       bbData,
-    squeeze:  squeezeData,
-    vwap,
-    vwapPct,
-    volProf,
-    candlePatterns,
-    externalData:  externalDataCache,
-    latestCandle:  klines[klines.length - 1], // update chart candle terbaru
-    prediction,
-  });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -2124,6 +2467,55 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       <div id="ai-content"><div class="no-pos">Menunggu analisis pertama...</div></div>
     </div>
 
+    <!-- SMC + Claude Filter -->
+    <div class="card ai-card">
+      <h3>🧠 SMC + Claude Filter</h3>
+      <div id="smc-status-bar" style="padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:#21262d;color:#8b949e">
+        Menunggu data SMC...
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px">
+        <div style="text-align:center;padding:8px;background:#21262d;border-radius:6px">
+          <div style="font-size:9px;color:#8b949e;margin-bottom:2px">HTF TREND (15m)</div>
+          <div id="smc-htf" style="font-size:16px;font-weight:bold">--</div>
+        </div>
+        <div style="text-align:center;padding:8px;background:#21262d;border-radius:6px">
+          <div style="font-size:9px;color:#8b949e;margin-bottom:2px">SESSION</div>
+          <div id="smc-session" style="font-size:13px;font-weight:bold">--</div>
+        </div>
+        <div style="text-align:center;padding:8px;background:#21262d;border-radius:6px">
+          <div style="font-size:9px;color:#8b949e;margin-bottom:2px">ATR</div>
+          <div id="smc-atr" style="font-size:16px;font-weight:bold">--</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px;margin-bottom:10px">
+        <div style="text-align:center;padding:6px 4px;background:#21262d;border-radius:4px">
+          <div style="font-size:8px;color:#8b949e">INDUCEMENT</div>
+          <div id="smc-ind" style="font-size:18px;margin-top:2px">--</div>
+        </div>
+        <div style="text-align:center;padding:6px 4px;background:#21262d;border-radius:4px">
+          <div style="font-size:8px;color:#8b949e">LIQ GRAB</div>
+          <div id="smc-liq" style="font-size:18px;margin-top:2px">--</div>
+        </div>
+        <div style="text-align:center;padding:6px 4px;background:#21262d;border-radius:4px">
+          <div style="font-size:8px;color:#8b949e">CHoCH</div>
+          <div id="smc-choch" style="font-size:18px;margin-top:2px">--</div>
+        </div>
+        <div style="text-align:center;padding:6px 4px;background:#21262d;border-radius:4px">
+          <div style="font-size:8px;color:#8b949e">FVG</div>
+          <div id="smc-fvg" style="font-size:18px;margin-top:2px">--</div>
+        </div>
+        <div style="text-align:center;padding:6px 4px;background:#21262d;border-radius:4px">
+          <div style="font-size:8px;color:#8b949e">CANDLE</div>
+          <div id="smc-candle" style="font-size:18px;margin-top:2px">--</div>
+        </div>
+      </div>
+      <div id="claude-filter-result" style="display:none;padding:8px;border-radius:6px;font-size:11px;border:1px solid #30363d">
+        <div style="font-size:10px;color:#8b949e;margin-bottom:4px">CLAUDE FILTER RESULT</div>
+        <div id="claude-approve" style="font-weight:bold;margin-bottom:2px">--</div>
+        <div id="claude-reason" style="color:#8b949e">--</div>
+      </div>
+    </div>
+
     <!-- Prediksi Profit -->
     <div class="card ai-card" id="pred-card">
       <h3>Prediksi Profit Trade Berikutnya</h3>
@@ -2401,6 +2793,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       else if (d.type === 'analysis' && !d.position) document.getElementById('position-content').innerHTML = '<div class="no-pos">Tidak ada posisi aktif</div>';
       if (d.analysis) renderAI(d.analysis);
       if (d.prediction) renderPrediction(d.prediction);
+      if (d.smcData)   renderSMC(d.smcData);
       if (d.type === 'analysis') { renderMTF(d); renderBB(d); handleIntelligence(d); }
       if (d.type === 'log') addLog(d);
       if (d.type === 'stats') { renderStats(d); renderWinRate(d); }
@@ -2503,6 +2896,85 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       const pnlEl = document.getElementById('pnl');
       pnlEl.textContent = (s.totalPnL >= 0 ? '+' : '') + pnl;
       pnlEl.className = 'stat-num ' + (s.totalPnL >= 0 ? 'green' : 'red');
+    }
+
+    function renderSMC(s) {
+      if (!s) return;
+
+      // HTF
+      const htfEl = document.getElementById('smc-htf');
+      if (htfEl) {
+        htfEl.textContent = s.htfTrend || '--';
+        htfEl.className   = s.htfTrend === 'BULLISH' ? 'green' : s.htfTrend === 'BEARISH' ? 'red' : 'val';
+        if (s.htfStrength) htfEl.title = s.htfStrength;
+      }
+
+      // Session
+      const sesEl = document.getElementById('smc-session');
+      if (sesEl) {
+        sesEl.textContent  = s.session || '--';
+        sesEl.style.color  = s.session?.includes('OVERLAP') ? '#d29922'
+          : (s.session?.includes('LONDON') || s.session?.includes('NEW_YORK')) ? '#3fb950'
+          : '#f85149';
+      }
+
+      // ATR
+      const atrEl = document.getElementById('smc-atr');
+      if (atrEl) {
+        atrEl.textContent  = s.atrPct !== undefined ? s.atrPct + '%' : '--';
+        atrEl.style.color  = parseFloat(s.atrPct) < 0.03 ? '#f85149'
+          : parseFloat(s.atrPct) > 0.1 ? '#3fb950' : '#d29922';
+      }
+
+      // Checklist
+      const setCheck = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val ? '✅' : '❌'; };
+      setCheck('smc-ind',    s.inducement?.valid);
+      setCheck('smc-liq',    s.liquidityGrab?.detected);
+      setCheck('smc-choch',  s.choch?.detected);
+      setCheck('smc-fvg',    s.inFVG?.inFVG);
+      setCheck('smc-candle', s.candleOK?.confirmed);
+
+      // Status bar
+      const bar = document.getElementById('smc-status-bar');
+      if (bar) {
+        if (s.flat) {
+          bar.textContent = \`⏸ Market flat (ATR \${s.atrPct}%) — menunggu volatilitas\`;
+          bar.style.cssText = 'padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:#21262d;color:#8b949e;border:none';
+        } else if (s.cooldown) {
+          bar.textContent = \`⏳ Cooldown entry — \${s.cooldown} detik lagi\`;
+          bar.style.cssText = 'padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:#21262d;color:#8b949e;border:none';
+        } else if (!s.active && s.active !== undefined) {
+          bar.textContent = \`😴 Sesi tidak aktif (\${s.session}) — tunggu London/NY\`;
+          bar.style.cssText = 'padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:#21262d;color:#8b949e;border:none';
+        } else if (s.smcReady) {
+          bar.textContent = '🎯 SMC LENGKAP! Menunggu konfirmasi Claude...';
+          bar.style.cssText = 'padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:#3fb95022;color:#3fb950;border:1px solid #3fb95066';
+        } else {
+          const missing = [];
+          if (!s.inducement?.valid)      missing.push('Inducement');
+          if (!s.liquidityGrab?.detected) missing.push('Liq Grab');
+          if (!s.choch?.detected)         missing.push('CHoCH');
+          if (!s.inFVG?.inFVG)            missing.push('FVG');
+          if (!s.candleOK?.confirmed)     missing.push('Candle');
+          bar.textContent = missing.length ? \`Menunggu: \${missing.join(' → ')}\` : 'Scanning...';
+          bar.style.cssText = 'padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:#21262d;color:#8b949e;border:none';
+        }
+      }
+
+      // Claude filter result
+      if (s.claudeFilter) {
+        const filterDiv = document.getElementById('claude-filter-result');
+        const approveEl = document.getElementById('claude-approve');
+        const reasonEl  = document.getElementById('claude-reason');
+        if (filterDiv) filterDiv.style.display = 'block';
+        if (approveEl) {
+          approveEl.textContent = s.claudeFilter.approve
+            ? \`✅ APPROVED (\${s.claudeFilter.confidence}%) — Risk: \${s.claudeFilter.risk}\`
+            : \`❌ REJECTED (\${s.claudeFilter.confidence}%) — Risk: \${s.claudeFilter.risk}\`;
+          approveEl.style.color = s.claudeFilter.approve ? '#3fb950' : '#f85149';
+        }
+        if (reasonEl) reasonEl.textContent = s.claudeFilter.reason || '--';
+      }
     }
 
     function renderPrediction(p) {

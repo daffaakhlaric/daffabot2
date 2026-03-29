@@ -54,10 +54,10 @@ const CONFIG = {
   MAX_POSITIONS:       1,
 
   // Risk management
-  STOP_LOSS_PCT:    2.0,    // 2% dari entry price
-  TAKE_PROFIT_PCT:  3.0,    // 3% dari entry price
+  STOP_LOSS_PCT:    1.0,    // scalping: stop loss ketat 1%
+  TAKE_PROFIT_PCT:  1.5,    // scalping: target cepat 1.5%
   TRAILING_STOP:    true,   // aktifkan trailing stop
-  TRAILING_OFFSET:  0.5,    // trailing stop offset 0.5%
+  TRAILING_OFFSET:  0.3,    // scalping: trailing lebih ketat
   MAX_LOSS_PCT:     5.0,    // force close jika unrealized loss > 5%
   HARD_STOP_TOTAL:  20.0,   // hard stop jika total loss > 20%
 
@@ -66,14 +66,14 @@ const CONFIG = {
 
   // Jadwal
   CHECK_INTERVAL_MS:        10000, // 10 detik
-  CLAUDE_ANALYSIS_INTERVAL: 12,   // setiap 12 tick = ~2 menit (hemat kredit)
+  CLAUDE_ANALYSIS_INTERVAL: 6,    // scalping: setiap 6 tick = ~1 menit (lebih responsif)
 
   // Batas confidence AI
-  OPEN_CONFIDENCE:  75,
-  CLOSE_CONFIDENCE: 65,
+  OPEN_CONFIDENCE:  65,   // scalping: threshold lebih rendah
+  CLOSE_CONFIDENCE: 55,   // scalping: threshold lebih rendah
 
   // Hemat kredit AI: skip panggilan kalau tidak ada sinyal kuat
-  CLAUDE_SMART_FILTER: true,   // true = aktifkan pre-filter sebelum panggil AI
+  CLAUDE_SMART_FILTER: false,   // scalping: matikan filter supaya lebih responsif
   CLAUDE_RSI_DEAD_ZONE: 5,     // skip kalau RSI dalam range 50±5 (45-55) = netral
 
   // Dry run (WAJIB true saat testing!)
@@ -88,7 +88,7 @@ const CONFIG = {
   STATE_FILE:  "state.json",
 
   // ── Fitur #1: Multi-Timeframe Analysis ────────────────────
-  REQUIRE_MTF_CONSENSUS: true,   // false = matikan fitur MTF
+  REQUIRE_MTF_CONSENSUS: false,  // scalping: matikan MTF consensus
 
   // ── Fitur #2: Bollinger Bands ─────────────────────────────
   BB_PERIOD:  20,
@@ -100,7 +100,7 @@ const CONFIG = {
   // ── Fitur #5: Partial Close ───────────────────────────────
   PARTIAL_CLOSE_ENABLED: true,
   PARTIAL_CLOSE_PCT:     50,    // tutup 50% posisi
-  PARTIAL_CLOSE_TRIGGER: 1.5,   // trigger saat profit ≥ 1.5%
+  PARTIAL_CLOSE_TRIGGER: 0.8,   // scalping: trigger lebih cepat saat profit ≥ 0.8%
 
   // ── Fitur #6: Auto Compound ───────────────────────────────
   AUTO_COMPOUND:       true,
@@ -1127,7 +1127,7 @@ async function analyzeWithClaude(marketData) {
   const bbStr = p.bb
     ? `U=${p.bb.upper.toFixed(8)} M=${p.bb.middle.toFixed(8)} L=${p.bb.lower.toFixed(8)} %B=${p.bb.pctB.toFixed(3)} Squeeze=${p.squeeze?.squeeze ? "YA" : "tidak"} Break=${p.squeeze?.breakoutDirection || "NONE"}`
     : "BB:N/A";
-  const prompt = `Bot PEPE/USDT Bitget futures. Balas HANYA JSON.
+  const prompt = `Bot PEPE/USDT Bitget futures. MODE: SCALPING AGRESIF (hold <30 menit, target cepat). Balas HANYA JSON.
 
 PASAR: ${p.price.toFixed(8)} Bid/Ask:${p.bid.toFixed(8)}/${p.ask.toFixed(8)} Vol24h:${(p.volume24h/1e9).toFixed(2)}B Δ24h:${(p.change24h*100).toFixed(2)}%
 TEKNIKAL: RSI:${p.rsi.toFixed(1)} EMA9:${p.ema9.toFixed(8)} EMA21:${p.ema21.toFixed(8)} VolRatio:${p.volumeRatio.toFixed(2)}x
@@ -1143,8 +1143,8 @@ VWAP: ${p.vwap.toFixed(8)} vs harga ${p.vwapPct >= 0 ? "+" : ""}${p.vwapPct.toFi
 CANDLE: Bull:[${p.candlePatterns?.bullishPatterns.join(",") || "-"}] Bear:[${p.candlePatterns?.bearishPatterns.join(",") || "-"}] Bias:${p.candlePatterns?.dominantBias}(${p.candlePatterns?.strength})
 PERFORMA: WR:${p.winRate.toFixed(1)}% Streak:${p.streak > 0 ? "+" : ""}${p.streak} TotalPnL:${p.totalPnL >= 0 ? "+" : ""}${p.totalPnL.toFixed(4)}USDT
 
-Aturan: buka≥${CONFIG.OPEN_CONFIDENCE}% tutup≥${CONFIG.CLOSE_CONFIDENCE}% | MTF MIXED=HOLD | BB squeeze=HOLD | BTCdom>60%=hindari LONG | harga>VWAP=bias LONG
-{"action":"LONG|SHORT|CLOSE|HOLD","leverage":5-10,"confidence":0-100,"sentiment":"BULLISH|BEARISH|NEUTRAL|VOLATILE","stop_loss_pct":0.5-3.0,"take_profit_pct":1.0-5.0,"reasoning":"<30 kata"}`;
+Aturan scalping: buka≥${CONFIG.OPEN_CONFIDENCE}% tutup≥${CONFIG.CLOSE_CONFIDENCE}% | SL ketat 0.5-1.5% TP cepat 1.0-2.5% | leverage min 7x | RSI extreme=entry agresif | BB breakout=entry | VWAP cross=sinyal kuat
+{"action":"LONG|SHORT|CLOSE|HOLD","leverage":7-10,"confidence":0-100,"sentiment":"BULLISH|BEARISH|NEUTRAL|VOLATILE","stop_loss_pct":0.5-1.5,"take_profit_pct":1.0-2.5,"reasoning":"<30 kata"}`;
 
 
   const bodyStr = JSON.stringify({
@@ -1524,7 +1524,7 @@ async function tradingLoop() {
     if ((analysis.action === "LONG" || analysis.action === "SHORT") &&
         analysis.confidence >= requiredConf) {
 
-      const leverage = Math.min(Math.max(analysis.leverage || CONFIG.DEFAULT_LEVERAGE, CONFIG.DEFAULT_LEVERAGE), CONFIG.MAX_LEVERAGE);
+      const leverage = Math.min(Math.max(analysis.leverage || 7, 7), CONFIG.MAX_LEVERAGE); // scalping: minimum 7x
       log("TRADE", `Membuka posisi ${analysis.action} | leverage ${leverage}x | MTF: ${consensus} | Candle: ${candlePatterns.dominantBias}`);
       await openPosition(analysis.action, leverage, price);
 

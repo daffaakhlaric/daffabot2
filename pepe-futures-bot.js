@@ -50,7 +50,7 @@ const CONFIG = {
   MAX_LEVERAGE:     10,
 
   // Ukuran posisi
-  POSITION_SIZE_USDT: 3,   // USDT per trade
+  POSITION_SIZE_USDT: 2,   // USDT per trade
   MAX_POSITIONS:       1,
 
   // Risk management
@@ -3187,11 +3187,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           bar.textContent = \`😴 Sesi tidak aktif (\${s.session}) — tunggu London/NY\`;
           bar.style.cssText = 'padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:#21262d;color:#8b949e;border:none';
         } else if (s.smcReady) {
-          const readyLabel = s.bosDirectEntry && !s.smcFull
-            ? \`⚡ BOS DIRECT (\${s.bos?.type || 'BOS'}) — Masuk langsung!\`
-            : '🎯 SMC LENGKAP! Menunggu konfirmasi Claude...';
-          bar.textContent = readyLabel;
-          bar.style.cssText = \`padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:\${s.bosDirectEntry && !s.smcFull ? '#d2992222' : '#3fb95022'};color:\${s.bosDirectEntry && !s.smcFull ? '#d29922' : '#3fb950'};border:1px solid \${s.bosDirectEntry && !s.smcFull ? '#d2992266' : '#3fb95066'}\`;
+          bar.textContent = '🎯 SMC LENGKAP! Menunggu konfirmasi Claude...';
+          bar.style.cssText = 'padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:#3fb95022;color:#3fb950;border:1px solid #3fb95066';
         } else {
           const missing = [];
           if (!s.inducement?.valid)      missing.push('Inducement');

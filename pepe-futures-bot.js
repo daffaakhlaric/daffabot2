@@ -619,6 +619,26 @@ function calcOrderSize(price, leverage) {
   return finalQty;
 }
 
+/**
+ * Risk-based order sizing — posisi dihitung agar jika SL kena,
+ * loss = POSITION_SIZE_USDT (modal isolated yang diinput).
+ * qty × price × slPct% = riskUsdt
+ */
+function calcOrderSizeByRisk(price, slPct) {
+  const CONTRACT_SIZE = 1000;
+  const riskUsdt  = CONFIG.POSITION_SIZE_USDT;
+  const rawQty    = riskUsdt / (price * slPct / 100);
+  const contracts = Math.max(1, Math.floor(rawQty / CONTRACT_SIZE));
+  const finalQty  = contracts * CONTRACT_SIZE;
+  const notional  = finalQty * price;
+  const leverage  = Math.min(Math.ceil(notional / riskUsdt), CONFIG.MAX_LEVERAGE);
+  log("INFO",
+    `[Risk sizing] risk=${riskUsdt}USDT sl=${slPct.toFixed(3)}% ` +
+    `qty=${finalQty} notional=${notional.toFixed(2)}USDT lev=${leverage}x`
+  );
+  return { qty: finalQty, leverage };
+}
+
 /** Hitung liquidation price */
 function calcLiquidationPrice(side, entryPrice, leverage) {
   // Untuk isolated margin:
@@ -632,8 +652,8 @@ function calcLiquidationPrice(side, entryPrice, leverage) {
   }
 }
 
-async function openPosition(side, leverage, price) {
-  const qty = calcOrderSize(price, leverage);
+async function openPosition(side, leverage, price, overrideQty = null) {
+  const qty = overrideQty || calcOrderSize(price, leverage);
   const liqPrice = calcLiquidationPrice(side, price, leverage);
   const stopLoss = side === "LONG"
     ? price * (1 - CONFIG.STOP_LOSS_PCT / 100)
@@ -1394,6 +1414,63 @@ function isActiveSession() {
   };
 }
 
+/**
+ * 1I-B — Supply/Demand Zone Touch Detection
+ * Demand (LONG) : price retest swing-low area dengan candle bullish rejection
+ * Supply (SHORT): price retest swing-high area dengan candle bearish rejection
+ * "strong" = wick rejection ≥ 30% range + close di luar zone = konfirmasi kuat
+ */
+function detectSDZoneTouch(klines, swings, side) {
+  if (klines.length < 3) return { detected: false };
+  const last  = klines[klines.length - 1];
+  const range = last.high - last.low || 1e-10;
+
+  if (side === "BULLISH") {
+    const zones = [swings.lastLow, swings.prevLow].filter(Boolean);
+    for (const z of zones) {
+      // Low candle masuk ke area demand zone (±0.5% dari swing low)
+      const inZone = last.low <= z.price * 1.005 && last.low >= z.price * 0.995;
+      if (inZone) {
+        const lowerWick = Math.min(last.open, last.close) - last.low;
+        const wickRatio = lowerWick / range;
+        const isBullish = last.close > last.open;
+        const closeAbove = last.close > z.price; // rebound ke atas zone
+        const strong = isBullish && wickRatio >= 0.30 && closeAbove;
+        return {
+          detected:  true,
+          strong,
+          zone:      z.price,
+          zoneType:  "DEMAND",
+          proximity: parseFloat((Math.abs(last.low - z.price) / z.price * 100).toFixed(4)),
+          wickRatio: parseFloat(wickRatio.toFixed(3)),
+        };
+      }
+    }
+  } else {
+    const zones = [swings.lastHigh, swings.prevHigh].filter(Boolean);
+    for (const z of zones) {
+      // High candle masuk ke area supply zone (±0.5% dari swing high)
+      const inZone = last.high >= z.price * 0.995 && last.high <= z.price * 1.005;
+      if (inZone) {
+        const upperWick = last.high - Math.max(last.open, last.close);
+        const wickRatio = upperWick / range;
+        const isBearish = last.close < last.open;
+        const closeBelow = last.close < z.price; // reject kembali ke bawah zone
+        const strong = isBearish && wickRatio >= 0.30 && closeBelow;
+        return {
+          detected:  true,
+          strong,
+          zone:      z.price,
+          zoneType:  "SUPPLY",
+          proximity: parseFloat((Math.abs(last.high - z.price) / z.price * 100).toFixed(4)),
+          wickRatio: parseFloat(wickRatio.toFixed(3)),
+        };
+      }
+    }
+  }
+  return { detected: false };
+}
+
 /** 1I — ATR (Average True Range) */
 function calcATR(klines, period = 14) {
   if (klines.length < period + 1) return 0;
@@ -1980,7 +2057,8 @@ async function tradingLoop() {
     const inFVG    = isPriceInFVG(price, fvgData, tradeSide);
     const candleOK = confirmEntryCandle(klines5m, tradeSide);
 
-    // ── E2. Reversal Detection (tambahan institusional) ────
+    // ── E2. S/D Zone Touch + Reversal Detection ────────────
+    const sdZone  = detectSDZoneTouch(klines5m, swings, tradeSide);
     const sweep   = detectLiquiditySweep(klines5m, swings, tradeSide);
     const bos     = detectBreakOfStructure(klines5m, swings, tradeSide);
     const revScore = calculateReversalScore({
@@ -1996,24 +2074,27 @@ async function tradingLoop() {
 
     // Log checklist SMC + reversal score setiap tick
     const checks = [
-      inducmt.valid      ? "✅Ind"    : "❌Ind",
-      liqGrab.detected   ? "✅Liq"    : "❌Liq",
-      choch.detected     ? "✅CHoCH"  : "❌CHoCH",
-      inFVG.inFVG        ? "✅FVG"    : "❌FVG",
-      candleOK.confirmed ? "✅Candle" : "❌Candle",
-      sweep.detected     ? "✅Sweep"  : "❌Sweep",
-      bos.detected       ? "✅BOS"    : "❌BOS",
+      choch.detected                        ? "✅CHoCH"  : "❌CHoCH",
+      inFVG.inFVG                           ? "✅FVG"    : "❌FVG",
+      sdZone.detected && sdZone.strong      ? "✅SD🔥"   : sdZone.detected ? "⚠️SD"   : "❌SD",
+      inducmt.valid                         ? "✅Ind"    : "❌Ind",
+      liqGrab.detected                      ? "✅Liq"    : "❌Liq",
+      candleOK.confirmed                    ? "✅Candle" : "❌Candle",
+      sweep.detected                        ? "✅Sweep"  : "❌Sweep",
+      bos.detected                          ? "✅BOS"    : "❌BOS",
     ].join(" ");
     log("INFO", `[${tradeSide}] ${checks} | ATR:${atrPct.toFixed(3)}% | RevScore:${revScore.score}(${revScore.grade})`);
 
     // ── F. Cek apakah kondisi cukup untuk entry ────────────
-    // Mode A — SMC Lengkap: semua 5 kondisi SMC terpenuhi
-    // Mode B — Reversal Grade A/B: score ≥ 60 + minimal liqGrab/BOS
-    // Mode C — BOS Direct: BOS + CHoCH/LiqGrab → langsung entry tanpa Claude
+    // Mode D (Utama) — CHoCH + FVG + S/D Zone strong retest → langsung entry, no Claude
+    const sdReady        = choch.detected && inFVG.inFVG && sdZone.detected && sdZone.strong;
+    // Mode A — SMC Lengkap: semua 5 kondisi
     const smcFull        = inducmt.valid && liqGrab.detected && choch.detected && inFVG.inFVG && candleOK.confirmed;
+    // Mode B — Reversal Grade A/B
     const revReady       = revScore.callAI && (sweep.detected || bos.detected) && (liqGrab.detected || choch.detected);
-    const bosDirectEntry = bos.detected && (choch.detected || liqGrab.detected);
-    const smcReady       = smcFull || revReady || bosDirectEntry;
+    // Mode C — BOS Direct: BOS saja cukup
+    const bosDirectEntry = bos.detected;
+    const smcReady       = sdReady || smcFull || revReady || bosDirectEntry;
 
     // Bangun smcData untuk broadcast (dipakai di kedua cabang)
     const smcData = {
@@ -2028,29 +2109,54 @@ async function tradingLoop() {
       fvgData,
       inFVG,
       candleOK,
+      sdZone,
       sweep,
       bos,
       revScore,
+      sdReady,
       smcFull,
       smcReady,
       bosDirectEntry,
     };
 
     if (smcReady) {
-      const modeLabel = smcFull
-        ? "FULL SMC"
-        : (bosDirectEntry && !revReady)
-          ? `BOS DIRECT (${bos.type || "BOS"})`
-          : `REVERSAL Grade-${revScore.grade} (${revScore.score}/100)`;
+      const modeLabel = sdReady
+        ? `SD ZONE (${sdZone.zoneType}) CHoCH+FVG`
+        : smcFull
+          ? "FULL SMC"
+          : (bosDirectEntry && !revReady)
+            ? `BOS DIRECT (${bos.type || "BOS"})`
+            : `REVERSAL Grade-${revScore.grade} (${revScore.score}/100)`;
 
-      // ── G. Hitung SL dari swing level ──────────────────
-      const swingLevel = tradeSide === "BULLISH"
-        ? (swings.lastLow?.price  || price * 0.99)
-        : (swings.lastHigh?.price || price * 1.01);
-      const slPct = Math.max(0.3, Math.min(2.0, Math.abs((price - swingLevel) / price * 100)));
-      const tpPct = slPct * 2; // RR 1:2
-      const fvg   = tradeSide === "BULLISH" ? fvgData.lastBullFVG : fvgData.lastBearFVG;
+      // ── G. Hitung SL/TP ─────────────────────────────────
+      // Mode D (sdReady): SL tepat di bawah/atas S/D zone
+      // Mode lain: SL dari swing level
+      let slPrice, slPct, tpPct, orderQty, leverage;
 
+      if (sdReady) {
+        // SL = sedikit di luar zone (0.15% buffer)
+        slPrice = tradeSide === "BULLISH"
+          ? sdZone.zone * (1 - 0.0015)
+          : sdZone.zone * (1 + 0.0015);
+        slPct = Math.max(0.2, Math.abs((price - slPrice) / price * 100));
+        tpPct = slPct * 2; // RR 1:2
+        // Risk-based sizing: jika SL kena, loss = POSITION_SIZE_USDT (modal isolated)
+        const sized = calcOrderSizeByRisk(price, slPct);
+        orderQty = sized.qty;
+        leverage = sized.leverage;
+      } else {
+        // Fallback: SL dari swing level
+        const swingLevel = tradeSide === "BULLISH"
+          ? (swings.lastLow?.price  || price * 0.99)
+          : (swings.lastHigh?.price || price * 1.01);
+        slPct    = Math.max(0.3, Math.min(2.0, Math.abs((price - swingLevel) / price * 100)));
+        slPrice  = tradeSide === "BULLISH" ? price * (1 - slPct / 100) : price * (1 + slPct / 100);
+        tpPct    = slPct * 2;
+        orderQty = null; // pakai calcOrderSize default di openPosition
+        leverage = Math.min(Math.max(Math.round(1 / slPct * 8), CONFIG.DEFAULT_LEVERAGE), CONFIG.MAX_LEVERAGE);
+      }
+
+      const fvg = tradeSide === "BULLISH" ? fvgData.lastBullFVG : fvgData.lastBearFVG;
       const smcSetup = {
         side:         tradeSide,
         htfTrend:     htf.trend,
@@ -2063,31 +2169,50 @@ async function tradingLoop() {
         fvgLower:     fvg?.lower,
         fvgUpper:     fvg?.upper,
         candleOK:     candleOK.confirmed,
+        sdZone:       sdZone.detected ? `${sdZone.zoneType} zone=${sdZone.zone?.toFixed(8)} wick=${sdZone.wickRatio}` : "tidak terdeteksi",
         sweep:        sweep.detected ? `wick=${sweep.wickSize} strong=${sweep.strong}` : "tidak terdeteksi",
         bos:          bos.detected   ? `${bos.type} break=${bos.breakAmount}% momentum=${bos.momentum}` : "tidak terdeteksi",
         revScore:     revScore.score,
         revGrade:     revScore.grade,
         revReasons:   revScore.reasons.join(", "),
-        smcMode:      smcFull ? "FULL_SMC" : (bosDirectEntry && !revReady) ? "BOS_DIRECT" : "REVERSAL_ONLY",
+        smcMode:      sdReady ? "SD_ZONE" : smcFull ? "FULL_SMC" : (bosDirectEntry && !revReady) ? "BOS_DIRECT" : "REVERSAL_ONLY",
       };
 
       // ── H. Tentukan claudeFilter berdasarkan mode ───────
       let claudeFilter;
-      if (bosDirectEntry && !smcFull) {
-        // Mode C: BOS Direct — langsung entry tanpa menunggu Claude
-        const bosDesc     = bos.type || "BOS";
-        const confirmDesc = choch.detected ? "CHoCH" : "LiqGrab";
+      if (sdReady) {
+        // Mode D: CHoCH + FVG + SD Zone strong → langsung masuk, no Claude
+        claudeFilter = {
+          approve:    true,
+          confidence: 80,
+          reason:     `CHoCH+FVG+${sdZone.zoneType}(wick=${sdZone.wickRatio}) — SD Zone direct entry`,
+          risk:       "LOW",
+          direct:     true,
+        };
+        log("TRADE",
+          `🎯 SD ZONE ENTRY [${tradeSide}] ${sdZone.zoneType} zone=${sdZone.zone?.toFixed(8)} | ` +
+          `CHoCH✅ FVG✅ wick=${sdZone.wickRatio} | ` +
+          `SL:${slPct.toFixed(3)}% TP:${tpPct.toFixed(3)}% Lev:${leverage}x | ` +
+          `modal=${CONFIG.POSITION_SIZE_USDT}USDT → max loss=${CONFIG.POSITION_SIZE_USDT}USDT`
+        );
+      } else if (bosDirectEntry && !smcFull) {
+        // Mode C: BOS Direct
+        const bosDesc = bos.type || "BOS";
+        const extras  = [
+          choch.detected   ? "CHoCH"   : null,
+          liqGrab.detected ? "LiqGrab" : null,
+          sweep.detected   ? "Sweep"   : null,
+        ].filter(Boolean).join("+") || "confirmed";
         claudeFilter = {
           approve:    true,
           confidence: 75,
-          reason:     `${bosDesc}+${confirmDesc} confirmed — BOS Direct Entry`,
+          reason:     `${bosDesc} ${extras} — BOS Direct Entry`,
           risk:       "MEDIUM",
           direct:     true,
         };
         log("TRADE",
-          `⚡ BOS DIRECT [${modeLabel}] [${tradeSide}] ` +
-          `${bosDesc}+${confirmDesc} | ATR:${atrPct.toFixed(3)}% ` +
-          `HTF:${htf.trend} Session:${session.session} ` +
+          `⚡ BOS DIRECT [${tradeSide}] ${bosDesc} ${extras} | ` +
+          `ATR:${atrPct.toFixed(3)}% HTF:${htf.trend} Session:${session.session} ` +
           `→ MASUK LANGSUNG tanpa Claude`
         );
       } else {
@@ -2099,8 +2224,7 @@ async function tradingLoop() {
         );
         await fetchAllExternalData();
         claudeFilter = await analyzeWithClaudeSMC(smcSetup, {
-          price,
-          fundingRate,
+          price, fundingRate,
           volumeRatio: indicators.volumeRatio,
           rsi:         indicators.rsi,
         });
@@ -2113,31 +2237,28 @@ async function tradingLoop() {
 
       smcData.claudeFilter = claudeFilter;
 
-      // BOS Direct: threshold 65 | SMC/Reversal: threshold CONFIG.OPEN_CONFIDENCE (70)
-      const confThreshold = (bosDirectEntry && !smcFull) ? 65 : CONFIG.OPEN_CONFIDENCE;
+      // SD Zone & BOS Direct: threshold 65 | SMC/Reversal: 70
+      const confThreshold = (sdReady || (bosDirectEntry && !smcFull)) ? 65 : CONFIG.OPEN_CONFIDENCE;
 
       // ── I. Entry ────────────────────────────────────────
       if (claudeFilter.approve && claudeFilter.confidence >= confThreshold) {
-        const leverage = Math.min(
-          Math.max(Math.round(1 / slPct * 8), CONFIG.DEFAULT_LEVERAGE),
-          CONFIG.MAX_LEVERAGE
-        );
         log("TRADE",
           `🚀 ENTRY ${tradeSide} [${modeLabel}] | ` +
-          `SL:${slPct.toFixed(2)}% TP:${tpPct.toFixed(2)}% ` +
+          `SL:${slPct.toFixed(3)}% TP:${tpPct.toFixed(3)}% ` +
           `Lev:${leverage}x RR:1:2 | ` +
-          `${claudeFilter.direct ? "BOS Direct" : `Claude:${claudeFilter.confidence}%`} (${claudeFilter.risk})`
+          `${claudeFilter.direct ? modeLabel : `Claude:${claudeFilter.confidence}%`} (${claudeFilter.risk})`
         );
         const opened = await openPosition(
           tradeSide === "BULLISH" ? "LONG" : "SHORT",
           leverage,
-          price
+          price,
+          orderQty
         );
         if (opened && state.activePosition) {
-          // Override SL/TP dengan kalkulasi SMC (bukan dari Claude)
+          // Override SL/TP dengan kalkulasi SMC
           state.activePosition.stopLoss = tradeSide === "BULLISH"
-            ? price * (1 - slPct / 100)
-            : price * (1 + slPct / 100);
+            ? slPrice
+            : slPrice;
           state.activePosition.takeProfit = tradeSide === "BULLISH"
             ? price * (1 + tpPct / 100)
             : price * (1 - tpPct / 100);

@@ -1227,9 +1227,9 @@ Aturan SCALPING AGRESIF:
 /** 1A — HTF Trend Filter (15m EMA50 vs EMA200) */
 async function getHTFTrend() {
   try {
-    const klines15m = await getKlines("15m", 210);
-    if (klines15m.length < 200) return { trend: "NEUTRAL", strength: "WEAK" };
-    const closes = klines15m.map(k => k.close);
+    const klines5m = await getKlines("5m", 110); // HTF = 5m, EMA50+EMA100
+    if (klines5m.length < 100) return { trend: "NEUTRAL", strength: "WEAK" };
+    const closes = klines5m.map(k => k.close);
     function emaLocal(data, period) {
       const k = 2 / (period + 1);
       let ema = data.slice(0, period).reduce((a, b) => a + b, 0) / period;
@@ -1237,12 +1237,12 @@ async function getHTFTrend() {
       return ema;
     }
     const ema50  = emaLocal(closes, 50);
-    const ema200 = emaLocal(closes, 200);
-    const sep    = Math.abs((ema50 - ema200) / ema200 * 100);
+    const ema100 = emaLocal(closes, 100); // EMA100 menggantikan EMA200 (sesuai jumlah candle)
+    const sep    = Math.abs((ema50 - ema100) / ema100 * 100);
     return {
-      trend:    ema50 > ema200 ? "BULLISH" : "BEARISH",
-      strength: sep > 1 ? "STRONG" : "WEAK",
-      ema50, ema200, sep: parseFloat(sep.toFixed(3)),
+      trend:    ema50 > ema100 ? "BULLISH" : "BEARISH",
+      strength: sep > 0.5 ? "STRONG" : "WEAK", // threshold diturunkan karena TF lebih kecil
+      ema50, ema200: ema100, sep: parseFloat(sep.toFixed(3)),
     };
   } catch (err) {
     log("WARN", `HTF trend gagal: ${err.message}`);

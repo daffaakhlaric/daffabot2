@@ -65,12 +65,16 @@ const CONFIG = {
   FUNDING_RATE_THRESHOLD: 0.001, // 0.1% = pertimbangkan tutup
 
   // Jadwal
-  CHECK_INTERVAL_MS:       10000, // 10 detik
-  CLAUDE_ANALYSIS_INTERVAL: 6,    // setiap 6 tick = ~1 menit
+  CHECK_INTERVAL_MS:        10000, // 10 detik
+  CLAUDE_ANALYSIS_INTERVAL: 12,   // setiap 12 tick = ~2 menit (hemat kredit)
 
   // Batas confidence AI
   OPEN_CONFIDENCE:  75,
   CLOSE_CONFIDENCE: 65,
+
+  // Hemat kredit AI: skip panggilan kalau tidak ada sinyal kuat
+  CLAUDE_SMART_FILTER: true,   // true = aktifkan pre-filter sebelum panggil AI
+  CLAUDE_RSI_DEAD_ZONE: 5,     // skip kalau RSI dalam range 50±5 (45-55) = netral
 
   // Dry run (WAJIB true saat testing!)
   DRY_RUN: false,
@@ -1106,127 +1110,46 @@ async function analyzeWithClaude(marketData) {
     return null;
   }
 
-  const prompt = `Kamu adalah AI trading bot untuk PEPE/USDT futures di Bitget. Analisis data pasar berikut dan berikan keputusan trading.
+  // Prompt ringkas — hemat token ~55% vs versi panjang
+  const p = marketData;
+  const posStr = p.activePosition
+    ? `${p.activePosition.side} entry=${p.activePosition.entryPrice.toFixed(8)} ${p.activePosition.leverage}x PnL=${p.activePosition.pnlPct !== undefined ? (p.activePosition.pnlPct >= 0 ? "+" : "") + p.activePosition.pnlPct.toFixed(2) + "%" : "?"} Liq=${p.activePosition.liqPrice ? p.activePosition.liqPrice.toFixed(8) : "?"}`
+    : "tidak ada";
+  const geckoStr = p.geckoData
+    ? `PEPE 1h=${p.geckoData.change1h.toFixed(2)}% 24h=${p.geckoData.change24h.toFixed(2)}% 7d=${p.geckoData.change7d.toFixed(2)}% Vol=$${(p.geckoData.volume24h/1e6).toFixed(1)}M${p.geckoData.isPepeTrending ? ` TRENDING#${p.geckoData.trendingRank}` : ""}`
+    : "gecko:N/A";
+  const cmcStr = p.cmcData
+    ? `BTCdom=${p.cmcData.btcDominance.toFixed(1)}% MktCap24h=${p.cmcData.marketCapChange24h >= 0 ? "+" : ""}${p.cmcData.marketCapChange24h.toFixed(2)}% PEPEvol=${p.cmcData.pepeVolumeChange24h >= 0 ? "+" : ""}${p.cmcData.pepeVolumeChange24h.toFixed(2)}%`
+    : "cmc:N/A";
+  const mtfStr = p.mtf
+    ? `1m:${p.mtf.tf1m.trend}/RSI${p.mtf.tf1m.rsi.toFixed(0)} 5m:${p.mtf.tf5m.trend}/RSI${p.mtf.tf5m.rsi.toFixed(0)} 15m:${p.mtf.tf15m.trend}/RSI${p.mtf.tf15m.rsi.toFixed(0)} Consensus:${p.consensus}`
+    : "MTF:N/A";
+  const bbStr = p.bb
+    ? `U=${p.bb.upper.toFixed(8)} M=${p.bb.middle.toFixed(8)} L=${p.bb.lower.toFixed(8)} %B=${p.bb.pctB.toFixed(3)} Squeeze=${p.squeeze?.squeeze ? "YA" : "tidak"} Break=${p.squeeze?.breakoutDirection || "NONE"}`
+    : "BB:N/A";
+  const prompt = `Bot PEPE/USDT Bitget futures. Balas HANYA JSON.
 
-## Data Pasar Saat Ini
-- Harga terakhir : ${marketData.price.toFixed(8)} USDT
-- Bid/Ask        : ${marketData.bid.toFixed(8)} / ${marketData.ask.toFixed(8)}
-- Volume 24j     : ${marketData.volume24h.toLocaleString()}
-- Perubahan 24j  : ${marketData.change24h > 0 ? "+" : ""}${(marketData.change24h * 100).toFixed(2)}%
+PASAR: ${p.price.toFixed(8)} Bid/Ask:${p.bid.toFixed(8)}/${p.ask.toFixed(8)} Vol24h:${(p.volume24h/1e9).toFixed(2)}B Δ24h:${(p.change24h*100).toFixed(2)}%
+TEKNIKAL: RSI:${p.rsi.toFixed(1)} EMA9:${p.ema9.toFixed(8)} EMA21:${p.ema21.toFixed(8)} VolRatio:${p.volumeRatio.toFixed(2)}x
+ORDERBOOK: Bid/Ask ratio=${p.orderBook.bidAskRatio.toFixed(3)}
+FUNDING: ${(p.fundingRate*100).toFixed(4)}%${Math.abs(p.fundingRate) > 0.001 ? " ⚠tinggi" : ""}
+F&G: ${p.fearGreed.value}(${p.fearGreed.classification}) Avg7d:${p.fearGreed.avg7d} Trend:${p.fearGreed.trend}
+${geckoStr}
+${cmcStr}
+POSISI: ${posStr}
+MTF: ${mtfStr}
+BB: ${bbStr}
+VWAP: ${p.vwap.toFixed(8)} vs harga ${p.vwapPct >= 0 ? "+" : ""}${p.vwapPct.toFixed(3)}% POC:${p.volProf?.poc.toFixed(8) || "N/A"}
+CANDLE: Bull:[${p.candlePatterns?.bullishPatterns.join(",") || "-"}] Bear:[${p.candlePatterns?.bearishPatterns.join(",") || "-"}] Bias:${p.candlePatterns?.dominantBias}(${p.candlePatterns?.strength})
+PERFORMA: WR:${p.winRate.toFixed(1)}% Streak:${p.streak > 0 ? "+" : ""}${p.streak} TotalPnL:${p.totalPnL >= 0 ? "+" : ""}${p.totalPnL.toFixed(4)}USDT
 
-## Indikator Teknikal (1m candle)
-- RSI (14)       : ${marketData.rsi.toFixed(2)}
-- EMA 9          : ${marketData.ema9.toFixed(8)}
-- EMA 21         : ${marketData.ema21.toFixed(8)}
-- Rasio Volume   : ${marketData.volumeRatio.toFixed(2)}x (>1 = volume tinggi)
+Aturan: buka≥${CONFIG.OPEN_CONFIDENCE}% tutup≥${CONFIG.CLOSE_CONFIDENCE}% | MTF MIXED=HOLD | BB squeeze=HOLD | BTCdom>60%=hindari LONG | harga>VWAP=bias LONG
+{"action":"LONG|SHORT|CLOSE|HOLD","leverage":5-10,"confidence":0-100,"sentiment":"BULLISH|BEARISH|NEUTRAL|VOLATILE","stop_loss_pct":0.5-3.0,"take_profit_pct":1.0-5.0,"reasoning":"<30 kata"}`;
 
-## Order Book
-- Total Bid      : ${marketData.orderBook.totalBid.toFixed(0)}
-- Total Ask      : ${marketData.orderBook.totalAsk.toFixed(0)}
-- Bid/Ask Ratio  : ${marketData.orderBook.bidAskRatio.toFixed(3)} (>1 = tekanan beli)
-
-## Funding Rate
-- Saat ini       : ${(marketData.fundingRate * 100).toFixed(4)}%
-- Interpretasi   : ${marketData.fundingRate > 0 ? "Positif → long bayar short" : "Negatif → short bayar long"}
-- Threshold      : >0.1% pertimbangkan tutup posisi
-
-## Sentimen & Makro Market
-
-### Fear & Greed Index
-- Sekarang   : ${marketData.fearGreed.value} — ${marketData.fearGreed.classification}
-- Kemarin    : ${marketData.fearGreed.yesterday}
-- Rata 7 hari: ${marketData.fearGreed.avg7d}
-- Tren 7h    : ${marketData.fearGreed.trend} (IMPROVING=membaik, WORSENING=memburuk, STABLE=stabil)
-
-### CoinGecko — PEPE Global
-${marketData.geckoData ? `- Perubahan 1j   : ${marketData.geckoData.change1h.toFixed(2)}%
-- Perubahan 24j  : ${marketData.geckoData.change24h.toFixed(2)}%
-- Perubahan 7h   : ${marketData.geckoData.change7d.toFixed(2)}%
-- Volume 24j     : $${(marketData.geckoData.volume24h / 1e6).toFixed(1)}M
-- Market Cap     : $${(marketData.geckoData.marketCap / 1e6).toFixed(0)}M (Rank #${marketData.geckoData.marketCapRank})
-- Reddit Posts 48j: ${marketData.geckoData.redditPosts48h.toFixed(1)}
-- TRENDING       : ${marketData.geckoData.isPepeTrending ? "YA — Rank #" + marketData.geckoData.trendingRank + " (potensi hype!)" : "Tidak trending"}` : "- Data tidak tersedia (pakai cache)"}
-
-### CoinMarketCap — Global Market
-${marketData.cmcData ? `- BTC Dominance   : ${marketData.cmcData.btcDominance.toFixed(2)}% ${marketData.cmcData.btcDominance > 60 ? "⚠ >60% = BTC season, hindari long altcoin" : marketData.cmcData.btcDominance < 45 ? "✓ <45% = Altcoin season, PEPE berpeluang naik" : "(Netral)"}
-- Market Cap 24j  : ${marketData.cmcData.marketCapChange24h >= 0 ? "+" : ""}${marketData.cmcData.marketCapChange24h.toFixed(2)}%
-- Vol PEPE change : ${marketData.cmcData.pepeVolumeChange24h >= 0 ? "+" : ""}${marketData.cmcData.pepeVolumeChange24h.toFixed(2)}% ${Math.abs(marketData.cmcData.pepeVolumeChange24h) > 50 ? "⚡ Volume spike signifikan!" : ""}` : "- Data tidak tersedia (pakai cache)"}
-
-## Posisi Aktif
-${marketData.activePosition
-  ? `- Side          : ${marketData.activePosition.side}
-- Entry Price   : ${marketData.activePosition.entryPrice.toFixed(8)}
-- Leverage      : ${marketData.activePosition.leverage}x
-- Unrealized PnL: ${marketData.activePosition.unrealPnL !== undefined ? (marketData.activePosition.unrealPnL >= 0 ? "+" : "") + marketData.activePosition.unrealPnL.toFixed(4) + " USDT" : "N/A"}
-- PnL %         : ${marketData.activePosition.pnlPct !== undefined ? (marketData.activePosition.pnlPct >= 0 ? "+" : "") + marketData.activePosition.pnlPct.toFixed(2) + "%" : "N/A"}
-- Liquidation   : ${marketData.activePosition.liqPrice ? marketData.activePosition.liqPrice.toFixed(8) : "N/A"} ← KRITIS!`
-  : "- Tidak ada posisi aktif"}
-
-## Instruksi
-Berikan analisis dan keputusan dalam format JSON berikut (HANYA JSON, tanpa teks lain):
-{
-  "action": "LONG" | "SHORT" | "CLOSE" | "HOLD",
-  "leverage": <angka 5-10>,
-  "confidence": <0-100>,
-  "sentiment": "BULLISH" | "BEARISH" | "NEUTRAL" | "VOLATILE",
-  "stop_loss_pct": <0.5-3.0>,
-  "take_profit_pct": <1.0-5.0>,
-  "reasoning": "<max 80 kata bahasa Indonesia>"
-}
-
-Rules:
-- LONG  → rekomendasikan jika harga diprediksi NAIK
-- SHORT → rekomendasikan jika harga diprediksi TURUN
-- CLOSE → rekomendasikan tutup posisi aktif
-- HOLD  → jangan buka/tutup posisi
-- confidence ≥ 75 untuk buka posisi baru
-- confidence ≥ 65 untuk tutup posisi
-- Pertimbangkan funding rate saat ada posisi aktif
-- BTC Dominance >60% → hindari LONG altcoin seperti PEPE
-- PEPE trending CoinGecko → potensi hype pump, pertimbangkan LONG tapi waspadai dump setelah hype
-- Fear & Greed WORSENING 7 hari → lebih konservatif
-- Volume PEPE naik >50% + harga naik → konfirmasi LONG kuat
-- Volume PEPE naik >50% + harga turun → konfirmasi SHORT kuat
-- Altcoin season (BTC Dom <45%) → lebih agresif di PEPE
-
-## Multi-Timeframe Analysis
-${marketData.mtf ? `- 1m  : RSI=${marketData.mtf.tf1m.rsi.toFixed(1)} | EMA9${marketData.mtf.tf1m.ema9 > marketData.mtf.tf1m.ema21 ? ">" : "<"}EMA21 | Tren=${marketData.mtf.tf1m.trend}
-- 5m  : RSI=${marketData.mtf.tf5m.rsi.toFixed(1)} | EMA9${marketData.mtf.tf5m.ema9 > marketData.mtf.tf5m.ema21 ? ">" : "<"}EMA21 | Tren=${marketData.mtf.tf5m.trend}
-- 15m : RSI=${marketData.mtf.tf15m.rsi.toFixed(1)} | EMA9${marketData.mtf.tf15m.ema9 > marketData.mtf.tf15m.ema21 ? ">" : "<"}EMA21 | Tren=${marketData.mtf.tf15m.trend}
-- Consensus: ${marketData.consensus}` : "- Data MTF tidak tersedia"}
-
-## Bollinger Bands & Squeeze
-${marketData.bb ? `- Upper/Middle/Lower: ${marketData.bb.upper.toFixed(8)} / ${marketData.bb.middle.toFixed(8)} / ${marketData.bb.lower.toFixed(8)}
-- Bandwidth: ${marketData.bb.bandwidth.toFixed(2)}% | Squeeze: ${marketData.squeeze?.squeeze ? "AKTIF ⚠" : "tidak"}
-- %B: ${marketData.bb.pctB.toFixed(3)} (>1=di atas upper, <0=di bawah lower)
-- Breakout: ${marketData.squeeze?.breakoutDirection || "NONE"}` : "- Data BB tidak tersedia"}
-
-## Volume Profile & VWAP
-- VWAP: ${marketData.vwap.toFixed(8)} | Harga vs VWAP: ${marketData.vwapPct >= 0 ? "+" : ""}${marketData.vwapPct.toFixed(3)}%
-- Point of Control (POC): ${marketData.volProf?.poc.toFixed(8) || "N/A"}
-- HVN terdekat: ${marketData.volProf?.hvn.length ? marketData.volProf.hvn.slice(0, 2).map(v => v.toFixed(8)).join(", ") : "tidak ada"}
-
-## Candle Patterns (3 candle terakhir)
-- Bullish: ${marketData.candlePatterns?.bullishPatterns.join(", ") || "tidak ada"}
-- Bearish: ${marketData.candlePatterns?.bearishPatterns.join(", ") || "tidak ada"}
-- Dominant Bias: ${marketData.candlePatterns?.dominantBias} (Strength: ${marketData.candlePatterns?.strength})
-
-## Performa Bot (20 trade terakhir)
-- Win Rate   : ${marketData.winRate.toFixed(1)}%
-- Streak     : ${marketData.streak > 0 ? "+" : ""}${marketData.streak} (+ = win streak, - = loss streak)
-- Total PnL  : ${marketData.totalPnL >= 0 ? "+" : ""}${marketData.totalPnL.toFixed(4)} USDT
-
-Instruksi tambahan:
-- Pertimbangkan MTF consensus sebelum rekomendasikan LONG/SHORT
-- JANGAN rekomendasikan entry saat Bollinger Squeeze aktif
-- Gunakan VWAP sebagai bias directional (harga di atas VWAP = bias LONG)
-- Konfirmasi dengan candle pattern sebelum entry
-- Sesuaikan confidence dengan win rate bot (win rate rendah = lebih konservatif)
-`;
 
   const bodyStr = JSON.stringify({
     model:      "claude-haiku-4-5-20251001",
-    max_tokens: 512,
+    max_tokens: 200,   // JSON response kecil, 200 cukup
     messages:   [{ role: "user", content: prompt }],
   });
 
@@ -1486,6 +1409,26 @@ async function tradingLoop() {
                    isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
                    latestCandle: klines[klines.length - 1] }); // update chart candle terbaru
     return;
+  }
+
+  // ── Smart filter: skip AI kalau tidak ada sinyal ─────────
+  if (CONFIG.CLAUDE_SMART_FILTER && !pos) {
+    const deadLow  = 50 - CONFIG.CLAUDE_RSI_DEAD_ZONE;
+    const deadHigh = 50 + CONFIG.CLAUDE_RSI_DEAD_ZONE;
+    const rsiNetral    = indicators.rsi >= deadLow && indicators.rsi <= deadHigh;
+    const emaNeutral   = Math.abs(indicators.ema9 - indicators.ema21) / indicators.ema21 < 0.0003; // spread EMA < 0.03%
+    const mixedOrWeak  = !CONFIG.REQUIRE_MTF_CONSENSUS || consensus === "MIXED";
+    const lastWasHold  = state.lastAnalysis?.action === "HOLD";
+    if (rsiNetral && emaNeutral && (mixedOrWeak || lastWasHold)) {
+      log("INFO", `Smart filter: RSI=${indicators.rsi.toFixed(1)} netral, EMA spread kecil → skip Claude (hemat kredit)`);
+      broadcastSSE({ type: "tick", price, rsi: indicators.rsi, ema9: indicators.ema9, ema21: indicators.ema21,
+                     fundingRate, fearGreed: externalDataCache?.fearGreed, position: pos,
+                     bid: ticker?.bidPrice, ask: ticker?.askPrice,
+                     volume24h: ticker?.volume24h, change24h: ticker?.change24h,
+                     isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
+                     latestCandle: klines[klines.length - 1] });
+      return;
+    }
   }
 
   // ── Fetch data eksternal setiap siklus analisis ───────────

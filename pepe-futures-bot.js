@@ -316,10 +316,9 @@ async function getKlines(granularity = "1m", limit = 100) {
     volume: parseFloat(c[5]),
   })).reverse(); // Bitget returns newest first → reverse ke oldest first
 
-  // BUG #6 FIX: validasi urutan agar RSI/EMA dihitung oldest→newest
+  // validasi urutan agar RSI/EMA dihitung oldest→newest
   if (candles.length >= 2 && candles[0].time > candles[candles.length - 1].time) {
-    log("WARN", "Klines urutan terbalik! Re-reverse...");
-    candles.reverse();
+    candles.reverse(); // auto-fix urutan tanpa spam log
   }
   return candles;
 }
@@ -775,8 +774,13 @@ function calcRSI(closes, period = 14) {
 function calcIndicators(klines) {
   const closes  = klines.map((k) => k.close);
   const volumes  = klines.map((k) => k.volume);
-  const avgVol  = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-  const lastVol = volumes[volumes.length - 1];
+  // Filter volume 0 agar tidak distorsi rata-rata
+  const nonZeroVols = volumes.filter(v => v > 0);
+  const avgVol = nonZeroVols.length > 0
+    ? nonZeroVols.slice(-20).reduce((a, b) => a + b, 0) /
+      Math.min(nonZeroVols.length, 20)
+    : 1;
+  const lastVol = volumes[volumes.length - 1] || 0;
 
   return {
     rsi:       calcRSI(closes),
@@ -1132,7 +1136,7 @@ async function analyzeWithClaude(marketData) {
 PASAR: ${p.price.toFixed(8)} Bid/Ask:${p.bid.toFixed(8)}/${p.ask.toFixed(8)} Vol24h:${(p.volume24h/1e9).toFixed(2)}B Δ24h:${(p.change24h*100).toFixed(2)}%
 TEKNIKAL: RSI:${p.rsi.toFixed(1)} EMA9:${p.ema9.toFixed(8)} EMA21:${p.ema21.toFixed(8)} VolRatio:${p.volumeRatio.toFixed(2)}x
 ORDERBOOK: Bid/Ask ratio=${p.orderBook.bidAskRatio.toFixed(3)}
-FUNDING: ${(p.fundingRate*100).toFixed(4)}%${Math.abs(p.fundingRate) > 0.001 ? " ⚠tinggi" : ""}
+FUNDING: ${(p.fundingRate*100).toFixed(4)}%${Math.abs(p.fundingRate) > 0.001 ? " ⚠tinggi" : ""} SIGNAL:${p.fundingSignal}${p.fundingRate < -0.0001 ? " ⚡mayoritas short→bias LONG" : p.fundingRate > 0.0001 ? " ⚠mayoritas long→pertimbangkan SHORT" : ""}
 F&G: ${p.fearGreed.value}(${p.fearGreed.classification}) Avg7d:${p.fearGreed.avg7d} Trend:${p.fearGreed.trend}
 ${geckoStr}
 ${cmcStr}
@@ -1143,7 +1147,19 @@ VWAP: ${p.vwap.toFixed(8)} vs harga ${p.vwapPct >= 0 ? "+" : ""}${p.vwapPct.toFi
 CANDLE: Bull:[${p.candlePatterns?.bullishPatterns.join(",") || "-"}] Bear:[${p.candlePatterns?.bearishPatterns.join(",") || "-"}] Bias:${p.candlePatterns?.dominantBias}(${p.candlePatterns?.strength})
 PERFORMA: WR:${p.winRate.toFixed(1)}% Streak:${p.streak > 0 ? "+" : ""}${p.streak} TotalPnL:${p.totalPnL >= 0 ? "+" : ""}${p.totalPnL.toFixed(4)}USDT
 
-Aturan scalping: buka≥${CONFIG.OPEN_CONFIDENCE}% tutup≥${CONFIG.CLOSE_CONFIDENCE}% | SL ketat 0.5-1.5% TP cepat 1.0-2.5% | leverage min 7x | RSI extreme=entry agresif | BB breakout=entry | VWAP cross=sinyal kuat
+Aturan SCALPING AGRESIF:
+- buka≥${CONFIG.OPEN_CONFIDENCE}% tutup≥${CONFIG.CLOSE_CONFIDENCE}%
+- RSI 55-65 + EMA cross = confidence minimal 65%
+- RSI 45-55 + volume spike = confidence minimal 60%
+- BB breakout + volume = confidence minimal 70%
+- Jangan tunggu kondisi sempurna — scalping butuh action
+- Funding negatif saat market BULLISH = LONG lebih aman (short membayar long, artinya mayoritas short)
+- Fear&Greed Extreme Fear (<20) = peluang bounce LONG
+- Volume ratio < 0.1x → HOLD (tidak ada momentum)
+- Volume ratio > 0.3x = konfirmasi sinyal KUAT
+- Leverage 7-10x untuk semua entry
+- SL ketat 0.5-1.0%, TP cepat 1.0-2.0%
+- Jangan confidence < 50% kecuali kondisi sangat buruk
 {"action":"LONG|SHORT|CLOSE|HOLD","leverage":7-10,"confidence":0-100,"sentiment":"BULLISH|BEARISH|NEUTRAL|VOLATILE","stop_loss_pct":0.5-1.5,"take_profit_pct":1.0-2.5,"reasoning":"<30 kata"}`;
 
 
@@ -1325,6 +1341,13 @@ async function tradingLoop() {
     log("INFO", `Harga: ${C.bold}${price.toFixed(8)}${C.reset} USDT | RSI: ${indicators.rsi.toFixed(1)} | EMA9: ${indicators.ema9.toFixed(8)} | EMA21: ${indicators.ema21.toFixed(8)}`);
     const _fg = externalDataCache?.fearGreed;
     log("INFO", `Funding: ${(fundingRate * 100).toFixed(4)}% | F&G: ${_fg ? _fg.value + " (" + _fg.classification + ")" : "N/A"} | Vol: ${indicators.volumeRatio.toFixed(2)}x`);
+    if (!pos) {
+      const emaTrend   = indicators.ema9 > indicators.ema21 ? `${C.green}EMA BULLISH${C.reset}` : `${C.red}EMA BEARISH${C.reset}`;
+      const rsiState   = indicators.rsi > 70 ? `${C.red}OB${C.reset}` : indicators.rsi < 30 ? `${C.green}OS${C.reset}` : "NETRAL";
+      const volState   = indicators.volumeRatio < 0.1 ? `${C.red}SANGAT RENDAH${C.reset}` : indicators.volumeRatio > 0.3 ? `${C.green}OK${C.reset}` : "RENDAH";
+      const sqState    = squeezeData.squeeze ? `${C.yellow}SQUEEZE${C.reset}` : "normal";
+      log("INFO", `Entry kondisi: ${emaTrend} | RSI ${rsiState} | Vol ${volState} | BB ${sqState} | Consensus: ${consensus}`);
+    }
     if (pos) {
       const pnlPct = pos.side === "LONG"
         ? ((price - pos.entryPrice) / pos.entryPrice) * 100 * pos.leverage
@@ -1399,8 +1422,24 @@ async function tradingLoop() {
     }
   }
 
+  // ── EXTREME FEAR OPPORTUNITY DETECTOR ────────────────────
+  const _fg = externalDataCache?.fearGreed;
+  if (!pos && _fg && _fg.value <= 15 &&
+      indicators.volumeRatio > 0.2 &&
+      indicators.rsi < 65) {
+    if (state.tickCount % 2 === 0) {
+      log("AI",
+        `⚡ EXTREME FEAR (${_fg.value}) + Vol ${indicators.volumeRatio.toFixed(2)}x ` +
+        `→ Paksa analisis Claude untuk cari peluang LONG`
+      );
+      state._forceAnalyze = true;
+    }
+  }
+
   // ── 5. Claude AI Analysis ─────────────────────────────────
-  const shouldAnalyze = state.tickCount % CONFIG.CLAUDE_ANALYSIS_INTERVAL === 0;
+  const shouldAnalyze = state.tickCount % CONFIG.CLAUDE_ANALYSIS_INTERVAL === 0
+    || state._forceAnalyze === true;
+  if (state._forceAnalyze) state._forceAnalyze = false;
   if (!shouldAnalyze) {
     broadcastSSE({ type: "tick", price, rsi: indicators.rsi, ema9: indicators.ema9, ema21: indicators.ema21,
                    fundingRate, fearGreed: externalDataCache?.fearGreed, position: pos,
@@ -1408,6 +1447,26 @@ async function tradingLoop() {
                    volume24h: ticker?.volume24h, change24h: ticker?.change24h,
                    isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
                    latestCandle: klines[klines.length - 1] }); // update chart candle terbaru
+    return;
+  }
+
+  // ── Pre-entry filter: skip AI kalau volume terlalu rendah ─
+  if (!pos && indicators.volumeRatio < 0.1) {
+    if (state.tickCount % 3 === 0) {
+      log("INFO",
+        `Volume terlalu rendah (${indicators.volumeRatio.toFixed(2)}x) ` +
+        `→ skip analisis, tunggu momentum`
+      );
+    }
+    broadcastSSE({
+      type: "tick", price, rsi: indicators.rsi,
+      ema9: indicators.ema9, ema21: indicators.ema21,
+      fundingRate, fearGreed: externalDataCache?.fearGreed,
+      position: pos, bid: ticker?.bidPrice, ask: ticker?.askPrice,
+      volume24h: ticker?.volume24h, change24h: ticker?.change24h,
+      isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
+      latestCandle: klines[klines.length - 1],
+    });
     return;
   }
 
@@ -1437,6 +1496,13 @@ async function tradingLoop() {
   const geckoData = extData.geckoData;
   const cmcData   = extData.cmcData;
 
+  // Funding rate signal untuk prompt Claude
+  const fundingSignal = fundingRate < -0.0001
+    ? "NEGATIVE_FUNDING_LONG_SIGNAL"
+    : fundingRate > 0.0001
+    ? "POSITIVE_FUNDING_SHORT_SIGNAL"
+    : "NEUTRAL";
+
   log("AI", "Meminta analisis dari Claude AI...");
 
   const marketData = {
@@ -1451,6 +1517,7 @@ async function tradingLoop() {
     volumeRatio:    indicators.volumeRatio,
     orderBook,
     fundingRate,
+    fundingSignal,
     fearGreed,
     // Data eksternal
     geckoData,
@@ -1515,10 +1582,22 @@ async function tradingLoop() {
       // STRONG_LONG/SHORT pakai CONFIG.OPEN_CONFIDENCE (default 75)
     }
 
-    // Fitur #2: jangan entry saat BB squeeze aktif
+    // Fitur #2: jangan entry saat BB squeeze aktif (kecuali RSI extreme)
     if (squeezeData.squeeze) {
-      log("INFO", `Bollinger Squeeze aktif (bandwidth ${squeezeData.bandwidthPct.toFixed(2)}%) → tunggu breakout`);
-      return;
+      const rsiExtreme = indicators.rsi < 25 || indicators.rsi > 75;
+      const volOk      = indicators.volumeRatio > 0.3;
+      if (!rsiExtreme || !volOk) {
+        log("INFO",
+          `BB Squeeze aktif (${squeezeData.bandwidthPct.toFixed(2)}%) ` +
+          `RSI:${indicators.rsi.toFixed(1)} Vol:${indicators.volumeRatio.toFixed(2)}x ` +
+          `→ skip (butuh RSI extreme + volume)`
+        );
+        return;
+      }
+      log("INFO",
+        `BB Squeeze aktif TAPI RSI extreme (${indicators.rsi.toFixed(1)}) ` +
+        `+ volume ok → tetap analisis Claude`
+      );
     }
 
     if ((analysis.action === "LONG" || analysis.action === "SHORT") &&

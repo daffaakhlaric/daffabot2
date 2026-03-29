@@ -1436,6 +1436,13 @@ async function tradingLoop() {
     }
   }
 
+  // ── Kalkulasi prediksi profit (lokal, setiap tick) ───────
+  const prediction = calcProfitPrediction(
+    indicators, squeezeData, bbData, vwap, vwapPct,
+    candlePatterns, consensus, fundingRate,
+    externalDataCache?.fearGreed, pos
+  );
+
   // ── 5. Claude AI Analysis ─────────────────────────────────
   const shouldAnalyze = state.tickCount % CONFIG.CLAUDE_ANALYSIS_INTERVAL === 0
     || state._forceAnalyze === true;
@@ -1446,7 +1453,7 @@ async function tradingLoop() {
                    bid: ticker?.bidPrice, ask: ticker?.askPrice,
                    volume24h: ticker?.volume24h, change24h: ticker?.change24h,
                    isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
-                   latestCandle: klines[klines.length - 1] }); // update chart candle terbaru
+                   latestCandle: klines[klines.length - 1], prediction }); // update chart candle terbaru
     return;
   }
 
@@ -1465,7 +1472,7 @@ async function tradingLoop() {
       position: pos, bid: ticker?.bidPrice, ask: ticker?.askPrice,
       volume24h: ticker?.volume24h, change24h: ticker?.change24h,
       isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
-      latestCandle: klines[klines.length - 1],
+      latestCandle: klines[klines.length - 1], prediction,
     });
     return;
   }
@@ -1485,7 +1492,7 @@ async function tradingLoop() {
                      bid: ticker?.bidPrice, ask: ticker?.askPrice,
                      volume24h: ticker?.volume24h, change24h: ticker?.change24h,
                      isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
-                     latestCandle: klines[klines.length - 1] });
+                     latestCandle: klines[klines.length - 1], prediction });
       return;
     }
   }
@@ -1652,7 +1659,135 @@ async function tradingLoop() {
     candlePatterns,
     externalData:  externalDataCache,
     latestCandle:  klines[klines.length - 1], // update chart candle terbaru
+    prediction,
   });
+}
+
+// ─────────────────────────────────────────────────────────────
+// PREDIKSI PROFIT
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Prediksi probabilitas dan estimasi profit trade berikutnya
+ * berdasarkan kondisi teknikal saat ini + histori trade.
+ * Tidak menggunakan Claude API — murni kalkulasi lokal.
+ */
+function calcProfitPrediction(indicators, squeezeData, bbData, vwap, vwapPct,
+                               candlePatterns, consensus, fundingRate, fearGreed,
+                               pos) {
+  let bullScore  = 0;  // skor bullish 0-100
+  let bearScore  = 0;  // skor bearish 0-100
+  let confidence = 0;  // keyakinan prediksi 0-100
+  const signals  = []; // alasan singkat
+
+  const rsi = indicators.rsi;
+  const ema9 = indicators.ema9, ema21 = indicators.ema21;
+  const volRatio = indicators.volumeRatio;
+
+  // ── RSI ─────────────────────────────────────────────────────
+  if (rsi < 25)       { bullScore += 25; signals.push("RSI oversold ekstrem"); }
+  else if (rsi < 35)  { bullScore += 15; signals.push("RSI oversold"); }
+  else if (rsi < 45)  { bullScore += 5;  signals.push("RSI lemah"); }
+  else if (rsi > 75)  { bearScore += 25; signals.push("RSI overbought ekstrem"); }
+  else if (rsi > 65)  { bearScore += 15; signals.push("RSI overbought"); }
+  else if (rsi > 55)  { bearScore += 5;  signals.push("RSI tinggi"); }
+  else                { confidence -= 5; } // zona netral
+
+  // ── EMA Trend ───────────────────────────────────────────────
+  const emaDiff = (ema9 - ema21) / ema21 * 100;
+  if      (emaDiff >  0.05) { bullScore += 20; signals.push(`EMA9>EMA21 +${emaDiff.toFixed(3)}%`); }
+  else if (emaDiff >  0.01) { bullScore += 10; signals.push("EMA golden cross lemah"); }
+  else if (emaDiff < -0.05) { bearScore += 20; signals.push(`EMA9<EMA21 ${emaDiff.toFixed(3)}%`); }
+  else if (emaDiff < -0.01) { bearScore += 10; signals.push("EMA death cross lemah"); }
+
+  // ── Volume ──────────────────────────────────────────────────
+  if      (volRatio > 2.0)  { confidence += 20; signals.push(`Volume spike ${volRatio.toFixed(1)}x`); }
+  else if (volRatio > 1.0)  { confidence += 10; signals.push(`Volume tinggi ${volRatio.toFixed(1)}x`); }
+  else if (volRatio > 0.3)  { confidence += 5;  }
+  else if (volRatio < 0.1)  { confidence -= 15; signals.push("Volume sangat rendah"); }
+
+  // ── BB Position ─────────────────────────────────────────────
+  if (bbData) {
+    if      (bbData.pctB < 0.1)  { bullScore += 15; signals.push("Harga di bawah BB lower"); }
+    else if (bbData.pctB < 0.2)  { bullScore += 8;  }
+    else if (bbData.pctB > 0.9)  { bearScore += 15; signals.push("Harga di atas BB upper"); }
+    else if (bbData.pctB > 0.8)  { bearScore += 8;  }
+  }
+  if (squeezeData?.squeeze)      { confidence -= 10; signals.push("BB squeeze (breakout menunggu)"); }
+
+  // ── VWAP ────────────────────────────────────────────────────
+  if      (vwapPct >  0.3) { bullScore += 8;  signals.push(`Harga +${vwapPct.toFixed(2)}% di atas VWAP`); }
+  else if (vwapPct < -0.3) { bearScore += 8;  signals.push(`Harga ${vwapPct.toFixed(2)}% di bawah VWAP`); }
+
+  // ── Candle Pattern ──────────────────────────────────────────
+  const bullPat = candlePatterns?.bullishPatterns?.length || 0;
+  const bearPat = candlePatterns?.bearishPatterns?.length || 0;
+  if (bullPat > 0) { bullScore += bullPat * 8; signals.push(`Candle bullish: ${candlePatterns.bullishPatterns.join(",")}`); }
+  if (bearPat > 0) { bearScore += bearPat * 8; signals.push(`Candle bearish: ${candlePatterns.bearishPatterns.join(",")}`); }
+
+  // ── MTF Consensus ───────────────────────────────────────────
+  if      (consensus === "STRONG_LONG")  { bullScore += 20; confidence += 15; signals.push("MTF consensus STRONG LONG"); }
+  else if (consensus === "WEAK_LONG")    { bullScore += 10; }
+  else if (consensus === "STRONG_SHORT") { bearScore += 20; confidence += 15; signals.push("MTF consensus STRONG SHORT"); }
+  else if (consensus === "WEAK_SHORT")   { bearScore += 10; }
+  else                                    { confidence -= 5; } // MIXED
+
+  // ── Funding Rate ────────────────────────────────────────────
+  if      (fundingRate < -0.0001) { bullScore += 10; signals.push("Funding negatif → bias LONG"); }
+  else if (fundingRate >  0.001)  { bearScore += 8;  signals.push("Funding positif tinggi → hati-hati LONG"); }
+
+  // ── Fear & Greed ────────────────────────────────────────────
+  if      ((fearGreed?.value || 50) <= 15)  { bullScore += 15; signals.push(`Extreme Fear F&G=${fearGreed.value}`); }
+  else if ((fearGreed?.value || 50) <= 25)  { bullScore += 8;  }
+  else if ((fearGreed?.value || 50) >= 85)  { bearScore += 12; signals.push(`Extreme Greed F&G=${fearGreed.value}`); }
+  else if ((fearGreed?.value || 50) >= 75)  { bearScore += 6;  }
+
+  // ── Win Rate historis ────────────────────────────────────────
+  const winRate = stats.winRate7d || 50;
+  if      (winRate >= 65) { confidence += 10; }
+  else if (winRate <= 35) { confidence -= 10; }
+
+  // ── Tentukan arah prediksi ───────────────────────────────────
+  const totalScore = bullScore + bearScore || 1;
+  const bullPct    = (bullScore / totalScore) * 100;
+  const bearPct    = (bearScore / totalScore) * 100;
+  const direction  = bullScore > bearScore + 10
+    ? "LONG" : bearScore > bullScore + 10
+    ? "SHORT" : "NETRAL";
+
+  // ── Confidence final ─────────────────────────────────────────
+  const scoreDiff  = Math.abs(bullScore - bearScore);
+  confidence = Math.min(95, Math.max(10,
+    confidence + scoreDiff * 0.8 + (volRatio > 0.3 ? 10 : 0)
+  ));
+
+  // ── Estimasi profit ──────────────────────────────────────────
+  // Gunakan histori recent trades jika ada, fallback ke CONFIG
+  const avgWin  = stats.avgProfitPct || CONFIG.TAKE_PROFIT_PCT * 7; // leverage 7x
+  const avgLoss = Math.abs(stats.avgLossPct) || CONFIG.STOP_LOSS_PCT * 7;
+  const winProb = confidence / 100;
+  const ev      = (winProb * avgWin) - ((1 - winProb) * avgLoss); // expected value %
+  const evUSDT  = compoundedBalance * ev / 100;
+
+  // Estimasi SL/TP berdasarkan kondisi pasar
+  const slPct   = squeezeData?.squeeze ? CONFIG.STOP_LOSS_PCT * 0.8 : CONFIG.STOP_LOSS_PCT;
+  const tpPct   = volRatio > 1.5 ? CONFIG.TAKE_PROFIT_PCT * 1.2 : CONFIG.TAKE_PROFIT_PCT;
+  const rr      = tpPct / slPct; // risk/reward ratio
+
+  return {
+    direction,
+    bullPct:     Math.round(bullPct),
+    bearPct:     Math.round(bearPct),
+    confidence:  Math.round(confidence),
+    ev:          parseFloat(ev.toFixed(3)),
+    evUSDT:      parseFloat(evUSDT.toFixed(4)),
+    slPct:       parseFloat(slPct.toFixed(2)),
+    tpPct:       parseFloat(tpPct.toFixed(2)),
+    rr:          parseFloat(rr.toFixed(2)),
+    winProb:     Math.round(winProb * 100),
+    signals:     signals.slice(0, 5),  // max 5 alasan teratas
+    positionSize: parseFloat(compoundedBalance.toFixed(4)),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1989,6 +2124,12 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       <div id="ai-content"><div class="no-pos">Menunggu analisis pertama...</div></div>
     </div>
 
+    <!-- Prediksi Profit -->
+    <div class="card ai-card" id="pred-card">
+      <h3>Prediksi Profit Trade Berikutnya</h3>
+      <div id="pred-content"><div class="no-pos">Menunggu data...</div></div>
+    </div>
+
     <!-- Log Transaksi -->
     <div class="card ai-card">
       <h3>Log Transaksi</h3>
@@ -2259,6 +2400,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (d.position) renderPosition(d.position, d.price || window.lastPrice);
       else if (d.type === 'analysis' && !d.position) document.getElementById('position-content').innerHTML = '<div class="no-pos">Tidak ada posisi aktif</div>';
       if (d.analysis) renderAI(d.analysis);
+      if (d.prediction) renderPrediction(d.prediction);
       if (d.type === 'analysis') { renderMTF(d); renderBB(d); handleIntelligence(d); }
       if (d.type === 'log') addLog(d);
       if (d.type === 'stats') { renderStats(d); renderWinRate(d); }
@@ -2361,6 +2503,64 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       const pnlEl = document.getElementById('pnl');
       pnlEl.textContent = (s.totalPnL >= 0 ? '+' : '') + pnl;
       pnlEl.className = 'stat-num ' + (s.totalPnL >= 0 ? 'green' : 'red');
+    }
+
+    function renderPrediction(p) {
+      if (!p) return;
+      const dirColor = p.direction === 'LONG' ? '#3fb950' : p.direction === 'SHORT' ? '#f85149' : '#d29922';
+      const evColor  = p.ev >= 0 ? '#3fb950' : '#f85149';
+      const confFill = p.confidence >= 70 ? '#3fb950' : p.confidence >= 50 ? '#d29922' : '#f85149';
+      const bullW    = Math.min(100, p.bullPct);
+      const bearW    = Math.min(100, p.bearPct);
+      const rrColor  = p.rr >= 1.5 ? '#3fb950' : p.rr >= 1.0 ? '#d29922' : '#f85149';
+      document.getElementById('pred-content').innerHTML = \`
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:14px">
+          <div style="text-align:center">
+            <div style="font-size:10px;color:#8b949e;margin-bottom:4px">ARAH PREDIKSI</div>
+            <div style="font-size:24px;font-weight:bold;color:\${dirColor}">\${p.direction}</div>
+            <div style="font-size:11px;color:#8b949e;margin-top:2px">Peluang menang \${p.winProb}%</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:10px;color:#8b949e;margin-bottom:4px">EXPECTED VALUE</div>
+            <div style="font-size:24px;font-weight:bold;color:\${evColor}">\${p.ev >= 0 ? '+' : ''}\${p.ev.toFixed(2)}%</div>
+            <div style="font-size:11px;color:\${evColor};margin-top:2px">\${p.evUSDT >= 0 ? '+' : ''}\${p.evUSDT.toFixed(4)} USDT</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:10px;color:#8b949e;margin-bottom:4px">RISK / REWARD</div>
+            <div style="font-size:24px;font-weight:bold;color:\${rrColor}">1:\${p.rr.toFixed(1)}</div>
+            <div style="font-size:11px;color:#8b949e;margin-top:2px">SL \${p.slPct}% → TP \${p.tpPct}%</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:10px;color:#8b949e;margin-bottom:4px">KEYAKINAN</div>
+            <div style="font-size:24px;font-weight:bold;color:\${confFill}">\${p.confidence}%</div>
+            <div style="font-size:11px;color:#8b949e;margin-top:2px">Ukuran posisi \${p.positionSize} USDT</div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:#8b949e;margin-bottom:4px">
+            <span>BULL \${p.bullPct}%</span><span>BEAR \${p.bearPct}%</span>
+          </div>
+          <div style="background:#21262d;height:8px;border-radius:4px;overflow:hidden;display:flex">
+            <div style="width:\${bullW}%;background:#3fb950;transition:width 0.6s"></div>
+            <div style="width:\${bearW}%;background:#f85149;transition:width 0.6s;margin-left:auto"></div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:10px">
+          <div style="font-size:10px;color:#8b949e;margin-bottom:4px">KEYAKINAN SINYAL</div>
+          <div style="background:#21262d;height:6px;border-radius:3px;overflow:hidden">
+            <div style="width:\${p.confidence}%;height:100%;background:\${confFill};border-radius:3px;transition:width 0.6s"></div>
+          </div>
+        </div>
+
+        <div style="font-size:11px;color:#8b949e">
+          <div style="margin-bottom:4px;font-weight:bold;color:#c9d1d9">Sinyal Terdeteksi:</div>
+          \${p.signals.length > 0
+            ? p.signals.map(s => \`<div style="padding:2px 0;border-left:2px solid \${dirColor};padding-left:8px;margin:3px 0">\${s}</div>\`).join('')
+            : '<div style="padding:2px 0">Tidak ada sinyal kuat</div>'}
+        </div>
+      \`;
     }
 
     function renderTradeLog(trades) {

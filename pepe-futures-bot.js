@@ -2009,9 +2009,11 @@ async function tradingLoop() {
     // ── F. Cek apakah kondisi cukup untuk entry ────────────
     // Mode A — SMC Lengkap: semua 5 kondisi SMC terpenuhi
     // Mode B — Reversal Grade A/B: score ≥ 60 + minimal liqGrab/BOS
-    const smcFull   = inducmt.valid && liqGrab.detected && choch.detected && inFVG.inFVG && candleOK.confirmed;
-    const revReady  = revScore.callAI && (sweep.detected || bos.detected) && (liqGrab.detected || choch.detected);
-    const smcReady  = smcFull || revReady;
+    // Mode C — BOS Direct: BOS + CHoCH/LiqGrab → langsung entry tanpa Claude
+    const smcFull        = inducmt.valid && liqGrab.detected && choch.detected && inFVG.inFVG && candleOK.confirmed;
+    const revReady       = revScore.callAI && (sweep.detected || bos.detected) && (liqGrab.detected || choch.detected);
+    const bosDirectEntry = bos.detected && (choch.detected || liqGrab.detected);
+    const smcReady       = smcFull || revReady || bosDirectEntry;
 
     // Bangun smcData untuk broadcast (dipakai di kedua cabang)
     const smcData = {
@@ -2031,15 +2033,15 @@ async function tradingLoop() {
       revScore,
       smcFull,
       smcReady,
+      bosDirectEntry,
     };
 
     if (smcReady) {
-      const modeLabel = smcFull ? "FULL SMC" : `REVERSAL Grade-${revScore.grade} (${revScore.score}/100)`;
-      log("AI",
-        `🎯 SETUP LENGKAP [${modeLabel}] [${tradeSide}] ` +
-        `Session:${session.session} HTF:${htf.trend} ` +
-        `→ Tanya Claude untuk konfirmasi...`
-      );
+      const modeLabel = smcFull
+        ? "FULL SMC"
+        : (bosDirectEntry && !revReady)
+          ? `BOS DIRECT (${bos.type || "BOS"})`
+          : `REVERSAL Grade-${revScore.grade} (${revScore.score}/100)`;
 
       // ── G. Hitung SL dari swing level ──────────────────
       const swingLevel = tradeSide === "BULLISH"
@@ -2061,44 +2063,70 @@ async function tradingLoop() {
         fvgLower:     fvg?.lower,
         fvgUpper:     fvg?.upper,
         candleOK:     candleOK.confirmed,
-        // Reversal enrichment
         sweep:        sweep.detected ? `wick=${sweep.wickSize} strong=${sweep.strong}` : "tidak terdeteksi",
         bos:          bos.detected   ? `${bos.type} break=${bos.breakAmount}% momentum=${bos.momentum}` : "tidak terdeteksi",
         revScore:     revScore.score,
         revGrade:     revScore.grade,
         revReasons:   revScore.reasons.join(", "),
-        smcMode:      smcFull ? "FULL_SMC" : "REVERSAL_ONLY",
+        smcMode:      smcFull ? "FULL_SMC" : (bosDirectEntry && !revReady) ? "BOS_DIRECT" : "REVERSAL_ONLY",
       };
 
-      // Fetch data eksternal sebelum tanya Claude
-      await fetchAllExternalData();
-
-      const claudeFilter = await analyzeWithClaudeSMC(smcSetup, {
-        price,
-        fundingRate,
-        volumeRatio: indicators.volumeRatio,
-        rsi:         indicators.rsi,
-      });
-
-      log("AI",
-        `Claude filter: ${claudeFilter.approve ? "✅ APPROVE" : "❌ REJECT"} ` +
-        `(conf:${claudeFilter.confidence}% risk:${claudeFilter.risk}) ` +
-        `— ${claudeFilter.reason}`
-      );
+      // ── H. Tentukan claudeFilter berdasarkan mode ───────
+      let claudeFilter;
+      if (bosDirectEntry && !smcFull) {
+        // Mode C: BOS Direct — langsung entry tanpa menunggu Claude
+        const bosDesc     = bos.type || "BOS";
+        const confirmDesc = choch.detected ? "CHoCH" : "LiqGrab";
+        claudeFilter = {
+          approve:    true,
+          confidence: 75,
+          reason:     `${bosDesc}+${confirmDesc} confirmed — BOS Direct Entry`,
+          risk:       "MEDIUM",
+          direct:     true,
+        };
+        log("TRADE",
+          `⚡ BOS DIRECT [${modeLabel}] [${tradeSide}] ` +
+          `${bosDesc}+${confirmDesc} | ATR:${atrPct.toFixed(3)}% ` +
+          `HTF:${htf.trend} Session:${session.session} ` +
+          `→ MASUK LANGSUNG tanpa Claude`
+        );
+      } else {
+        // Mode A/B: SMC Lengkap atau Reversal — pakai Claude sebagai filter
+        log("AI",
+          `🎯 SETUP LENGKAP [${modeLabel}] [${tradeSide}] ` +
+          `Session:${session.session} HTF:${htf.trend} ` +
+          `→ Tanya Claude untuk konfirmasi...`
+        );
+        await fetchAllExternalData();
+        claudeFilter = await analyzeWithClaudeSMC(smcSetup, {
+          price,
+          fundingRate,
+          volumeRatio: indicators.volumeRatio,
+          rsi:         indicators.rsi,
+        });
+        log("AI",
+          `Claude filter: ${claudeFilter.approve ? "✅ APPROVE" : "❌ REJECT"} ` +
+          `(conf:${claudeFilter.confidence}% risk:${claudeFilter.risk}) ` +
+          `— ${claudeFilter.reason}`
+        );
+      }
 
       smcData.claudeFilter = claudeFilter;
 
-      // ── H. Entry kalau Claude approve ──────────────────
-      if (claudeFilter.approve && claudeFilter.confidence >= CONFIG.OPEN_CONFIDENCE) {
+      // BOS Direct: threshold 65 | SMC/Reversal: threshold CONFIG.OPEN_CONFIDENCE (70)
+      const confThreshold = (bosDirectEntry && !smcFull) ? 65 : CONFIG.OPEN_CONFIDENCE;
+
+      // ── I. Entry ────────────────────────────────────────
+      if (claudeFilter.approve && claudeFilter.confidence >= confThreshold) {
         const leverage = Math.min(
           Math.max(Math.round(1 / slPct * 8), CONFIG.DEFAULT_LEVERAGE),
           CONFIG.MAX_LEVERAGE
         );
         log("TRADE",
-          `🚀 ENTRY ${tradeSide} | ` +
+          `🚀 ENTRY ${tradeSide} [${modeLabel}] | ` +
           `SL:${slPct.toFixed(2)}% TP:${tpPct.toFixed(2)}% ` +
           `Lev:${leverage}x RR:1:2 | ` +
-          `Claude:${claudeFilter.confidence}% (${claudeFilter.risk})`
+          `${claudeFilter.direct ? "BOS Direct" : `Claude:${claudeFilter.confidence}%`} (${claudeFilter.risk})`
         );
         const opened = await openPosition(
           tradeSide === "BULLISH" ? "LONG" : "SHORT",
@@ -2139,7 +2167,9 @@ async function tradingLoop() {
           leverage:        CONFIG.DEFAULT_LEVERAGE,
           stop_loss_pct:   slPct,
           take_profit_pct: tpPct,
-          reasoning:       `SMC+Claude: ${claudeFilter.approve ? "✅" : "❌"} — ${claudeFilter.reason}`,
+          reasoning:       claudeFilter.direct
+            ? `BOS Direct Entry: ${claudeFilter.reason}`
+            : `SMC+Claude: ${claudeFilter.approve ? "✅" : "❌"} — ${claudeFilter.reason}`,
         },
         position:    state.activePosition,
         bb:          bbData,
@@ -3157,8 +3187,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           bar.textContent = \`😴 Sesi tidak aktif (\${s.session}) — tunggu London/NY\`;
           bar.style.cssText = 'padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:#21262d;color:#8b949e;border:none';
         } else if (s.smcReady) {
-          bar.textContent = '🎯 SMC LENGKAP! Menunggu konfirmasi Claude...';
-          bar.style.cssText = 'padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:#3fb95022;color:#3fb950;border:1px solid #3fb95066';
+          const readyLabel = s.bosDirectEntry && !s.smcFull
+            ? \`⚡ BOS DIRECT (\${s.bos?.type || 'BOS'}) — Masuk langsung!\`
+            : '🎯 SMC LENGKAP! Menunggu konfirmasi Claude...';
+          bar.textContent = readyLabel;
+          bar.style.cssText = \`padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:\${s.bosDirectEntry && !s.smcFull ? '#d2992222' : '#3fb95022'};color:\${s.bosDirectEntry && !s.smcFull ? '#d29922' : '#3fb950'};border:1px solid \${s.bosDirectEntry && !s.smcFull ? '#d2992266' : '#3fb95066'}\`;
         } else {
           const missing = [];
           if (!s.inducement?.valid)      missing.push('Inducement');

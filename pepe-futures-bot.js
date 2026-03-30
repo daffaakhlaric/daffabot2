@@ -2706,6 +2706,11 @@ async function tradingLoop() {
       smcReady,
       bosDirectEntry,
     };
+    
+    // Debug: log smcData yang dikirim
+    if (state.tickCount % 6 === 0) {
+      log("DEBUG", `Broadcasting smcData: htfTrend=${smcData.htfTrend}, session=${smcData.session}, atrPct=${smcData.atrPct}, smcReady=${smcData.smcReady}`);
+    }
 
     if (smcReady) {
       const modeLabel = sdReady
@@ -4307,8 +4312,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     function renderSMC(s) {
-      console.log('renderSMC called with:', s);
-      if (!s) return;
+      console.log('renderSMC called with:', JSON.stringify(s, null, 2));
+      if (!s) {
+        console.log('smcData is empty or undefined!');
+        return;
+      }
 
       // HTF
       const htfEl = document.getElementById('smc-htf');

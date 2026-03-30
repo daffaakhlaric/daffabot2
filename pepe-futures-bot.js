@@ -4404,8 +4404,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
 
       // Status bar
-      try {
-        const bar = document.getElementById('smc-status-bar');
+      const bar = document.getElementById('smc-status-bar');
         if (bar) {
           if (s.flat) {
           bar.textContent = \`⏸ Market flat (ATR \${s.atrPct}%) — menunggu volatilitas\`;

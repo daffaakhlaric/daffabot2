@@ -2008,6 +2008,26 @@ async function tradingLoop() {
     log("INFO", `Saldo: ${C.bold}${state.currentBalance.toFixed(4)} USDT${C.reset} | Awal: ${state.initialBalance.toFixed(4)} | P&L: ${chgColor}${chg >= 0 ? "+" : ""}${chg.toFixed(4)} USDT (${chgPct >= 0 ? "+" : ""}${chgPct.toFixed(2)}%)${C.reset}`);
   }
 
+  // ── 2. Cek posisi aktif (live mode) ──────────────────────
+  let livePosition = null;
+  if (!CONFIG.DRY_RUN && CONFIG.API_KEY) {
+    try {
+      livePosition = await getActivePosition();
+      if (livePosition) {
+        // Sync state dengan posisi live
+        if (state.activePosition) {
+          state.activePosition.liqPrice  = livePosition.liqPrice;
+          state.activePosition.unrealPnL = livePosition.unrealPnL;
+          state.activePosition.pnlPct    = livePosition.pnlPct;
+        }
+      }
+    } catch (err) {
+      log("WARN", `Gagal ambil posisi live: ${err.message}`);
+    }
+  }
+
+  const pos = state.activePosition;
+
   // ── Periodic Claude market analysis (bukan untuk entry) ─────
   // Update card "Analisis Claude AI Terakhir" setiap 1 menit
   // Independen dari SMC entry logic
@@ -2059,7 +2079,7 @@ async function tradingLoop() {
           pnlPct:     pos.side === "LONG"
             ? ((price - pos.entryPrice) / pos.entryPrice) * 100 * pos.leverage
             : ((pos.entryPrice - price) / pos.entryPrice) * 100 * pos.leverage,
-          unrealPnL: 0,
+          unrealPnL:  0,
         } : null,
       });
 
@@ -2093,26 +2113,6 @@ async function tradingLoop() {
       log("WARN", `Periodic Claude analysis gagal: ${err.message}`);
     }
   }
-
-  // ── 2. Cek posisi aktif (live mode) ──────────────────────
-  let livePosition = null;
-  if (!CONFIG.DRY_RUN && CONFIG.API_KEY) {
-    try {
-      livePosition = await getActivePosition();
-      if (livePosition) {
-        // Sync state dengan posisi live
-        if (state.activePosition) {
-          state.activePosition.liqPrice  = livePosition.liqPrice;
-          state.activePosition.unrealPnL = livePosition.unrealPnL;
-          state.activePosition.pnlPct    = livePosition.pnlPct;
-        }
-      }
-    } catch (err) {
-      log("WARN", `Gagal ambil posisi live: ${err.message}`);
-    }
-  }
-
-  const pos = state.activePosition;
 
   // ── 3. Tampilkan status di log ────────────────────────────
   if (state.tickCount % 3 === 0) { // setiap 30 detik
@@ -2933,6 +2933,7 @@ async function tradingLoop() {
 
   } else {
     // Ada posisi aktif — broadcast tick saja (SL/TP dihandle risk management di atas)
+    // Sampaikan juga smcData agar dashboard dapat menampilkan analisis SMC
     broadcastSSE({
       type: "tick", price,
       rsi: indicators.rsi, ema9: indicators.ema9, ema21: indicators.ema21,
@@ -2941,6 +2942,7 @@ async function tradingLoop() {
       isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
       latestCandle: klines[klines.length - 1],
       prediction,
+      smcData,
     });
   }
 }

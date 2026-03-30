@@ -20,6 +20,10 @@ const tls      = require("tls");
 const dns      = require("dns");
 require("dotenv").config();
 
+// ── ADAPTIVE AUTO PAIR TRADING SYSTEM ───────────────────────────
+const pairSelector = require("./pairSelector");
+const btcStrategy  = require("./btcStrategy");
+
 // ── Bypass DNS hijacking ISP (Indosat/IOH memblokir api.bitget.com) ──────────
 // ISP Indonesia sering redirect DNS ke server mereka sendiri.
 // Paksa Node.js pakai DNS publik Google + Cloudflare agar resolve ke IP asli.
@@ -137,6 +141,26 @@ const CONFIG = {
 
   // [4] Post-SL cooldown — tunggu N candle setelah stop loss
   SL_COOLDOWN_CANDLES: 3,    // tunggu 3 candle (≈30 detik di 1m) setelah SL
+
+  // ── ADAPTIVE AUTO PAIR TRADING SYSTEM ──────────────────────────
+  ADAPTIVE_PAIR_ENABLED:    true,       // Aktifkan auto pair selection
+  PAIR_SELECTION_INTERVAL:  300000,     // 5 menit - interval evaluasi ulang pair
+  BTC_SPECIFIC_CONFIG: {
+    STOP_LOSS_PCT:    1.5,    // Lebih konservatif untuk BTC
+    TAKE_PROFIT_PCT:  3.0,
+    TRAILING_OFFSET:  0.5,
+    POSITION_SIZE_USDT: 5,   // Lebih besar untuk BTC
+    MIN_SL_PCT:       0.3,
+    MAX_SL_PCT:       2.0,
+  },
+  PEPE_SPECIFIC_CONFIG: {
+    STOP_LOSS_PCT:    2.5,    // SL lebih besar untuk PEPE (volatil)
+    TAKE_PROFIT_PCT:  5.0,
+    TRAILING_OFFSET:  0.8,
+    POSITION_SIZE_USDT: 2,
+    MIN_SL_PCT:       0.5,
+    MAX_SL_PCT:       3.5,
+  },
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -168,6 +192,14 @@ let state = {
   lowestBalance:    0,
   // Chart data
   lastKlines:       [],   // klines 1m terakhir untuk chart dashboard
+  
+  // ── ADAPTIVE PAIR SELECTION STATE ─────────────────────────────
+  currentPair:         "PEPEUSDT",  // Current trading pair
+  currentPairMode:     "PEPE",       // "BTC" or "PEPE"
+  pairSelectionReason:  "",           // Reason for current selection
+  lastPairSelection:    0,            // Timestamp of last selection
+  pairAnalysis:         null,         // Latest pair analysis data
+  btcAnalysis:          null,         // Latest BTC strategy analysis
 };
 
 let stats = {
@@ -805,12 +837,13 @@ async function closePosition(reason, currentPrice) {
   recordTrade("CLOSE", pos.side, currentPrice, pos.size, pos.leverage, pos.liqPrice, reason, pnlUSDT);
 
   // FIX #2: Post-SL Cooldown — cegah revenge trading
+  // Updated: 2→15min, 3→45min, 4→2jam
   if (reason === "STOP_LOSS" || reason === "FORCE_CLOSE_MAX_LOSS" || reason.includes("HARD_STOP")) {
     const lossStreak = stats.losses;
     // Durasi cooldown bertingkat berdasarkan loss streak (min 2x baru aktif)
     const cooldownMs =
-      lossStreak >= 5 ? 120 * 60 * 1000 :  // 2 jam kalau loss 5+
-      lossStreak >= 3 ? 60  * 60 * 1000 :  // 1 jam kalau loss 3+
+      lossStreak >= 4 ? 120 * 60 * 1000 :  // 2 jam kalau loss 4+
+      lossStreak >= 3 ? 45  * 60 * 1000 :  // 45 menit kalau loss 3
       lossStreak >= 2 ? 15  * 60 * 1000 :  // 15 menit kalau loss 2
                         0;                   // 1 loss tidak perlu cooldown
     
@@ -1970,6 +2003,65 @@ async function tradingLoop() {
     log("INFO", "Bot RESUME dari pause otomatis");
   }
 
+  // ── ADAPTIVE PAIR SELECTION ─────────────────────────────────
+  // Evaluate pair selection periodically
+  if (CONFIG.ADAPTIVE_PAIR_ENABLED) {
+    const timeSinceLastSelection = Date.now() - state.lastPairSelection;
+    
+    // First run or interval elapsed
+    if (state.lastPairSelection === 0 || timeSinceLastSelection >= CONFIG.PAIR_SELECTION_INTERVAL) {
+      try {
+        const pairResult = await pairSelector.getCurrentPair(true);
+        
+        if (pairResult && pairResult.selected) {
+          const newPair = pairResult.selected;
+          const pairMode = newPair === "BTCUSDT" ? "BTC" : "PEPE";
+          
+          // Only log and update if pair changed
+          if (newPair !== state.currentPair) {
+            log("INFO", `🔄 PAIR SWITCH: ${state.currentPair} → ${newPair} (${pairResult.reason})`);
+          }
+          
+          state.currentPair = newPair;
+          state.currentPairMode = pairMode;
+          state.pairSelectionReason = pairResult.reason;
+          state.lastPairSelection = Date.now();
+          state.pairAnalysis = pairResult.analysis;
+          
+          // Update CONFIG based on selected pair
+          if (pairMode === "BTC") {
+            CONFIG.SYMBOL = "BTCUSDT";
+            CONFIG.STOP_LOSS_PCT = CONFIG.BTC_SPECIFIC_CONFIG.STOP_LOSS_PCT;
+            CONFIG.TAKE_PROFIT_PCT = CONFIG.BTC_SPECIFIC_CONFIG.TAKE_PROFIT_PCT;
+            CONFIG.TRAILING_OFFSET = CONFIG.BTC_SPECIFIC_CONFIG.TRAILING_OFFSET;
+            CONFIG.POSITION_SIZE_USDT = CONFIG.BTC_SPECIFIC_CONFIG.POSITION_SIZE_USDT;
+            CONFIG.MIN_SL_PCT = CONFIG.BTC_SPECIFIC_CONFIG.MIN_SL_PCT;
+            CONFIG.MAX_SL_PCT = CONFIG.BTC_SPECIFIC_CONFIG.MAX_SL_PCT;
+          } else {
+            CONFIG.SYMBOL = "PEPEUSDT";
+            CONFIG.STOP_LOSS_PCT = CONFIG.PEPE_SPECIFIC_CONFIG.STOP_LOSS_PCT;
+            CONFIG.TAKE_PROFIT_PCT = CONFIG.PEPE_SPECIFIC_CONFIG.TAKE_PROFIT_PCT;
+            CONFIG.TRAILING_OFFSET = CONFIG.PEPE_SPECIFIC_CONFIG.TRAILING_OFFSET;
+            CONFIG.POSITION_SIZE_USDT = CONFIG.PEPE_SPECIFIC_CONFIG.POSITION_SIZE_USDT;
+            CONFIG.MIN_SL_PCT = CONFIG.PEPE_SPECIFIC_CONFIG.MIN_SL_PCT;
+            CONFIG.MAX_SL_PCT = CONFIG.PEPE_SPECIFIC_CONFIG.MAX_SL_PCT;
+          }
+          
+          // Get BTC strategy analysis if trading BTC
+          if (pairMode === "BTC") {
+            try {
+              state.btcAnalysis = await btcStrategy.quickAnalysis();
+            } catch (e) {
+              log("WARN", `BTC strategy analysis failed: ${e.message}`);
+            }
+          }
+        }
+      } catch (err) {
+        log("WARN", `Pair selection error: ${err.message}, keeping current pair`);
+      }
+    }
+  }
+
   // ── 1. Ambil data market ──────────────────────────────────
   let ticker, klines, fundingRate, orderBook;
   try {
@@ -2517,6 +2609,10 @@ async function tradingLoop() {
         volume24h: ticker?.volume24h, change24h: ticker?.change24h,
         isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
         latestCandle: klines[klines.length - 1], prediction,
+        // Adaptive pair mode
+        currentPair: state.currentPair,
+        currentPairMode: state.currentPairMode,
+        btcAnalysis: state.btcAnalysis,
         smcData: {
           htfTrend:      htf?.trend,
           htfStrength:   htf?.strength,
@@ -3339,7 +3435,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <body>
   <div class="header">
     <div class="dot"></div>
-    <h1>PEPE/USDT Futures Bot</h1>
+    <h1>ADAPTIVE Trading Bot</h1>
+    <span id="pair-mode-badge" style="background:#f0883e33;color:#f0883e;padding:2px 10px;border-radius:4px;font-size:12px;border:1px solid #f0883e55;font-weight:bold">PEPE</span>
     <span id="dry-badge" class="dry-badge" style="display:none">DRY RUN</span>
     <span id="pause-badge" style="display:none;background:#f8514933;color:#f85149;padding:2px 8px;border-radius:4px;font-size:11px;border:1px solid #f8514966">⏸ PAUSED</span>
     <span id="hardstop-badge" style="display:none;background:#f8514933;color:#f85149;padding:2px 10px;border-radius:4px;font-size:11px;border:1px solid #f8514966">🛑 HARD STOP</span>
@@ -3416,7 +3513,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     </div>
     <!-- Harga + Chart -->
     <div class="card chart-card">
-      <h3>PEPE/USDT Perpetual
+      <h3><span id="chart-symbol">PEPE/USDT</span> Perpetual
         <span style="font-size:10px;color:#8b949e;font-weight:normal;margin-left:8px">Timeframe:</span>
         <span id="tf-buttons" style="display:inline-flex;gap:4px;margin-left:4px">
           <button onclick="switchTF('1m')" id="tf-1m" style="padding:2px 8px;border-radius:3px;font-size:10px;cursor:pointer;background:#21262d;color:#8b949e;border:1px solid #30363d">1m</button>
@@ -3633,7 +3730,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     function formatPepePrice(price) {
       if (!price || price === 0) return '--';
       const p = Number(price);
-      // PEPE di Bitget: 10 desimal (contoh: 0.0000033494)
+      // BTC: 2 desimal, PEPE: 10 desimal
+      if (window.currentPairMode === 'BTC') {
+        return p.toFixed(2);
+      }
       return p.toFixed(10);
     }
     function fmtVol(v) {
@@ -4019,6 +4119,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
     function handle(d) {
       window.currentPosition = d.position !== undefined ? d.position : window.currentPosition;
+      window.currentPairMode = d.currentPairMode || 'PEPE';  // Default to PEPE
 
       if (d.type === 'init') {
         document.getElementById('dry-badge').style.display    = d.dryRun ? 'inline' : 'none';
@@ -4066,6 +4167,26 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           // Vol dalam USDT
           const volUsdt = d.volume24h * (window.lastPrice || 0);
           document.getElementById('vol24h-usdt').textContent = fmtVol(volUsdt) + ' USDT';
+        }
+        // Adaptive pair mode update
+        if (d.currentPairMode) {
+          window.currentPairMode = d.currentPairMode;  // Store for price formatting
+          const pairBadge = document.getElementById('pair-mode-badge');
+          if (pairBadge) {
+            pairBadge.textContent = d.currentPairMode;
+            if (d.currentPairMode === 'BTC') {
+              pairBadge.style.background = '#f0883e33';
+              pairBadge.style.color = '#f0883e';
+            } else {
+              pairBadge.style.background = '#3fb95033';
+              pairBadge.style.color = '#3fb950';
+            }
+          }
+          // Update chart symbol
+          const chartSymbol = document.getElementById('chart-symbol');
+          if (chartSymbol && d.currentPair) {
+            chartSymbol.textContent = d.currentPair.replace('USDT', '/USDT');
+          }
         }
         return;
       }
@@ -4169,6 +4290,20 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         renderStats(d);
         renderWinRate(d);
 
+        // Adaptive pair mode display
+        const pairBadge = document.getElementById('pair-mode-badge');
+        if (pairBadge && d.currentPairMode) {
+          pairBadge.textContent = d.currentPairMode;
+          // Color based on mode
+          if (d.currentPairMode === 'BTC') {
+            pairBadge.style.background = '#f0883e33';
+            pairBadge.style.color = '#f0883e';
+          } else {
+            pairBadge.style.background = '#3fb95033';
+            pairBadge.style.color = '#3fb950';
+          }
+        }
+
         // Loss streak dan cooldown display
         const streakEl   = document.getElementById('loss-streak-warning');
         const countEl    = document.getElementById('loss-streak-count');
@@ -4176,7 +4311,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         const cooldownEl = document.getElementById('cooldown-info');
         const resumeEl   = document.getElementById('cooldown-resume');
 
-        if (streakEl && d.lossStreak > 0) {
+        if (streakEl && d.lossStreak >= 2) {
           streakEl.style.display = 'block';
           if (countEl) countEl.textContent = d.lossStreak;
           if (msgEl) {
@@ -4823,6 +4958,10 @@ function startDashboard() {
       ...stats,
       compoundBalance:  compoundedBalance,
       lossStreak,
+      // Adaptive pair mode
+      currentPair:      state.currentPair,
+      currentPairMode:  state.currentPairMode,
+      pairSelectionReason: state.pairSelectionReason,
       // Info cooldown kalau aktif
       cooldownActive:   !!(state.pausedUntil && Date.now() < state.pausedUntil),
       cooldownReason:   state.pauseReason,
@@ -4848,6 +4987,9 @@ function startDashboard() {
         low24h:    ticker.low24h,
         markPrice: ticker.markPrice,
         quoteVolume: ticker.quoteVolume,
+        // Adaptive pair mode
+        currentPair: state.currentPair,
+        currentPairMode: state.currentPairMode,
       });
     } catch { /* abaikan error — trading loop tetap jalan */ }
   }, 3000);
@@ -4867,8 +5009,9 @@ function printBanner() {
   console.log("  ██║     ███████╗██║     ███████╗    ██████╔╝╚██████╔╝   ██║   ");
   console.log("  ╚═╝     ╚══════╝╚═╝     ╚══════╝    ╚═════╝  ╚═════╝    ╚═╝   ");
   console.log(`${C.reset}`);
-  console.log(`  ${C.yellow}PEPE/USDT Futures Trading Bot — Daffabot2${C.reset}`);
+  console.log(`  ${C.yellow}ADAPTIVE AUTO PAIR TRADING SYSTEM — Daffabot2${C.reset}`);
   console.log(`  ${C.gray}Exchange: Bitget USDT-M Perpetual | AI: Claude AI${C.reset}`);
+  console.log(`  ${C.gray}Auto-switch: BTCUSDT ↔ PEPEUSDT based on market conditions${C.reset}`);
   console.log();
 }
 
@@ -4891,7 +5034,7 @@ async function main() {
   printBanner();
 
   log("INFO", `Mode        : ${CONFIG.DRY_RUN ? C.yellow + "DRY RUN (simulasi)" + C.reset : C.red + "LIVE TRADING!" + C.reset}`);
-  log("INFO", `Pair        : ${CONFIG.SYMBOL}`);
+  log("INFO", `Pair        : ${CONFIG.ADAPTIVE_PAIR_ENABLED ? C.cyan + "ADAPTIVE (BTC/PEPE)" + C.reset : CONFIG.SYMBOL}`);
   log("INFO", `Leverage    : ${CONFIG.DEFAULT_LEVERAGE}x - ${CONFIG.MAX_LEVERAGE}x (AI yang tentukan)`);
   log("INFO", `Ukuran Posisi: ${CONFIG.POSITION_SIZE_USDT} USDT`);
   log("INFO", `Stop Loss   : ${CONFIG.STOP_LOSS_PCT}% | Take Profit: ${CONFIG.TAKE_PROFIT_PCT}%`);

@@ -3089,6 +3089,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (d.type === 'init') {
         document.getElementById('dry-badge').style.display    = d.dryRun ? 'inline' : 'none';
         document.getElementById('topup-panel').style.display  = d.dryRun ? 'block'  : 'none';
+        if (d.botStopped) {
+          // Bot sedang stopped saat dashboard dibuka — tampilkan badge + tombol langsung
+          document.getElementById('hardstop-badge').style.display = 'inline';
+          document.getElementById('start-btn').style.display      = 'inline-block';
+          document.getElementById('reset-btn').style.display      = 'inline-block';
+          document.querySelector('.dot').style.background = '#f85149';
+        }
         if (d.stats) renderWinRate(d.stats);
         if (d.balance) handleBalance(d.balance);
         if (d.externalData) handleIntelligence({ externalData: d.externalData });
@@ -3168,7 +3175,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (d.type === 'hardstop') {
         document.getElementById('hardstop-badge').style.display = 'inline';
         document.getElementById('reset-btn').style.display      = 'inline-block';
+        document.getElementById('start-btn').style.display      = 'inline-block';
         document.querySelector('.dot').style.background = '#f85149';
+        addLog({ level: 'ERROR', msg: \`🛑 HARD STOP — Loss \${d.lossPercent}% | klik ▶ Start Bot untuk lanjut atau ↺ Reset Data untuk sesi baru\` });
       }
       if (d.type === 'reset') {
         // Data direset — tampilkan Start Bot, sembunyikan Reset
@@ -3565,6 +3574,7 @@ function startDashboard() {
         position:    state.activePosition,
         stats,
         dryRun:      CONFIG.DRY_RUN,
+        botStopped:  !state.running,         // kirim status stopped ke dashboard
         balance:     _initBal,               // BUG #1a FIX
         externalData: externalDataCache,     // BUG #1a FIX
         isPaused:    !!(state.pausedUntil && Date.now() < state.pausedUntil), // BUG #6 FIX
@@ -3637,11 +3647,21 @@ function startDashboard() {
       });
       return;
     } else if (req.url === "/api/start" && req.method === "POST") {
-      // Start / restart trading loop secara manual
+      // Start / restart trading loop secara manual dari dashboard
       if (state.running) {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, message: "Bot sudah berjalan" }));
         return;
+      }
+      // Reset checkpoint loss agar hard stop tidak langsung trigger lagi
+      // (data trade tetap tersimpan, hanya baseline direset ke saldo sekarang)
+      if (CONFIG.DRY_RUN && state.currentBalance > 0) {
+        state.initialBalance = state.currentBalance;
+        state.peakBalance    = state.currentBalance;
+        stats.totalPnL       = 0; // mulai hitung loss dari nol lagi
+        saveStats();
+        saveState();
+        log("INFO", `[DRY RUN] Baseline saldo direset ke ${state.currentBalance.toFixed(2)} USDT untuk sesi baru`);
       }
       state.running = true;
       (async () => {
@@ -3650,9 +3670,10 @@ function startDashboard() {
           await new Promise(r => setTimeout(r, CONFIG.CHECK_INTERVAL_MS));
         }
       })();
-      broadcastSSE({ type: "started", message: "Bot dimulai" });
+      broadcastSSE({ type: "started", message: "Bot dimulai — baseline saldo direset ke saldo sekarang" });
+      broadcastSSE({ type: "stats", ...stats, compoundBalance: compoundedBalance });
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, message: "Bot dimulai" }));
+      res.end(JSON.stringify({ ok: true, message: `Bot dimulai. Saldo baseline: ${state.currentBalance.toFixed(2)} USDT` }));
       log("INFO", "Bot di-start manual via dashboard");
     } else {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });

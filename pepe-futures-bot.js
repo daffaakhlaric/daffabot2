@@ -720,6 +720,11 @@ async function openPosition(side, leverage, price, overrideQty = null) {
     liqPrice,
     trailingHigh: price,   // untuk trailing stop LONG
     trailingLow:  price,   // untuk trailing stop SHORT
+    trailingTP:   takeProfit, // untuk trailing TP dinamis
+    tpTrailPct:   CONFIG.TAKE_PROFIT_PCT * 0.5, // 50% dari TP awal untuk trailing
+    breakevenSet: false,  // flag auto breakeven
+    lockLevel:    undefined, // level lock profit aktif
+    momentumWeakCount: 0,  // counter untuk early exit momentum
     openTime:     new Date().toISOString(),
   };
 
@@ -2003,6 +2008,92 @@ async function tradingLoop() {
     log("INFO", `Saldo: ${C.bold}${state.currentBalance.toFixed(4)} USDT${C.reset} | Awal: ${state.initialBalance.toFixed(4)} | P&L: ${chgColor}${chg >= 0 ? "+" : ""}${chg.toFixed(4)} USDT (${chgPct >= 0 ? "+" : ""}${chgPct.toFixed(2)}%)${C.reset}`);
   }
 
+  // ── Periodic Claude market analysis (bukan untuk entry) ─────
+  // Update card "Analisis Claude AI Terakhir" setiap 1 menit
+  // Independen dari SMC entry logic
+  if (state.tickCount % 6 === 0) {
+    // Fetch external data kalau belum update
+    const extData = await fetchAllExternalData();
+
+    // Hitung funding signal
+    const fundingSignal = fundingRate < -0.0001
+      ? "NEGATIVE_FUNDING_LONG_SIGNAL"
+      : fundingRate > 0.0001
+      ? "POSITIVE_FUNDING_SHORT_SIGNAL"
+      : "NEUTRAL";
+
+    // Kirim ke Claude untuk analisis market saja (bukan entry decision)
+    try {
+      const marketAnalysis = await analyzeWithClaude({
+        price,
+        bid:           ticker.bidPrice,
+        ask:           ticker.askPrice,
+        volume24h:     ticker.volume24h,
+        change24h:     ticker.change24h,
+        rsi:           indicators.rsi,
+        ema9:          indicators.ema9,
+        ema21:         indicators.ema21,
+        volumeRatio:   indicators.volumeRatio,
+        orderBook,
+        fundingRate,
+        fundingSignal,
+        fearGreed:     extData.fearGreed,
+        geckoData:     extData.geckoData,
+        cmcData:       extData.cmcData,
+        mtf:           null,
+        consensus:     "MIXED",
+        squeeze:       squeezeData,
+        bb:            bbData,
+        vwap,
+        vwapPct,
+        volProf,
+        candlePatterns,
+        winRate:       stats.winRate7d || 0,
+        streak:        stats.currentStreak || 0,
+        totalPnL:      stats.totalPnL || 0,
+        activePosition: pos ? {
+          side:       pos.side,
+          entryPrice: pos.entryPrice,
+          leverage:   pos.leverage,
+          liqPrice:   pos.liqPrice,
+          pnlPct:     pos.side === "LONG"
+            ? ((price - pos.entryPrice) / pos.entryPrice) * 100 * pos.leverage
+            : ((pos.entryPrice - price) / pos.entryPrice) * 100 * pos.leverage,
+          unrealPnL: 0,
+        } : null,
+      });
+
+      if (marketAnalysis) {
+        state.lastAnalysis = marketAnalysis;
+        log("AI",
+          `Market analysis: ${marketAnalysis.action} | ` +
+          `Conf:${marketAnalysis.confidence}% | ` +
+          `${marketAnalysis.sentiment} | ` +
+          `${marketAnalysis.reasoning}`
+        );
+        // Broadcast ke dashboard untuk update card AI
+        broadcastSSE({
+          type:     "analysis_update",
+          analysis: marketAnalysis,
+          price,
+          rsi:         indicators.rsi,
+          ema9:        indicators.ema9,
+          ema21:       indicators.ema21,
+          fundingRate,
+          fearGreed:   extData.fearGreed,
+          bb:          bbData,
+          squeeze:     squeezeData,
+          vwap,
+          vwapPct,
+          candlePatterns,
+          externalData: extData,
+        });
+      }
+    } catch (err) {
+      log("WARN", `Periodic Claude analysis gagal: ${err.message}`);
+    }
+  }
+
   // ── 2. Cek posisi aktif (live mode) ──────────────────────
   let livePosition = null;
   if (!CONFIG.DRY_RUN && CONFIG.API_KEY) {
@@ -2071,6 +2162,94 @@ async function tradingLoop() {
       }
       // Skip semua SL/TP lainnya selama minimum hold time
     } else {
+
+    // ── FITUR #1: AUTO BREAKEVEN ───────────────────────────────
+    // Geser SL ke entry + buffer fee saat profit raw ≥ 0.4%
+    // Fee PEPE = 0.12% × 2 = 0.24% round trip + buffer 0.1%
+    const BREAKEVEN_TRIGGER_PCT = 0.4;  // % profit (raw, belum × leverage)
+    const BREAKEVEN_BUFFER_PCT  = 0.15; // buffer di atas entry untuk nutup fee
+
+    if (!pos.breakevenSet) {
+      const rawProfitPct = pos.side === "LONG"
+        ? (price - pos.entryPrice) / pos.entryPrice * 100
+        : (pos.entryPrice - price) / pos.entryPrice * 100;
+
+      if (rawProfitPct >= BREAKEVEN_TRIGGER_PCT) {
+        const newSL = pos.side === "LONG"
+          ? pos.entryPrice * (1 + BREAKEVEN_BUFFER_PCT / 100)
+          : pos.entryPrice * (1 - BREAKEVEN_BUFFER_PCT / 100);
+
+        // Hanya geser SL kalau lebih baik dari SL sekarang
+        const slImproved = pos.side === "LONG"
+          ? newSL > pos.stopLoss
+          : newSL < pos.stopLoss;
+
+        if (slImproved) {
+          pos.stopLoss    = newSL;
+          pos.breakevenSet = true;
+          log("TRADE",
+            `🔒 BREAKEVEN SET! SL digeser ke entry+buffer: ` +
+            `${newSL.toFixed(8)} (profit raw ${rawProfitPct.toFixed(3)}%)`
+          );
+          broadcastSSE({
+            type:    "breakeven",
+            message: `Breakeven aktif — SL = ${newSL.toFixed(8)}`,
+            sl:      newSL,
+            entry:   pos.entryPrice,
+          });
+          saveState();
+        }
+      }
+    }
+
+    // ── FITUR #4: LOCK PROFIT — Anti Profit Balik Jadi Loss ───
+    // Level lock: tiap profit naik X%, SL digeser untuk kunci Y% profit
+    const LOCK_LEVELS = [
+      { triggerRaw: 1.0, lockRaw: 0.3 },  // profit ≥1% → kunci 0.3%
+      { triggerRaw: 1.5, lockRaw: 0.6 },  // profit ≥1.5% → kunci 0.6%
+      { triggerRaw: 2.0, lockRaw: 1.0 },  // profit ≥2% → kunci 1%
+      { triggerRaw: 3.0, lockRaw: 1.8 },  // profit ≥3% → kunci 1.8%
+    ];
+
+    const rawProfitLock = pos.side === "LONG"
+      ? (price - pos.entryPrice) / pos.entryPrice * 100
+      : (pos.entryPrice - price) / pos.entryPrice * 100;
+
+    for (let i = LOCK_LEVELS.length - 1; i >= 0; i--) {
+      const level = LOCK_LEVELS[i];
+      if (rawProfitLock >= level.triggerRaw) {
+        // Hitung SL yang mengunci profit lock%
+        const lockedSL = pos.side === "LONG"
+          ? pos.entryPrice * (1 + level.lockRaw / 100)
+          : pos.entryPrice * (1 - level.lockRaw / 100);
+
+        // Hanya update SL kalau lebih baik dari SL sekarang
+        const improved = pos.side === "LONG"
+          ? lockedSL > pos.stopLoss
+          : lockedSL < pos.stopLoss;
+
+        if (improved) {
+          const prevSL      = pos.stopLoss;
+          pos.stopLoss      = lockedSL;
+          pos.lockLevel     = i; // simpan level yang aktif
+          log("TRADE",
+            `🔐 LOCK PROFIT Level ${i+1}: ` +
+            `SL ${prevSL.toFixed(8)} → ${lockedSL.toFixed(8)} ` +
+            `(kunci ${level.lockRaw}% profit, trigger ${level.triggerRaw}%)`
+          );
+          broadcastSSE({
+            type:      "lock_profit",
+            level:     i + 1,
+            lockPct:   level.lockRaw,
+            newSL:     lockedSL,
+            profitRaw: rawProfitLock.toFixed(3),
+          });
+          saveState();
+        }
+        break; // Pakai level tertinggi yang applicable
+      }
+    }
+
     // Update trailing stop
     if (CONFIG.TRAILING_STOP) {
       if (pos.side === "LONG") {
@@ -2086,12 +2265,51 @@ async function tradingLoop() {
       }
     }
 
-    // Take Profit
-    if ((pos.side === "LONG" && price >= pos.takeProfit) ||
-        (pos.side === "SHORT" && price <= pos.takeProfit)) {
-      log("TRADE", `${C.green}TAKE PROFIT tercapai!${C.reset}`);
-      await closePosition("TAKE_PROFIT", price);
-      return;
+    // ── FITUR #2: TRAILING TP DINAMIS ───────────────────────
+    // TP tidak lagi fixed, ikut naik/turun saat harga berlanjut
+    if (!pos.trailingTP) pos.trailingTP = pos.takeProfit;
+    if (!pos.tpTrailPct) pos.tpTrailPct = CONFIG.TAKE_PROFIT_PCT * 0.5; // 50% dari TP awal
+
+    if (pos.side === "LONG") {
+      // Update trailing TP ke atas saat harga naik melewati TP lama
+      if (price > pos.trailingTP) {
+        const newTP = price * (1 + pos.tpTrailPct / 100 / pos.leverage);
+        // Jangan update kalau perbedaannya kecil (< 0.05% dari harga)
+        if (newTP - pos.trailingTP > price * 0.0005) {
+          pos.trailingTP = newTP;
+          log("TRADE",
+            `📈 Trailing TP naik → ${pos.trailingTP.toFixed(8)} ` +
+            `(harga ${price.toFixed(8)} melewati TP lama)`
+          );
+        }
+      }
+      // Close saat harga turun dari trailing TP
+      // (harga sudah melewati TP lama dan sekarang turun)
+      const tpTriggered = price >= pos.takeProfit  // TP awal tercapai
+        && price <= pos.trailingTP * (1 - pos.tpTrailPct / 100 / pos.leverage / 2);
+      if (tpTriggered || price >= pos.trailingTP) {
+        log("TRADE", `${C.green}TAKE PROFIT (trailing TP=${pos.trailingTP.toFixed(8)})${C.reset}`);
+        await closePosition("TAKE_PROFIT_TRAILING", price);
+        return;
+      }
+    } else { // SHORT
+      if (price < pos.trailingTP) {
+        const newTP = price * (1 - pos.tpTrailPct / 100 / pos.leverage);
+        if (pos.trailingTP - newTP > price * 0.0005) {
+          pos.trailingTP = newTP;
+          log("TRADE",
+            `📉 Trailing TP turun → ${pos.trailingTP.toFixed(8)} ` +
+            `(harga ${price.toFixed(8)} melewati TP lama)`
+          );
+        }
+      }
+      const tpTriggered = price <= pos.takeProfit
+        && price >= pos.trailingTP * (1 + pos.tpTrailPct / 100 / pos.leverage / 2);
+      if (tpTriggered || price <= pos.trailingTP) {
+        log("TRADE", `${C.green}TAKE PROFIT (trailing TP=${pos.trailingTP.toFixed(8)})${C.reset}`);
+        await closePosition("TAKE_PROFIT_TRAILING", price);
+        return;
+      }
     }
 
     // Stop Loss
@@ -2117,6 +2335,72 @@ async function tradingLoop() {
       const fundingDirection = fundingRate > 0 ? "LONG" : "SHORT";
       if (pos.side === fundingDirection) {
         log("WARN", `Funding rate tinggi (${(fundingRate * 100).toFixed(4)}%) — posisi ${pos.side} membayar. Pertimbangkan tutup.`);
+      }
+    }
+
+    // ── FITUR #3: EARLY EXIT — MOMENTUM LEMAH ────────────────
+    // Aktif hanya kalau: sudah profit ≥ 1% raw DAN belum kena TP
+    const MOMENTUM_EXIT_TRIGGER = 1.0; // % profit raw untuk aktifkan check
+    const rawProfit = pos.side === "LONG"
+      ? (price - pos.entryPrice) / pos.entryPrice * 100
+      : (pos.entryPrice - price) / pos.entryPrice * 100;
+
+    if (rawProfit >= MOMENTUM_EXIT_TRIGGER) {
+      // Deteksi momentum melemah berdasarkan RSI + EMA
+      let momentumWeak = false;
+      const reasons = [];
+
+      if (pos.side === "LONG") {
+        // RSI mulai overbought (>72) = potensi reversal
+        if (indicators.rsi > 72) {
+          momentumWeak = true;
+          reasons.push(`RSI OB ${indicators.rsi.toFixed(1)}`);
+        }
+        // EMA9 mulai turun di bawah EMA21 = trend lemah
+        if (indicators.ema9 < indicators.ema21 * 0.9998) {
+          momentumWeak = true;
+          reasons.push("EMA9<EMA21 (trend melemah)");
+        }
+        // Volume turun drastis saat harga di atas TP awal = exhaustion
+        if (price > pos.takeProfit && indicators.volumeRatio < 0.15) {
+          momentumWeak = true;
+          reasons.push(`Volume drop ${indicators.volumeRatio.toFixed(2)}x`);
+        }
+      } else { // SHORT
+        if (indicators.rsi < 28) {
+          momentumWeak = true;
+          reasons.push(`RSI OS ${indicators.rsi.toFixed(1)}`);
+        }
+        if (indicators.ema9 > indicators.ema21 * 1.0002) {
+          momentumWeak = true;
+          reasons.push("EMA9>EMA21 (trend melemah)");
+        }
+        if (price < pos.takeProfit && indicators.volumeRatio < 0.15) {
+          momentumWeak = true;
+          reasons.push(`Volume drop ${indicators.volumeRatio.toFixed(2)}x`);
+        }
+      }
+
+      if (momentumWeak) {
+        // Butuh minimal 2 konfirmasi sebelum early exit
+        pos.momentumWeakCount = (pos.momentumWeakCount || 0) + 1;
+
+        if (pos.momentumWeakCount >= 2) {
+          log("TRADE",
+            `⚡ EARLY EXIT — Momentum melemah [${reasons.join(", ")}] ` +
+            `| Profit ${rawProfit.toFixed(3)}% raw | Amankan sekarang`
+          );
+          await closePosition("EARLY_EXIT_WEAK_MOMENTUM", price);
+          return;
+        } else {
+          log("INFO",
+            `⚠ Momentum mulai lemah (${pos.momentumWeakCount}/2) [${reasons.join(", ")}] ` +
+            `— konfirmasi 1 tick lagi`
+          );
+        }
+      } else {
+        // Reset counter kalau momentum kembali kuat
+        pos.momentumWeakCount = 0;
       }
     }
     } // end else dari minimum hold time check
@@ -2172,6 +2456,33 @@ async function tradingLoop() {
 
     // Skip entry kalau di luar session aktif
     if (!session.active) {
+      // Tetap jalankan SMC detection untuk dashboard
+      // tapi tandai sebagai no-entry zone
+
+      let klines5mAsia = klines;
+      try { klines5mAsia = await getKlines("5m", 100); } catch (_) {}
+
+      const nonZeroAsia = klines5mAsia.slice(-20).map(k => k.volume).filter(v => v > 0);
+      const avgVolAsia  = nonZeroAsia.length > 0
+        ? nonZeroAsia.reduce((a, b) => a + b, 0) / nonZeroAsia.length : 1;
+
+      const swingsAsia   = detectSwings(klines5mAsia);
+      const inducmtAsia  = detectInducement(swingsAsia, htf?.trend || "BULLISH");
+      const liqGrabAsia  = detectLiquidityGrab(klines5mAsia, swingsAsia, htf?.trend || "BULLISH");
+      const chochAsia    = detectCHoCH(klines5mAsia, swingsAsia, htf?.trend || "BULLISH", avgVolAsia);
+      const fvgDataAsia  = detectFVG(klines5mAsia, htf?.trend || "BULLISH");
+      const inFVGAsia    = isPriceInFVG(price, fvgDataAsia, htf?.trend || "BULLISH");
+      const candleOKAsia = confirmEntryCandle(klines5mAsia, htf?.trend || "BULLISH");
+      const sdZoneAsia   = detectSDZoneTouch(klines5mAsia, swingsAsia, htf?.trend || "BULLISH");
+      const sweepAsia    = detectLiquiditySweep(klines5mAsia, swingsAsia, htf?.trend || "BULLISH");
+      const bosAsia      = detectBreakOfStructure(klines5mAsia, swingsAsia, htf?.trend || "BULLISH");
+      const revScoreAsia = calculateReversalScore({
+        sweep: sweepAsia, bos: bosAsia,
+        rsi: indicators.rsi, bbData,
+        price, volumeRatio: indicators.volumeRatio,
+        candlePatterns, htfStrength: htf?.strength,
+      });
+
       broadcastSSE({
         type: "tick", price, rsi: indicators.rsi,
         ema9: indicators.ema9, ema21: indicators.ema21,
@@ -2180,7 +2491,26 @@ async function tradingLoop() {
         volume24h: ticker?.volume24h, change24h: ticker?.change24h,
         isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
         latestCandle: klines[klines.length - 1], prediction,
-        smcData: { session: session.session, htfTrend: htf?.trend, active: false, atrPct: parseFloat(atrPct.toFixed(3)) },
+        smcData: {
+          htfTrend:      htf?.trend,
+          htfStrength:   htf?.strength,
+          tradeSide:     htf?.trend || "NEUTRAL",
+          session:       session.session,
+          atrPct:        parseFloat(atrPct.toFixed(3)),
+          active:        false,  // tandai no-entry
+          noEntryReason: `Session ${session.session} — entry hanya London/NY`,
+          inducement:    inducmtAsia,
+          liquidityGrab: liqGrabAsia,
+          choch:         chochAsia,
+          fvgData:       fvgDataAsia,
+          inFVG:         inFVGAsia,
+          candleOK:      candleOKAsia,
+          sdZone:        sdZoneAsia,
+          sweep:         sweepAsia,
+          bos:           bosAsia,
+          revScore:      revScoreAsia,
+          smcReady:      false,
+        },
       });
       return;
     }
@@ -3180,6 +3510,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         </div>
         <div style="font-size:9px;color:#8b949e">≥60 = Claude dipanggil</div>
       </div>
+      <!-- Session countdown timer -->
+      <div id="session-countdown" style="margin-top:8px;padding:6px 10px;background:#21262d;border-radius:6px;font-size:11px;display:flex;justify-content:space-between;align-items:center">
+        <span style="color:#8b949e">Session berikutnya:</span>
+        <span id="session-timer" style="color:#d29922;font-family:'Courier New',monospace;font-weight:bold">--</span>
+        <span style="color:#8b949e">| WIB sekarang:</span>
+        <span id="wib-time" style="color:#c9d1d9;font-family:'Courier New',monospace">--</span>
+      </div>
       <div id="claude-filter-result" style="display:none;padding:8px;border-radius:6px;font-size:11px;border:1px solid #30363d">
         <div style="font-size:10px;color:#8b949e;margin-bottom:4px">CLAUDE FILTER RESULT</div>
         <div id="claude-approve" style="font-weight:bold;margin-bottom:2px">--</div>
@@ -3499,6 +3836,48 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       } catch (_) {}
     }, 10000);
 
+    // Update session countdown setiap detik
+    setInterval(() => {
+      const now     = new Date();
+      const utcH    = now.getUTCHours();
+      const utcM    = now.getUTCMinutes();
+      const utcS    = now.getUTCSeconds();
+      const wibH    = (utcH + 7) % 24;
+      const wibStr  = String(wibH).padStart(2,'0') + ':' +
+                      String(utcM).padStart(2,'0') + ':' +
+                      String(utcS).padStart(2,'0');
+
+      const wibEl = document.getElementById('wib-time');
+      if (wibEl) wibEl.textContent = wibStr + ' WIB';
+
+      const timerEl = document.getElementById('session-timer');
+      if (!timerEl) return;
+
+      const utcNow = utcH + utcM / 60 + utcS / 3600;
+      const inLondon = utcNow >= 7  && utcNow < 16;
+      const inNY     = utcNow >= 13 && utcNow < 22;
+
+      if (inLondon || inNY) {
+        // Dalam session aktif — tampilkan kapan berakhir
+        const endH = inNY && utcNow >= 16 ? 22 : inLondon ? 16 : 22;
+        const secsLeft = (endH - utcH) * 3600 - utcM * 60 - utcS;
+        const h = Math.floor(secsLeft / 3600);
+        const m = Math.floor((secsLeft % 3600) / 60);
+        const s = secsLeft % 60;
+        timerEl.textContent = `AKTIF — berakhir ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+        timerEl.style.color = '#3fb950';
+      } else {
+        // Di luar session — hitung ke London open berikutnya
+        let nextUTC = utcNow < 7 ? 7 : 7 + 24; // London open
+        const secsLeft = Math.max(0, Math.round((nextUTC - utcNow) * 3600));
+        const h = Math.floor(secsLeft / 3600);
+        const m = Math.floor((secsLeft % 3600) / 60);
+        const s = secsLeft % 60;
+        timerEl.textContent = `London ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+        timerEl.style.color = '#d29922';
+      }
+    }, 1000);
+
     // BUG #6 FIX: track pause state secara lokal
     let isPaused = false;
 
@@ -3682,6 +4061,16 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (d.prediction) renderPrediction(d.prediction);
       if (d.smcData)   renderSMC(d.smcData);
       if (d.type === 'analysis') { renderMTF(d); renderBB(d); handleIntelligence(d); }
+      // Handler untuk periodic Claude analysis
+      // (update card AI tanpa trigger entry logic)
+      if (d.type === 'analysis_update') {
+        if (d.analysis) renderAI(d.analysis);
+        if (d.bb)       renderBB(d);
+        if (d.fearGreed) document.getElementById('feargreed').textContent =
+          d.fearGreed.value + ' (' + d.fearGreed.classification + ')';
+        if (d.externalData) handleIntelligence({ externalData: d.externalData });
+        return;
+      }
       if (d.type === 'log') addLog(d);
       if (d.type === 'stats') {
         renderStats(d);
@@ -3848,6 +4237,20 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         ? ((price - pos.entryPrice) / pos.entryPrice) * 100 * pos.leverage
         : ((pos.entryPrice - price) / pos.entryPrice) * 100 * pos.leverage;
       const pnlClass = pnlPct >= 0 ? 'green' : 'red';
+      
+      // Fitur baru: Breakeven status
+      const breakevenStatus = pos.breakevenSet 
+        ? '<span class="val green">✅ Aktif</span>' 
+        : '<span class="val yellow">⏳ Belum (profit &lt;0.4%)</span>';
+      
+      // Fitur baru: Lock Profit status
+      const lockProfitStatus = pos.lockLevel !== undefined 
+        ? '<span class="val green">🔐 Level ' + (pos.lockLevel+1) + '</span>' 
+        : '<span class="val yellow">⏳ Belum aktif</span>';
+      
+      // Fitur baru: Trailing TP
+      const trailingTPVal = pos.trailingTP ? formatPepePrice(pos.trailingTP) : '--';
+      
       document.getElementById('position-content').innerHTML = \`
         <div class="row"><span class="label">Side</span><span class="val \${pos.side === 'LONG' ? 'green' : 'red'}">\${pos.side}</span></div>
         <div class="row"><span class="label">Entry</span><span class="val">\${formatPepePrice(pos.entryPrice)}</span></div>
@@ -3855,6 +4258,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         <div class="row"><span class="label">Stop Loss</span><span class="val yellow">\${formatPepePrice(pos.stopLoss)}</span></div>
         <div class="row"><span class="label">Take Profit</span><span class="val green">\${formatPepePrice(pos.takeProfit)}</span></div>
         <div class="row"><span class="label">PnL</span><span class="val \${pnlClass}">\${fmtPct(pnlPct)}</span></div>
+        <div class="row"><span class="label">Breakeven</span>\${breakevenStatus}</div>
+        <div class="row"><span class="label">Lock Profit</span>\${lockProfitStatus}</div>
+        <div class="row"><span class="label">Trailing TP</span><span class="val blue">\${trailingTPVal}</span></div>
         <div class="liq-warning">⚠ LIQUIDATION: \${formatPepePrice(pos.liqPrice)} — jangan biarkan harga mencapai ini!</div>
       \`;
     }
@@ -3960,8 +4366,33 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           bar.textContent = \`⏳ Cooldown entry — \${s.cooldown} detik lagi\`;
           bar.style.cssText = 'padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:#21262d;color:#8b949e;border:none';
         } else if (!s.active && s.active !== undefined) {
-          bar.textContent = \`😴 Sesi tidak aktif (\${s.session}) — tunggu London/NY\`;
-          bar.style.cssText = 'padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:#21262d;color:#8b949e;border:none';
+          // Tampilkan waktu London/NY berikutnya
+          const now    = new Date();
+          const utcHour = now.getUTCHours();
+          const utcMin  = now.getUTCMinutes();
+          const wibHour = (utcHour + 7) % 24;
+
+          // Hitung sisa waktu ke London open (07:00 UTC = 14:00 WIB)
+          let nextSession = '', minsToNext = 0;
+          if (utcHour < 7) {
+            minsToNext = (7 - utcHour) * 60 - utcMin;
+            nextSession = 'London';
+          } else if (utcHour >= 22) {
+            minsToNext = (31 - utcHour) * 60 - utcMin; // next day 07:00
+            nextSession = 'London';
+          } else {
+            minsToNext = 0;
+            nextSession = 'aktif';
+          }
+
+          const hoursLeft = Math.floor(minsToNext / 60);
+          const minsLeft  = minsToNext % 60;
+          const timeStr   = minsToNext > 0
+            ? \`(\${hoursLeft}j \${minsLeft}m lagi)\`
+            : '';
+
+          bar.textContent = \`😴 \${s.session} — Entry dinonaktifkan. Sesi \${nextSession} \${timeStr} | Scan SMC tetap aktif\`;
+          bar.style.cssText = 'padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:#21262d;color:#d29922;border:1px solid #d2992244';
         } else if (s.smcReady) {
           bar.textContent = '🎯 SMC LENGKAP! Menunggu konfirmasi Claude...';
           bar.style.cssText = 'padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:#3fb95022;color:#3fb950;border:1px solid #3fb95066';

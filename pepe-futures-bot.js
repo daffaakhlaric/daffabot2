@@ -46,19 +46,22 @@ const CONFIG = {
   PRODUCT_TYPE:     "USDT-FUTURES",
   MARGIN_COIN:      "USDT",
   MARGIN_MODE:      "isolated",
-  DEFAULT_LEVERAGE: 7,
-  MAX_LEVERAGE:     10,
+  DEFAULT_LEVERAGE: 5,
+  MAX_LEVERAGE:     7,
 
   // Ukuran posisi
   POSITION_SIZE_USDT: 2,   // USDT per trade
   MAX_POSITIONS:       1,
 
-  // Risk management
-  STOP_LOSS_PCT:    1.0,    // SMC: fallback SL (kalkulasi SMC yg tentukan)
-  TAKE_PROFIT_PCT:  2.0,    // SMC: RR 1:2
-  TRAILING_STOP:    true,   // aktifkan trailing stop
-  TRAILING_OFFSET:  0.3,    // scalping: trailing lebih ketat
-  MAX_LOSS_PCT:     5.0,    // force close jika unrealized loss > 5%
+  // Risk management — SL disesuaikan untuk PEPE (spread ~0.2% + fee 0.12% = cost 0.32%)
+  STOP_LOSS_PCT:    2.5,    // dari 1.0 → 2.5% (beri ruang noise PEPE)
+  TAKE_PROFIT_PCT:  5.0,    // dari 2.0 → 5.0% (RR 1:2 tetap terjaga)
+  TRAILING_STOP:    true,    // aktifkan trailing stop
+  TRAILING_OFFSET:  0.8,     // dari 0.3 → 0.8% (tidak kena noise)
+  MAX_LOSS_PCT:     8.0,     // dari 5.0 → 8.0% (longgarkan force close)
+  // Minimum SL untuk cover spread + fee PEPE
+  MIN_SL_PCT:       0.5,    // minimal SL untuk cover cost masuk-keluar
+  MAX_SL_PCT:       3.5,    // maksimal SL
   HARD_STOP_TOTAL:  20.0,   // hard stop jika total loss > 20%
 
   // Funding rate threshold
@@ -68,8 +71,8 @@ const CONFIG = {
   CHECK_INTERVAL_MS:        10000, // 10 detik
   CLAUDE_ANALYSIS_INTERVAL: 6,    // scalping: setiap 6 tick = ~1 menit (lebih responsif)
 
-  // Batas confidence AI
-  OPEN_CONFIDENCE:  70,   // SMC: threshold Claude approve
+  // Batas confidence AI — lebih selektif setelah loss streak
+  OPEN_CONFIDENCE:  75,   // dari 70 → 75
   CLOSE_CONFIDENCE: 55,   // tidak dipakai SMC (SL/TP auto dari swing)
 
   // Hemat kredit AI: skip panggilan kalau tidak ada sinyal kuat
@@ -100,7 +103,7 @@ const CONFIG = {
   // ── Fitur #5: Partial Close ───────────────────────────────
   PARTIAL_CLOSE_ENABLED: true,
   PARTIAL_CLOSE_PCT:     50,    // tutup 50% posisi
-  PARTIAL_CLOSE_TRIGGER: 0.8,   // scalping: trigger lebih cepat saat profit ≥ 0.8%
+  PARTIAL_CLOSE_TRIGGER: 1.5,   // dari 0.8 → 1.5% (jangan terlalu cepat)
 
   // ── Fitur #6: Auto Compound ───────────────────────────────
   AUTO_COMPOUND:       true,
@@ -121,9 +124,9 @@ const CONFIG = {
   BACKTEST_TIMEFRAME: "1m",
 
   // ── CONFIRMATION-BASED REVERSAL SCALPING ─────────────────
-  // [1] ATR-based SL/TP — menggantikan fixed percent
-  ATR_SL_MULTIPLIER:  1.5,   // SL = entry ± (ATR × 1.5)
-  ATR_TP_MULTIPLIER:  2.5,   // TP = entry ± (ATR × 2.5)
+  // [1] ATR-based SL/TP — lebih longgar untuk PEPE
+  ATR_SL_MULTIPLIER:  2.0,   // dari 1.5 → 2.0
+  ATR_TP_MULTIPLIER:  3.5,   // dari 2.5 → 3.5
 
   // [2] Volatility filter — skip trading saat ATR terlalu rendah
   ATR_MIN_MULTIPLIER: 0.7,   // skip jika ATR < avgATR × 0.7
@@ -738,6 +741,32 @@ async function closePosition(reason, currentPrice) {
   log("TRADE", `  PnL     : ${pnlPct >= 0 ? C.green : C.red}${pnlPct.toFixed(2)}% (${pnlUSDT >= 0 ? "+" : ""}${pnlUSDT.toFixed(4)} USDT)${C.reset}`);
   log("TRADE", `  ${C.red}Liq Price was: ${pos.liqPrice.toFixed(8)}${C.reset}`);
 
+  // FIX #7: Log diagnostik untuk debugging SL
+  const holdDurationMs = pos.openTime ? Date.now() - new Date(pos.openTime).getTime() : 0;
+  const holdSec = Math.round(holdDurationMs / 1000);
+  if (reason.includes("STOP_LOSS") || reason.includes("FORCE_CLOSE")) {
+    log("WARN",
+      `📊 SL Diagnostik: Hold=${holdSec}s | Entry=${pos.entryPrice.toFixed(8)} Exit=${currentPrice.toFixed(8)} | Gerak=${Math.abs((currentPrice-pos.entryPrice)/pos.entryPrice*100).toFixed(4)}%`
+    );
+    if (holdSec < 60) {
+      log("WARN",
+        `⚠️ SL dalam ${holdSec} detik! Kemungkinan: spread terlalu besar, SL terlalu ketat, atau entry di harga ekstrem`
+      );
+    }
+    // Catat ke stats untuk analisis
+    if (!stats.slDiagnostics) stats.slDiagnostics = [];
+    stats.slDiagnostics.push({
+      time:      new Date().toISOString(),
+      holdSec,
+      entryPrice: pos.entryPrice,
+      exitPrice:  currentPrice,
+      movePct:   Math.abs((currentPrice-pos.entryPrice)/pos.entryPrice*100),
+      side:       pos.side,
+      leverage:   pos.leverage,
+    });
+    if (stats.slDiagnostics.length > 20) stats.slDiagnostics.shift();
+  }
+
   if (!CONFIG.DRY_RUN) {
     const res = await bitgetRequest("POST", "/api/v2/mix/order/close-positions", {}, {
       symbol:      CONFIG.SYMBOL,
@@ -766,6 +795,45 @@ async function closePosition(reason, currentPrice) {
   autoAdjustStrategy();
 
   recordTrade("CLOSE", pos.side, currentPrice, pos.size, pos.leverage, pos.liqPrice, reason, pnlUSDT);
+
+  // FIX #2: Post-SL Cooldown — cegah revenge trading
+  if (reason === "STOP_LOSS" || reason === "FORCE_CLOSE_MAX_LOSS" || reason.includes("HARD_STOP")) {
+    const lossStreak = stats.losses;
+    // Durasi cooldown bertingkat berdasarkan loss streak
+    const cooldownMs =
+      lossStreak >= 5 ? 120 * 60 * 1000 :  // 2 jam kalau loss 5+
+      lossStreak >= 3 ? 60  * 60 * 1000 :  // 1 jam kalau loss 3+
+                        15  * 60 * 1000;    // 15 menit normal
+    state.pausedUntil = Date.now() + cooldownMs;
+    state.pauseReason =
+      `SL cooldown — loss streak ${lossStreak}x ` +
+      `(${Math.round(cooldownMs / 60000)} menit)`;
+    log("WARN",
+      `⏸ Cooldown ${Math.round(cooldownMs / 60000)} menit setelah SL ke-${lossStreak} — cegah revenge trading`
+    );
+    // Emergency pause kalau loss streak ≥ 5
+    if (lossStreak >= 5) {
+      log("ERROR",
+        `🛑 EMERGENCY PAUSE! Loss streak ${lossStreak}x berturut — pause 2 jam. Buka dashboard untuk review.`
+      );
+      broadcastSSE({
+        type:      "emergency_stop",
+        lossStreak,
+        message:   `Loss streak ${lossStreak}x — pause 2 jam otomatis`,
+        resumeAt:  new Date(state.pausedUntil).toLocaleTimeString("id-ID"),
+      });
+    }
+    broadcastSSE({
+      type:      "sl_cooldown",
+      lossStreak,
+      cooldownMs,
+      resumeAt:  state.pausedUntil,
+      message:   state.pauseReason,
+    });
+    // Simpan harga SL terakhir untuk avoid entry
+    smcState.lastSLPrice = currentPrice;
+  }
+
   state.activePosition = null;
   saveState();
   saveStats();
@@ -1724,7 +1792,9 @@ const smcState = {
   htfLastUpdate: 0,
   setupValid:    false,
   lastEntryTime: 0,
-  minEntryGap:   3 * 60 * 1000, // minimal 3 menit antar entry
+  minEntryGap:   5 * 60 * 1000, // minimal 5 menit antar entry (dari 3 menit)
+  lastSLPrice:     0,         // harga saat SL terakhir
+  slZoneBuffer:    0.005,     // 0.5% buffer dari harga SL terakhir
 
   // [3] Entry delay — pending signal menunggu konfirmasi N candle
   pendingSignal:      null,   // { side, detectedAt, candleCount }
@@ -1979,6 +2049,26 @@ async function tradingLoop() {
       ? ((price - pos.entryPrice) / pos.entryPrice) * 100 * pos.leverage
       : ((pos.entryPrice - price) / pos.entryPrice) * 100 * pos.leverage;
 
+    // FIX #4: Minimum hold time — hindari keluar karena spread
+    // Jangan close posisi dalam 30 detik pertama (kecuali force close)
+    const holdMs    = pos.openTime ? Date.now() - new Date(pos.openTime).getTime() : 99999;
+    const minHoldMs = 30 * 1000; // 30 detik minimum hold
+
+    if (holdMs < minHoldMs) {
+      const sisaSec = Math.ceil((minHoldMs - holdMs) / 1000);
+      if (state.tickCount % 3 === 0) {
+        log("INFO",
+          `⏳ Minimum hold time — tunggu ${sisaSec} detik lagi (cegah exit karena spread)`
+        );
+      }
+      // Tetap cek force close (MAX_LOSS) tapi skip TP/SL normal
+      if (pnlPct < -CONFIG.MAX_LOSS_PCT) {
+        log("TRADE", `Force close dalam hold time — rugi > ${CONFIG.MAX_LOSS_PCT}%`);
+        await closePosition("FORCE_CLOSE_MAX_LOSS", price);
+        return;
+      }
+      // Skip semua SL/TP lainnya selama minimum hold time
+    } else {
     // Update trailing stop
     if (CONFIG.TRAILING_STOP) {
       if (pos.side === "LONG") {
@@ -2027,6 +2117,7 @@ async function tradingLoop() {
         log("WARN", `Funding rate tinggi (${(fundingRate * 100).toFixed(4)}%) — posisi ${pos.side} membayar. Pertimbangkan tutup.`);
       }
     }
+    } // end else dari minimum hold time check
 
     // Fitur #5: Partial close trigger
     if (CONFIG.PARTIAL_CLOSE_ENABLED && !pos.partialClosed) {
@@ -2328,6 +2419,22 @@ async function tradingLoop() {
         tpPct    = slPct * (CONFIG.ATR_TP_MULTIPLIER / CONFIG.ATR_SL_MULTIPLIER);
         orderQty = null;
         leverage = Math.min(Math.max(Math.round(1 / slPct * 8), CONFIG.DEFAULT_LEVERAGE), CONFIG.MAX_LEVERAGE);
+      }
+
+      // FIX #3: Validasi minimum SL sebelum entry — wajib cover spread + fee PEPE
+      const MIN_SL_PCT = CONFIG.MIN_SL_PCT || 0.5;
+      const MAX_SL_PCT = CONFIG.MAX_SL_PCT || 3.5;
+      if (slPct < MIN_SL_PCT) {
+        log("WARN",
+          `SL ${slPct.toFixed(3)}% terlalu kecil (minimum ${MIN_SL_PCT}%) — akan langsung KENA SPREAD/fee! Skip.`
+        );
+        return; // skip entry
+      }
+      if (slPct > MAX_SL_PCT) {
+        log("WARN",
+          `SL ${slPct.toFixed(3)}% terlalu besar (maksimum ${MAX_SL_PCT}%) — risiko terlalu tinggi. Skip.`
+        );
+        return; // skip entry
       }
 
       const fvg = tradeSide === "BULLISH" ? fvgData.lastBullFVG : fvgData.lastBearFVG;
@@ -2959,6 +3066,21 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         <div class="stat-item"><div class="stat-num blue" id="winrate">0%</div><div class="label">Win Rate</div></div>
         <div class="stat-item"><div class="stat-num" id="pnl">0</div><div class="label">PnL (USDT)</div></div>
       </div>
+      <!-- Loss Streak Warning -->
+      <div id="loss-streak-warning" style="display:none;
+        margin-top:10px;padding:8px;border-radius:6px;
+        background:#f8514922;border:1px solid #f8514966;
+        color:#f85149;font-size:12px;text-align:center">
+        🔴 Loss Streak: <span id="loss-streak-count">0</span>x
+        <span id="loss-streak-msg"></span>
+      </div>
+      <div id="cooldown-info" style="display:none;
+        margin-top:6px;padding:6px;border-radius:4px;
+        background:#d2992222;border:1px solid #d2992266;
+        color:#d29922;font-size:11px;text-align:center">
+        ⏸ Cooldown aktif — resume:
+        <span id="cooldown-resume">--</span>
+      </div>
     </div>
 
     <!-- Multi-Timeframe -->
@@ -3338,7 +3460,40 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (d.smcData)   renderSMC(d.smcData);
       if (d.type === 'analysis') { renderMTF(d); renderBB(d); handleIntelligence(d); }
       if (d.type === 'log') addLog(d);
-      if (d.type === 'stats') { renderStats(d); renderWinRate(d); }
+      if (d.type === 'stats') {
+        renderStats(d);
+        renderWinRate(d);
+
+        // Loss streak dan cooldown display
+        const streakEl   = document.getElementById('loss-streak-warning');
+        const countEl    = document.getElementById('loss-streak-count');
+        const msgEl      = document.getElementById('loss-streak-msg');
+        const cooldownEl = document.getElementById('cooldown-info');
+        const resumeEl   = document.getElementById('cooldown-resume');
+
+        if (streakEl && d.lossStreak > 0) {
+          streakEl.style.display = 'block';
+          if (countEl) countEl.textContent = d.lossStreak;
+          if (msgEl) {
+            msgEl.textContent = d.lossStreak >= 5
+              ? '— EMERGENCY PAUSE 2 jam!'
+              : d.lossStreak >= 3
+              ? '— Pause 1 jam otomatis'
+              : '— Cooldown 15 menit';
+          }
+        } else if (streakEl) {
+          streakEl.style.display = 'none';
+        }
+
+        if (cooldownEl && d.cooldownActive) {
+          cooldownEl.style.display = 'block';
+          if (resumeEl && d.cooldownResumeAt) {
+            resumeEl.textContent = new Date(d.cooldownResumeAt).toLocaleTimeString('id-ID');
+          }
+        } else if (cooldownEl) {
+          cooldownEl.style.display = 'none';
+        }
+      }
       if (d.type === 'topup') {
         const msg = document.getElementById('topup-msg');
         if (msg) { msg.textContent = \`✓ +\${d.amount} USDT\`; msg.style.color = '#3fb950'; setTimeout(() => { msg.textContent = ''; }, 4000); }
@@ -3858,7 +4013,22 @@ function startDashboard() {
 
   // Kirim stats + win rate setiap 30 detik
   setInterval(() => {
-    broadcastSSE({ type: "stats", ...stats, compoundBalance: compoundedBalance });
+    const lossStreak = stats.losses > 0 && stats.wins === 0
+      ? stats.losses
+      : stats.currentStreak < 0
+      ? Math.abs(stats.currentStreak)
+      : 0;
+
+    broadcastSSE({
+      type:             "stats",
+      ...stats,
+      compoundBalance:  compoundedBalance,
+      lossStreak,
+      // Info cooldown kalau aktif
+      cooldownActive:   !!(state.pausedUntil && Date.now() < state.pausedUntil),
+      cooldownReason:   state.pauseReason,
+      cooldownResumeAt: state.pausedUntil,
+    });
   }, 30000);
 
   // Fast price ticker tiap 3 detik — harga real-time di dashboard

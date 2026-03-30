@@ -3566,8 +3566,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       try { 
         handle(JSON.parse(e.data)); 
       } catch (err) { 
-        console.error('SSE Error:', err); 
-        alert('SSE Error: ' + err.message);
+        console.error('SSE Error:', err.message);
       }
     };
 
@@ -3971,7 +3970,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     function handle(d) {
-      console.log('SSE message:', d.type, d);
+      console.log('SSE message:', d.type);
       window.currentPosition = d.position !== undefined ? d.position : window.currentPosition;
 
       if (d.type === 'init') {
@@ -4142,6 +4141,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         document.querySelector('.dot').style.background = '#3fb950';
         addLog({ level: 'INFO', msg: '▶ Bot dimulai' });
       }
+      
+      } catch (err) { console.error('Handle error:', err.message); }
     }
 
     async function resetSim() {

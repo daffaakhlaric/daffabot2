@@ -3966,6 +3966,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     function handle(d) {
+      console.log('SSE message received, type:', d.type, 'has smcData:', !!d.smcData);
       window.currentPosition = d.position !== undefined ? d.position : window.currentPosition;
 
       if (d.type === 'init') {

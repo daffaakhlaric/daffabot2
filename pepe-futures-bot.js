@@ -3966,7 +3966,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     function handle(d) {
-      console.log('SSE message received, type:', d.type, 'has smcData:', !!d.smcData);
+      // Debug: show alert on first message
+      if (!window._debugShown) { window._debugShown = true; alert('SSE connected! Type: ' + d.type); }
       window.currentPosition = d.position !== undefined ? d.position : window.currentPosition;
 
       if (d.type === 'init') {

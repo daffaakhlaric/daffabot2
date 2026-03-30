@@ -2730,6 +2730,21 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         <div class="row"><span class="label">Drawdown</span><span id="bal-drawdown" class="yellow">--</span></div>
       </div>
       <div style="margin-top:12px"><div style="font-size:10px;color:#8b949e;margin-bottom:4px">RIWAYAT SALDO</div><canvas id="balanceChart" height="50" style="width:100%"></canvas></div>
+      <!-- Top Up simulasi — hanya muncul saat DRY_RUN -->
+      <div id="topup-panel" style="display:none;margin-top:14px;padding-top:12px;border-top:1px solid #30363d">
+        <div style="font-size:11px;color:#e3b341;margin-bottom:8px">💰 TOP UP SALDO SIMULASI</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input id="topup-amount" type="number" min="1" max="10000" step="1" placeholder="Jumlah USDT"
+            style="padding:5px 10px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#e6edf3;font-size:13px;width:130px"
+            onkeydown="if(event.key==='Enter') topupBalance()" />
+          <button onclick="topupBalance()" style="padding:5px 14px;background:#e3b34122;color:#e3b341;border:1px solid #e3b34155;border-radius:4px;font-size:12px;cursor:pointer">+ Top Up</button>
+          <button onclick="topupQuick(5)"  style="padding:5px 10px;background:#21262d;color:#8b949e;border:1px solid #30363d;border-radius:4px;font-size:11px;cursor:pointer">+5</button>
+          <button onclick="topupQuick(10)" style="padding:5px 10px;background:#21262d;color:#8b949e;border:1px solid #30363d;border-radius:4px;font-size:11px;cursor:pointer">+10</button>
+          <button onclick="topupQuick(20)" style="padding:5px 10px;background:#21262d;color:#8b949e;border:1px solid #30363d;border-radius:4px;font-size:11px;cursor:pointer">+20</button>
+          <button onclick="topupQuick(50)" style="padding:5px 10px;background:#21262d;color:#8b949e;border:1px solid #30363d;border-radius:4px;font-size:11px;cursor:pointer">+50</button>
+          <span id="topup-msg" style="font-size:11px;color:#3fb950"></span>
+        </div>
+      </div>
     </div>
     <!-- Harga + Chart -->
     <div class="card chart-card">
@@ -3072,7 +3087,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       window.currentPosition = d.position !== undefined ? d.position : window.currentPosition;
 
       if (d.type === 'init') {
-        document.getElementById('dry-badge').style.display = d.dryRun ? 'inline' : 'none';
+        document.getElementById('dry-badge').style.display    = d.dryRun ? 'inline' : 'none';
+        document.getElementById('topup-panel').style.display  = d.dryRun ? 'block'  : 'none';
         if (d.stats) renderWinRate(d.stats);
         if (d.balance) handleBalance(d.balance);
         if (d.externalData) handleIntelligence({ externalData: d.externalData });
@@ -3145,6 +3161,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (d.type === 'analysis') { renderMTF(d); renderBB(d); handleIntelligence(d); }
       if (d.type === 'log') addLog(d);
       if (d.type === 'stats') { renderStats(d); renderWinRate(d); }
+      if (d.type === 'topup') {
+        const msg = document.getElementById('topup-msg');
+        if (msg) { msg.textContent = \`✓ +\${d.amount} USDT\`; msg.style.color = '#3fb950'; setTimeout(() => { msg.textContent = ''; }, 4000); }
+      }
       if (d.type === 'hardstop') {
         document.getElementById('hardstop-badge').style.display = 'inline';
         document.getElementById('reset-btn').style.display      = 'inline-block';
@@ -3183,6 +3203,38 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         addLog({ level: 'INFO', msg: j.message });
       } catch (e) {
         alert('Gagal start: ' + e.message);
+      }
+    }
+
+    async function topupBalance() {
+      const input  = document.getElementById('topup-amount');
+      const amount = parseFloat(input.value);
+      if (!amount || amount <= 0) { alert('Masukkan jumlah USDT yang valid'); return; }
+      await doTopup(amount);
+      input.value = '';
+    }
+
+    async function topupQuick(amount) {
+      await doTopup(amount);
+    }
+
+    async function doTopup(amount) {
+      try {
+        const r = await fetch('/api/topup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ amount }),
+        });
+        const j = await r.json();
+        const msg = document.getElementById('topup-msg');
+        msg.textContent = j.message;
+        msg.style.color = j.ok ? '#3fb950' : '#f85149';
+        if (j.ok) {
+          addLog({ level: 'INFO', msg: \`💰 Top up +\${amount} USDT → saldo: \${j.balance?.toFixed(2)} USDT\` });
+          setTimeout(() => { msg.textContent = ''; }, 4000);
+        }
+      } catch (e) {
+        alert('Gagal top up: ' + e.message);
       }
     }
 
@@ -3550,6 +3602,40 @@ function startDashboard() {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, message: "Data simulasi direset. Klik Start Bot untuk mulai trading." }));
       log("INFO", "Data simulasi direset via dashboard (bot masih berhenti)");
+    } else if (req.url === "/api/topup" && req.method === "POST" && CONFIG.DRY_RUN) {
+      // Top up saldo simulasi — hanya DRY_RUN
+      let body = "";
+      req.on("data", chunk => { body += chunk; });
+      req.on("end", () => {
+        try {
+          const { amount } = JSON.parse(body);
+          const topup = parseFloat(amount);
+          if (!topup || topup <= 0 || topup > 10000) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: false, message: "Jumlah tidak valid (1–10000 USDT)" }));
+            return;
+          }
+          compoundedBalance          += topup;
+          state.initialBalance       += topup;
+          state.currentBalance        = compoundedBalance + stats.totalPnL;
+          if (state.currentBalance > (state.peakBalance || 0)) state.peakBalance = state.currentBalance;
+          saveState();
+          broadcastSSE({
+            type:    "topup",
+            amount:  topup,
+            balance: state.currentBalance,
+            message: `+${topup} USDT ditambahkan ke saldo simulasi`,
+          });
+          broadcastSSE({ type: "stats", ...stats, compoundBalance: compoundedBalance });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, message: `Saldo +${topup} USDT → ${state.currentBalance.toFixed(2)} USDT`, balance: state.currentBalance }));
+          log("INFO", `[DRY RUN] Top up +${topup} USDT → saldo simulasi: ${state.currentBalance.toFixed(2)} USDT`);
+        } catch {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, message: "Body tidak valid" }));
+        }
+      });
+      return;
     } else if (req.url === "/api/start" && req.method === "POST") {
       // Start / restart trading loop secara manual
       if (state.running) {

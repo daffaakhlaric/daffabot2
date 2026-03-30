@@ -4469,10 +4469,6 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           approveEl.style.color = s.claudeFilter.approve ? '#3fb950' : '#f85149';
         }
         if (reasonEl) reasonEl.textContent = s.claudeFilter.reason || '--';
-        }
-      }
-      } catch (err) {
-        console.error('Error in renderSMC Claude filter:', err);
       }
     }
 

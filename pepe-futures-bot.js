@@ -119,6 +119,20 @@ const CONFIG = {
   BACKTEST_DAYS:      7,
   BACKTEST_SYMBOL:    "PEPEUSDT",
   BACKTEST_TIMEFRAME: "1m",
+
+  // ── CONFIRMATION-BASED REVERSAL SCALPING ─────────────────
+  // [1] ATR-based SL/TP — menggantikan fixed percent
+  ATR_SL_MULTIPLIER:  1.5,   // SL = entry ± (ATR × 1.5)
+  ATR_TP_MULTIPLIER:  2.5,   // TP = entry ± (ATR × 2.5)
+
+  // [2] Volatility filter — skip trading saat ATR terlalu rendah
+  ATR_MIN_MULTIPLIER: 0.7,   // skip jika ATR < avgATR × 0.7
+
+  // [3] Entry delay — tunggu N candle setelah sinyal reversal
+  ENTRY_CONFIRM_CANDLES: 2,  // jumlah candle konfirmasi sebelum masuk
+
+  // [4] Post-SL cooldown — tunggu N candle setelah stop loss
+  SL_COOLDOWN_CANDLES: 3,    // tunggu 3 candle (≈30 detik di 1m) setelah SL
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -1485,6 +1499,82 @@ function calcATR(klines, period = 14) {
   return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
 }
 
+// ── Confirmation-Based Reversal Helpers ───────────────────────
+
+/**
+ * [1] ATR-based SL/TP calculator
+ * SL = entry ± (ATR × ATR_SL_MULTIPLIER)
+ * TP = entry ± (ATR × ATR_TP_MULTIPLIER)
+ * Lebih adaptif dari fixed % — mengikuti volatilitas aktual pasar.
+ */
+function calcATRStops(side, entryPrice, atr) {
+  const slDist = atr * CONFIG.ATR_SL_MULTIPLIER;
+  const tpDist = atr * CONFIG.ATR_TP_MULTIPLIER;
+  const stopLoss   = side === "LONG" ? entryPrice - slDist : entryPrice + slDist;
+  const takeProfit = side === "LONG" ? entryPrice + tpDist : entryPrice - tpDist;
+  const slPct      = slDist / entryPrice * 100;
+  const tpPct      = tpDist / entryPrice * 100;
+  return { stopLoss, takeProfit, slPct, tpPct, slDist, tpDist };
+}
+
+/**
+ * [2] Volatility filter — cek apakah ATR cukup untuk trading.
+ * Menghindari entry saat market sedang konsolidasi/squeeze.
+ * Returns { pass, atr, avgATR, ratio }
+ */
+function checkVolatilityFilter(klines) {
+  if (klines.length < 28) return { pass: true, atr: 0, avgATR: 0, ratio: 1 };
+  // Hitung ATR 14 dari seluruh klines, lalu ambil rata-rata 14 ATR terakhir
+  const atrs = [];
+  for (let i = 15; i < klines.length; i++) {
+    const slice = klines.slice(i - 14, i + 1);
+    atrs.push(calcATR(slice, 14));
+  }
+  const atr    = atrs[atrs.length - 1] || 0;
+  const avgATR = atrs.slice(-14).reduce((a, b) => a + b, 0) / Math.min(atrs.length, 14);
+  const ratio  = avgATR > 0 ? atr / avgATR : 1;
+  const pass   = ratio >= CONFIG.ATR_MIN_MULTIPLIER;
+  return { pass, atr, avgATR, ratio: parseFloat(ratio.toFixed(3)) };
+}
+
+/**
+ * [2] Reversal confirmation filter
+ * Sebelum entry, pastikan reversal dikonfirmasi oleh indikator:
+ * LONG: RSI naik dari OS (<35) + close > EMA9 + ada higher-low
+ * SHORT: RSI turun dari OB (>65) + close < EMA9 + ada lower-high
+ * Returns { pass, reasons[] }
+ */
+function checkReversalConfirmation(side, klines, indicators, swings) {
+  const reasons = [];
+  let score = 0;
+  const last = klines[klines.length - 1];
+
+  if (side === "BULLISH") {
+    // RSI in oversold territory
+    if (indicators.rsi < 45) { score += 2; reasons.push(`RSI OS (${indicators.rsi.toFixed(1)})`); }
+    // Close above EMA9
+    if (last.close > indicators.ema9) { score += 2; reasons.push("Close > EMA9"); }
+    // Higher low confirmation (last swing low > prev swing low)
+    const hl = swings.lastLow && swings.prevLow && swings.lastLow.price > swings.prevLow.price;
+    if (hl) { score += 2; reasons.push("Higher Low"); }
+    // Bullish candle (green close)
+    if (last.close > last.open) { score += 1; reasons.push("Bullish candle"); }
+  } else {
+    // RSI falling from overbought
+    if (indicators.rsi > 55) { score += 2; reasons.push(`RSI OB (${indicators.rsi.toFixed(1)})`); }
+    // Close below EMA9
+    if (last.close < indicators.ema9) { score += 2; reasons.push("Close < EMA9"); }
+    // Lower high confirmation
+    const lh = swings.lastHigh && swings.prevHigh && swings.lastHigh.price < swings.prevHigh.price;
+    if (lh) { score += 2; reasons.push("Lower High"); }
+    // Bearish candle (red close)
+    if (last.close < last.open) { score += 1; reasons.push("Bearish candle"); }
+  }
+
+  // Butuh score ≥ 4 dari 7 untuk lolos
+  return { pass: score >= 4, score, maxScore: 7, reasons };
+}
+
 // ── Reversal Detection Functions ──────────────────────────────
 
 /**
@@ -1635,6 +1725,14 @@ const smcState = {
   setupValid:    false,
   lastEntryTime: 0,
   minEntryGap:   3 * 60 * 1000, // minimal 3 menit antar entry
+
+  // [3] Entry delay — pending signal menunggu konfirmasi N candle
+  pendingSignal:      null,   // { side, detectedAt, candleCount }
+  pendingCandleCount: 0,
+
+  // [4] Post-SL cooldown
+  lastSLTime:       0,        // timestamp terakhir SL hit
+  slCooldownCount:  0,        // candle counter sejak SL terakhir
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -1909,6 +2007,9 @@ async function tradingLoop() {
         (pos.side === "SHORT" && price >= pos.stopLoss)) {
       log("TRADE", `${C.yellow}STOP LOSS tercapai!${C.reset}`);
       await closePosition("STOP_LOSS", price);
+      // [4] Mulai post-SL cooldown
+      smcState.lastSLTime      = Date.now();
+      smcState.slCooldownCount = 0;
       return;
     }
 
@@ -2088,6 +2189,29 @@ async function tradingLoop() {
     ].join(" ");
     log("INFO", `[${tradeSide}] ${checks} | ATR:${atrPct.toFixed(3)}% | RevScore:${revScore.score}(${revScore.grade})`);
 
+    // ── [4] Post-SL cooldown — tunggu N candle setelah stop loss ──
+    if (smcState.lastSLTime > 0) {
+      smcState.slCooldownCount++;
+      if (smcState.slCooldownCount < CONFIG.SL_COOLDOWN_CANDLES) {
+        const remaining = CONFIG.SL_COOLDOWN_CANDLES - smcState.slCooldownCount;
+        if (state.tickCount % 3 === 0) log("INFO", `Post-SL cooldown — tunggu ${remaining} candle lagi`);
+        return;
+      } else {
+        // Cooldown selesai
+        smcState.lastSLTime      = 0;
+        smcState.slCooldownCount = 0;
+      }
+    }
+
+    // ── [2] Volatility filter — skip saat ATR terlalu rendah ──────
+    const volFilter = checkVolatilityFilter(klines5m);
+    if (!volFilter.pass) {
+      if (state.tickCount % 6 === 0) {
+        log("INFO", `Volatility filter FAIL — ATR ratio ${volFilter.ratio}x < ${CONFIG.ATR_MIN_MULTIPLIER}x (market compression, skip)`);
+      }
+      return;
+    }
+
     // ── F. Cek apakah kondisi cukup untuk entry ────────────
     // Mode D (Utama) — CHoCH + FVG + S/D Zone strong retest → langsung entry, no Claude
     const sdReady        = choch.detected && inFVG.inFVG && sdZone.detected && sdZone.strong;
@@ -2098,6 +2222,44 @@ async function tradingLoop() {
     // Mode C — BOS Direct: BOS saja cukup
     const bosDirectEntry = bos.detected;
     const smcReady       = sdReady || smcFull || revReady || bosDirectEntry;
+
+    // ── [3] Entry delay — pending signal & candle confirmation ────
+    if (smcReady) {
+      const pendingSide = smcState.pendingSignal?.side;
+      if (!smcState.pendingSignal || pendingSide !== tradeSide) {
+        // Sinyal baru — mulai hitungan candle, belum masuk
+        smcState.pendingSignal      = { side: tradeSide, detectedAt: Date.now() };
+        smcState.pendingCandleCount = 1;
+        log("INFO", `⏳ Sinyal ${tradeSide} terdeteksi — tunggu ${CONFIG.ENTRY_CONFIRM_CANDLES} candle konfirmasi (1/${CONFIG.ENTRY_CONFIRM_CANDLES})`);
+        return;
+      } else {
+        smcState.pendingCandleCount++;
+        if (smcState.pendingCandleCount < CONFIG.ENTRY_CONFIRM_CANDLES) {
+          log("INFO", `⏳ Konfirmasi candle ${smcState.pendingCandleCount}/${CONFIG.ENTRY_CONFIRM_CANDLES} — tunggu...`);
+          return;
+        }
+        // Candle cukup — reset pending dan lanjut ke cek konfirmasi
+        smcState.pendingSignal      = null;
+        smcState.pendingCandleCount = 0;
+      }
+    } else {
+      // Sinyal hilang — reset pending
+      smcState.pendingSignal      = null;
+      smcState.pendingCandleCount = 0;
+    }
+
+    // ── [2b] Reversal confirmation filter ─────────────────────────
+    if (smcReady) {
+      const revConfirm = checkReversalConfirmation(tradeSide, klines5m, indicators, swings);
+      if (!revConfirm.pass) {
+        log("INFO",
+          `Reversal confirmation FAIL (${revConfirm.score}/${revConfirm.maxScore}) ` +
+          `[${revConfirm.reasons.join(", ") || "tidak ada sinyal"}] — skip entry`
+        );
+        return;
+      }
+      log("INFO", `Reversal confirmation OK (${revConfirm.score}/${revConfirm.maxScore}): ${revConfirm.reasons.join(", ")}`);
+    }
 
     // Bangun smcData untuk broadcast (dipakai di kedua cabang)
     const smcData = {
@@ -2136,26 +2298,35 @@ async function tradingLoop() {
       // Mode lain: SL dari swing level
       let slPrice, slPct, tpPct, orderQty, leverage;
 
+      // [1] ATR-based SL/TP — primary method
+      const atrStops = calcATRStops(tradeSide === "BULLISH" ? "LONG" : "SHORT", price, atr);
+
       if (sdReady) {
-        // SL = sedikit di luar zone (0.15% buffer)
-        slPrice = tradeSide === "BULLISH"
+        // SD Zone: SL di luar zone tapi minimal ATR-based SL
+        const zoneSL = tradeSide === "BULLISH"
           ? sdZone.zone * (1 - 0.0015)
           : sdZone.zone * (1 + 0.0015);
+        // Ambil yang lebih jauh (lebih konservatif) antara zone SL dan ATR SL
+        slPrice = tradeSide === "BULLISH"
+          ? Math.min(zoneSL, atrStops.stopLoss)
+          : Math.max(zoneSL, atrStops.stopLoss);
         slPct = Math.max(0.2, Math.abs((price - slPrice) / price * 100));
-        tpPct = slPct * 2; // RR 1:2
-        // Risk-based sizing: jika SL kena, loss = POSITION_SIZE_USDT (modal isolated)
+        tpPct = slPct * (CONFIG.ATR_TP_MULTIPLIER / CONFIG.ATR_SL_MULTIPLIER); // jaga RR ratio
         const sized = calcOrderSizeByRisk(price, slPct);
         orderQty = sized.qty;
         leverage = sized.leverage;
       } else {
-        // Fallback: SL dari swing level
+        // ATR-based SL/TP dengan batas dari swing level
         const swingLevel = tradeSide === "BULLISH"
           ? (swings.lastLow?.price  || price * 0.99)
           : (swings.lastHigh?.price || price * 1.01);
-        slPct    = Math.max(0.3, Math.min(2.0, Math.abs((price - swingLevel) / price * 100)));
+        const swingSLPct = Math.abs((price - swingLevel) / price * 100);
+        // Pilih yang lebih besar antara ATR SL dan swing SL (lebih aman dari noise)
+        slPct    = Math.max(atrStops.slPct, swingSLPct, 0.3);
+        slPct    = Math.min(slPct, 2.5); // cap maksimal
         slPrice  = tradeSide === "BULLISH" ? price * (1 - slPct / 100) : price * (1 + slPct / 100);
-        tpPct    = slPct * 2;
-        orderQty = null; // pakai calcOrderSize default di openPosition
+        tpPct    = slPct * (CONFIG.ATR_TP_MULTIPLIER / CONFIG.ATR_SL_MULTIPLIER);
+        orderQty = null;
         leverage = Math.min(Math.max(Math.round(1 / slPct * 8), CONFIG.DEFAULT_LEVERAGE), CONFIG.MAX_LEVERAGE);
       }
 

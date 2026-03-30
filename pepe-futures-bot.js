@@ -2428,6 +2428,8 @@ async function tradingLoop() {
   // SMC ANALYSIS + CLAUDE FILTER
   // ═══════════════════════════════════════════════════════════
 
+  let smcData = null; // defined here so it's accessible in both if(!pos) and else branches
+
   if (!pos) {
 
     // ── A. Update HTF Trend setiap 1 menit ─────────────────
@@ -2685,7 +2687,7 @@ async function tradingLoop() {
     }
 
     // Bangun smcData untuk broadcast (dipakai di kedua cabang)
-    const smcData = {
+    smcData = {
       htfTrend:      htf?.trend,
       htfStrength:   htf?.strength,
       tradeSide,

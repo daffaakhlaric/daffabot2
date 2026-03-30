@@ -3563,7 +3563,12 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <script>
     const sse = new EventSource('/events');
     sse.onmessage = (e) => {
-      try { handle(JSON.parse(e.data)); } catch {}
+      try { 
+        handle(JSON.parse(e.data)); 
+      } catch (err) { 
+        console.error('SSE Error:', err); 
+        alert('SSE Error: ' + err.message);
+      }
     };
 
     function fmt(n, dec = 10) {
@@ -3966,8 +3971,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     function handle(d) {
-      // Debug: show alert on first message
-      if (!window._debugShown) { window._debugShown = true; alert('SSE connected! Type: ' + d.type); }
+      console.log('SSE message:', d.type, d);
       window.currentPosition = d.position !== undefined ? d.position : window.currentPosition;
 
       if (d.type === 'init') {

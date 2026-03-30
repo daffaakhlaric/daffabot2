@@ -4022,11 +4022,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         }
         return;
       }
-      if (d.type === 'pause') {
+      if (d.type === 'pause' || d.type === 'sl_cooldown') {
         isPaused = true;                                                       // BUG #6 FIX
         const pb = document.getElementById('pause-badge');
-        pb.style.display = 'inline';
-        pb.title = d.reason + ' — resume dalam ' + d.resumeIn + ' menit';
+        if (pb) {
+          pb.style.display = 'inline';
+          pb.title = d.message || d.reason || 'Paused';
+        }
       }
       // BUG #6 FIX: gunakan isPaused flag dari server, jangan hapus badge di setiap event
       if (d.isPaused !== undefined) {
@@ -4035,40 +4037,73 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
       if (d.type === 'balance') { handleBalance(d); return; }
       if (d.price) {
-        document.getElementById('price').textContent = formatPepePrice(d.price);
+        const priceEl = document.getElementById('price');
+        if (priceEl) priceEl.textContent = formatPepePrice(d.price);
         window.lastPrice = d.price;
         if (d.change24h !== undefined) {
           const el = document.getElementById('price-change');
-          el.textContent = fmtPct(d.change24h * 100);
-          el.className   = d.change24h >= 0 ? 'price-change-pos' : 'price-change-neg';
+          if (el) {
+            el.textContent = fmtPct(d.change24h * 100);
+            el.className   = d.change24h >= 0 ? 'price-change-pos' : 'price-change-neg';
+          }
         }
       }
-      if (d.volume24h) document.getElementById('vol24h').textContent = fmtVol(d.volume24h);
-      if (d.vwap) document.getElementById('vwap-price').textContent = formatPepePrice(d.vwap);
+      if (d.volume24h) {
+        const volEl = document.getElementById('vol24h');
+        if (volEl) volEl.textContent = fmtVol(d.volume24h);
+      }
+      if (d.vwap) {
+        const vwapEl = document.getElementById('vwap-price');
+        if (vwapEl) vwapEl.textContent = formatPepePrice(d.vwap);
+      }
       if (d.latestCandle) updateChartCandle(d.latestCandle);
       if (d.rsi !== undefined) {
         const rsiEl = document.getElementById('rsi');
-        rsiEl.textContent = Number(d.rsi).toFixed(2);
-        rsiEl.className = d.rsi > 70 ? 'val red' : d.rsi < 30 ? 'val green' : 'val';
+        if (rsiEl) {
+          rsiEl.textContent = Number(d.rsi).toFixed(2);
+          rsiEl.className = d.rsi > 70 ? 'val red' : d.rsi < 30 ? 'val green' : 'val';
+        }
       }
-      if (d.ema9)  document.getElementById('ema9').textContent  = formatPepePrice(d.ema9);
-      if (d.ema21) document.getElementById('ema21').textContent = formatPepePrice(d.ema21);
+      if (d.ema9) {
+        const ema9El = document.getElementById('ema9');
+        if (ema9El) ema9El.textContent = formatPepePrice(d.ema9);
+      }
+      if (d.ema21) {
+        const ema21El = document.getElementById('ema21');
+        if (ema21El) ema21El.textContent = formatPepePrice(d.ema21);
+      }
       if (d.fundingRate !== undefined) {
         const fr = (d.fundingRate * 100).toFixed(4) + '%';
         const el = document.getElementById('funding');
-        el.textContent = fr;
-        el.className = Math.abs(d.fundingRate) > 0.001 ? 'val red' : 'val';
+        if (el) {
+          el.textContent = fr;
+          el.className = Math.abs(d.fundingRate) > 0.001 ? 'val red' : 'val';
+        }
       }
-      if (d.fearGreed) document.getElementById('feargreed').textContent = d.fearGreed.value + ' (' + d.fearGreed.classification + ')';
-      if (d.bid) document.getElementById('bid').textContent = formatPepePrice(d.bid);
-      if (d.ask) document.getElementById('ask').textContent = formatPepePrice(d.ask);
+      if (d.fearGreed) {
+        const fgEl = document.getElementById('feargreed');
+        if (fgEl) fgEl.textContent = d.fearGreed.value + ' (' + d.fearGreed.classification + ')';
+      }
+      if (d.bid) {
+        const bidEl = document.getElementById('bid');
+        if (bidEl) bidEl.textContent = formatPepePrice(d.bid);
+      }
+      if (d.ask) {
+        const askEl = document.getElementById('ask');
+        if (askEl) askEl.textContent = formatPepePrice(d.ask);
+      }
       if (d.position) renderPosition(d.position, d.price || window.lastPrice);
-      else if (d.type === 'analysis' && !d.position) document.getElementById('position-content').innerHTML = '<div class="no-pos">Tidak ada posisi aktif</div>';
+      else if (d.type === 'analysis' && !d.position) {
+        const posContent = document.getElementById('position-content');
+        if (posContent) posContent.innerHTML = '<div class="no-pos">Tidak ada posisi aktif</div>';
+      }
       if (d.analysis) renderAI(d.analysis);
       if (d.prediction) renderPrediction(d.prediction);
       if (d.smcData) {
-        console.log('smcData received in handle, calling renderSMC');
+        console.log('✅ smcData received, calling renderSMC:', JSON.stringify(d.smcData).substring(0, 200));
         renderSMC(d.smcData);
+      } else {
+        console.log('⚠️ tick received but NO smcData in message');
       }
       if (d.type === 'analysis') { renderMTF(d); renderBB(d); handleIntelligence(d); }
       // Handler untuk periodic Claude analysis
@@ -4318,61 +4353,66 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         return;
       }
 
-      // HTF
-      const htfEl = document.getElementById('smc-htf');
-      if (htfEl) {
-        htfEl.textContent = s.htfTrend || '--';
-        htfEl.className   = s.htfTrend === 'BULLISH' ? 'green' : s.htfTrend === 'BEARISH' ? 'red' : 'val';
-        if (s.htfStrength) htfEl.title = s.htfStrength;
-      }
+      try {
+        // HTF
+        const htfEl = document.getElementById('smc-htf');
+        if (htfEl) {
+          htfEl.textContent = s.htfTrend || '--';
+          htfEl.className   = s.htfTrend === 'BULLISH' ? 'green' : s.htfTrend === 'BEARISH' ? 'red' : 'val';
+          if (s.htfStrength) htfEl.title = s.htfStrength;
+        }
 
-      // Session
-      const sesEl = document.getElementById('smc-session');
-      if (sesEl) {
-        sesEl.textContent  = s.session || '--';
-        sesEl.style.color  = s.session?.includes('OVERLAP') ? '#d29922'
-          : (s.session?.includes('LONDON') || s.session?.includes('NEW_YORK')) ? '#3fb950'
-          : '#f85149';
-      }
+        // Session
+        const sesEl = document.getElementById('smc-session');
+        if (sesEl) {
+          sesEl.textContent  = s.session || '--';
+          sesEl.style.color  = s.session?.includes('OVERLAP') ? '#d29922'
+            : (s.session?.includes('LONDON') || s.session?.includes('NEW_YORK')) ? '#3fb950'
+            : '#f85149';
+        }
 
-      // ATR
-      const atrEl = document.getElementById('smc-atr');
-      if (atrEl) {
-        atrEl.textContent  = s.atrPct !== undefined ? s.atrPct + '%' : '--';
-        atrEl.style.color  = parseFloat(s.atrPct) < 0.03 ? '#f85149'
-          : parseFloat(s.atrPct) > 0.1 ? '#3fb950' : '#d29922';
-      }
+        // ATR
+        const atrEl = document.getElementById('smc-atr');
+        if (atrEl) {
+          atrEl.textContent  = s.atrPct !== undefined ? s.atrPct + '%' : '--';
+          atrEl.style.color  = parseFloat(s.atrPct) < 0.03 ? '#f85149'
+            : parseFloat(s.atrPct) > 0.1 ? '#3fb950' : '#d29922';
+        }
 
-      // Checklist
-      const setCheck = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val ? '✅' : '❌'; };
-      setCheck('smc-ind',    s.inducement?.valid);
-      setCheck('smc-liq',    s.liquidityGrab?.detected);
-      setCheck('smc-choch',  s.choch?.detected);
-      setCheck('smc-fvg',    s.inFVG?.inFVG);
-      setCheck('smc-candle', s.candleOK?.confirmed);
-      setCheck('smc-sweep',  s.sweep?.detected);
-      setCheck('smc-bos',    s.bos?.detected);
+        // Checklist
+        const setCheck = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val ? '✅' : '❌'; };
+        setCheck('smc-ind',    s.inducement?.valid);
+        setCheck('smc-liq',    s.liquidityGrab?.detected);
+        setCheck('smc-choch',  s.choch?.detected);
+        setCheck('smc-fvg',    s.inFVG?.inFVG);
+        setCheck('smc-candle', s.candleOK?.confirmed);
+        setCheck('smc-sweep',  s.sweep?.detected);
+        setCheck('smc-bos',    s.bos?.detected);
 
-      // Reversal Score
-      const rsEl = document.getElementById('smc-rev-score');
-      if (rsEl && s.revScore) {
-        rsEl.textContent  = s.revScore.score + ' ' + (s.revScore.grade || '');
-        rsEl.style.color  = s.revScore.grade === 'A' ? '#3fb950'
-          : s.revScore.grade === 'B' ? '#d29922'
-          : s.revScore.grade === 'C' ? '#f0883e' : '#f85149';
-        rsEl.title = s.revScore.reasons?.join(' | ') || '';
-        const barEl = document.getElementById('smc-rev-bar');
-        if (barEl) {
-          barEl.style.width      = Math.min(100, s.revScore.score) + '%';
-          barEl.style.background = s.revScore.grade === 'A' ? '#3fb950'
+        // Reversal Score
+        const rsEl = document.getElementById('smc-rev-score');
+        if (rsEl && s.revScore) {
+          rsEl.textContent  = s.revScore.score + ' ' + (s.revScore.grade || '');
+          rsEl.style.color  = s.revScore.grade === 'A' ? '#3fb950'
             : s.revScore.grade === 'B' ? '#d29922'
             : s.revScore.grade === 'C' ? '#f0883e' : '#f85149';
+          rsEl.title = s.revScore.reasons?.join(' | ') || '';
+          const barEl = document.getElementById('smc-rev-bar');
+          if (barEl) {
+            barEl.style.width      = Math.min(100, s.revScore.score) + '%';
+            barEl.style.background = s.revScore.grade === 'A' ? '#3fb950'
+              : s.revScore.grade === 'B' ? '#d29922'
+              : s.revScore.grade === 'C' ? '#f0883e' : '#f85149';
+          }
         }
+      } catch (err) {
+        console.error('Error in renderSMC:', err);
       }
 
       // Status bar
-      const bar = document.getElementById('smc-status-bar');
-      if (bar) {
+      try {
+        const bar = document.getElementById('smc-status-bar');
+        if (bar) {
         if (s.flat) {
           bar.textContent = \`⏸ Market flat (ATR \${s.atrPct}%) — menunggu volatilitas\`;
           bar.style.cssText = 'padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:#21262d;color:#8b949e;border:none';
@@ -4435,6 +4475,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           approveEl.style.color = s.claudeFilter.approve ? '#3fb950' : '#f85149';
         }
         if (reasonEl) reasonEl.textContent = s.claudeFilter.reason || '--';
+        }
+      }
+      } catch (err) {
+        console.error('Error in renderSMC Claude filter:', err);
       }
     }
 

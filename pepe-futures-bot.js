@@ -81,6 +81,7 @@ const CONFIG = {
 
   // Dry run (WAJIB true saat testing SMC minimal 5 hari!)
   DRY_RUN: true,
+  DRY_RUN_ALL_SESSIONS: true,  // Aktifkan semua sesi saat dry run untuk观测 lebih cepat
 
   // Dashboard
   DASHBOARD_PORT: process.env.MONITOR_PORT ? parseInt(process.env.MONITOR_PORT) : 4000,
@@ -1179,7 +1180,7 @@ function autoAdjustStrategy() {
 async function fetchAndUpdateBalance() {
   if (CONFIG.DRY_RUN) {
     state.currentBalance = compoundedBalance + stats.totalPnL;
-    if (!state.initialBalance) state.initialBalance = CONFIG.POSITION_SIZE_USDT * 10;
+    if (!state.initialBalance) state.initialBalance = compoundedBalance;
   } else {
     try {
       const info = await getAccountInfo();
@@ -1488,6 +1489,21 @@ function confirmEntryCandle(klines, side) {
 
 /** 1H — Session Filter (WIB) */
 function isActiveSession() {
+  // DRY RUN: aktifkan semua session untuk加速 observasi
+  if (CONFIG.DRY_RUN && CONFIG.DRY_RUN_ALL_SESSIONS) {
+    const now  = new Date();
+    const hour = now.getUTCHours();
+    return {
+      active:     true,
+      session:    "ALL_SESSIONS(DRY)",
+      inLondon:   true,
+      inNY:       true,
+      inOverlap:  false,
+      wibHour:    (hour + 7) % 24,
+    };
+  }
+
+  // LIVE: session filter normal
   const now   = new Date();
   const hour  = now.getUTCHours();
   const min   = now.getUTCMinutes();
@@ -3319,8 +3335,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <span id="dry-badge" class="dry-badge" style="display:none">DRY RUN</span>
     <span id="pause-badge" style="display:none;background:#f8514933;color:#f85149;padding:2px 8px;border-radius:4px;font-size:11px;border:1px solid #f8514966">⏸ PAUSED</span>
     <span id="hardstop-badge" style="display:none;background:#f8514933;color:#f85149;padding:2px 10px;border-radius:4px;font-size:11px;border:1px solid #f8514966">🛑 HARD STOP</span>
-    <button id="reset-btn" onclick="resetSim()" style="display:none;margin-left:8px;padding:3px 12px;background:#21262d;color:#e3b341;border:1px solid #e3b34155;border-radius:4px;font-size:11px;cursor:pointer">↺ Reset Data</button>
-    <button id="start-btn" onclick="startBot()" style="display:none;margin-left:4px;padding:3px 12px;background:#21262d;color:#3fb950;border:1px solid #3fb95055;border-radius:4px;font-size:11px;cursor:pointer">▶ Start Bot</button>
+    <button id="reset-btn" onclick="resetSim()" style="margin-left:8px;padding:3px 12px;background:#21262d;color:#e3b341;border:1px solid #e3b34155;border-radius:4px;font-size:11px;cursor:pointer">↺ Reset Data</button>
+    <button id="start-btn" onclick="toggleBot()" style="margin-left:4px;padding:3px 12px;background:#21262d;color:#3fb950;border:1px solid #3fb95055;border-radius:4px;font-size:11px;cursor:pointer">⏸ Pause</button>
   </div>
 
   <div class="grid">
@@ -4000,11 +4016,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         document.getElementById('dry-badge').style.display    = d.dryRun ? 'inline' : 'none';
         document.getElementById('topup-panel').style.display  = d.dryRun ? 'block'  : 'none';
         if (d.botStopped) {
-          // Bot sedang stopped saat dashboard dibuka — tampilkan badge + tombol langsung
           document.getElementById('hardstop-badge').style.display = 'inline';
-          document.getElementById('start-btn').style.display      = 'inline-block';
-          document.getElementById('reset-btn').style.display      = 'inline-block';
           document.querySelector('.dot').style.background = '#f85149';
+          setBotRunning(false);
+        } else {
+          setBotRunning(true);
         }
         if (d.stats) renderWinRate(d.stats);
         if (d.balance) handleBalance(d.balance);
@@ -4181,22 +4197,24 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
       if (d.type === 'hardstop') {
         document.getElementById('hardstop-badge').style.display = 'inline';
-        document.getElementById('reset-btn').style.display      = 'inline-block';
-        document.getElementById('start-btn').style.display      = 'inline-block';
         document.querySelector('.dot').style.background = '#f85149';
+        setBotRunning(false);
         addLog({ level: 'ERROR', msg: \`🛑 HARD STOP — Loss \${d.lossPercent}% | klik ▶ Start Bot untuk lanjut atau ↺ Reset Data untuk sesi baru\` });
       }
       if (d.type === 'reset') {
-        // Data direset — tampilkan Start Bot, sembunyikan Reset
-        document.getElementById('reset-btn').style.display = 'none';
-        document.getElementById('start-btn').style.display = 'inline-block';
+        setBotRunning(false);
         addLog({ level: 'INFO', msg: '↺ Data simulasi direset — klik Start Bot untuk mulai lagi' });
       }
       if (d.type === 'started') {
         document.getElementById('hardstop-badge').style.display = 'none';
-        document.getElementById('start-btn').style.display      = 'none';
         document.querySelector('.dot').style.background = '#3fb950';
+        setBotRunning(true);
         addLog({ level: 'INFO', msg: '▶ Bot dimulai' });
+      }
+      if (d.type === 'paused') {
+        document.querySelector('.dot').style.background = '#d29922';
+        setBotRunning(false);
+        addLog({ level: 'WARN', msg: d.message || '⏸ Bot di-pause manual' });
       }
     }
 
@@ -4211,14 +4229,39 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
     }
 
-    async function startBot() {
-      if (!confirm('Start bot? Trading akan dimulai kembali.')) return;
-      try {
-        const r = await fetch('/api/start', { method: 'POST' });
-        const j = await r.json();
-        addLog({ level: 'INFO', msg: j.message });
-      } catch (e) {
-        alert('Gagal start: ' + e.message);
+    let botRunning = true; // asumsi bot jalan saat dashboard dibuka
+
+    async function toggleBot() {
+      const btn = document.getElementById('start-btn');
+      if (botRunning) {
+        if (!confirm('Pause bot? Entry baru akan dihentikan sementara.')) return;
+        try {
+          const r = await fetch('/api/pause', { method: 'POST' });
+          const j = await r.json();
+          addLog({ level: 'WARN', msg: j.message });
+        } catch (e) { alert('Gagal pause: ' + e.message); }
+      } else {
+        if (!confirm('Start bot? Trading akan dimulai kembali.')) return;
+        try {
+          const r = await fetch('/api/start', { method: 'POST' });
+          const j = await r.json();
+          addLog({ level: 'INFO', msg: j.message });
+        } catch (e) { alert('Gagal start: ' + e.message); }
+      }
+    }
+
+    function setBotRunning(running) {
+      botRunning = running;
+      const btn = document.getElementById('start-btn');
+      if (!btn) return;
+      if (running) {
+        btn.textContent    = '⏸ Pause';
+        btn.style.color    = '#f0883e';
+        btn.style.border   = '1px solid #f0883e55';
+      } else {
+        btn.textContent    = '▶ Start Bot';
+        btn.style.color    = '#3fb950';
+        btn.style.border   = '1px solid #3fb95055';
       }
     }
 

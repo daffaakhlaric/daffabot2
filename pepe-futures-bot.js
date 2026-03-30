@@ -2675,7 +2675,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <span id="dry-badge" class="dry-badge" style="display:none">DRY RUN</span>
     <span id="pause-badge" style="display:none;background:#f8514933;color:#f85149;padding:2px 8px;border-radius:4px;font-size:11px;border:1px solid #f8514966">⏸ PAUSED</span>
     <span id="hardstop-badge" style="display:none;background:#f8514933;color:#f85149;padding:2px 10px;border-radius:4px;font-size:11px;border:1px solid #f8514966">🛑 HARD STOP</span>
-    <button id="reset-btn" onclick="resetSim()" style="display:none;margin-left:8px;padding:3px 12px;background:#21262d;color:#58a6ff;border:1px solid #58a6ff55;border-radius:4px;font-size:11px;cursor:pointer">↺ Reset Simulasi</button>
+    <button id="reset-btn" onclick="resetSim()" style="display:none;margin-left:8px;padding:3px 12px;background:#21262d;color:#e3b341;border:1px solid #e3b34155;border-radius:4px;font-size:11px;cursor:pointer">↺ Reset Data</button>
+    <button id="start-btn" onclick="startBot()" style="display:none;margin-left:4px;padding:3px 12px;background:#21262d;color:#3fb950;border:1px solid #3fb95055;border-radius:4px;font-size:11px;cursor:pointer">▶ Start Bot</button>
   </div>
 
   <div class="grid">
@@ -3150,21 +3151,38 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         document.querySelector('.dot').style.background = '#f85149';
       }
       if (d.type === 'reset') {
+        // Data direset — tampilkan Start Bot, sembunyikan Reset
+        document.getElementById('reset-btn').style.display = 'none';
+        document.getElementById('start-btn').style.display = 'inline-block';
+        addLog({ level: 'INFO', msg: '↺ Data simulasi direset — klik Start Bot untuk mulai lagi' });
+      }
+      if (d.type === 'started') {
         document.getElementById('hardstop-badge').style.display = 'none';
-        document.getElementById('reset-btn').style.display      = 'none';
+        document.getElementById('start-btn').style.display      = 'none';
         document.querySelector('.dot').style.background = '#3fb950';
-        addLog({ level: 'INFO', msg: '↺ Simulasi direset — bot berjalan kembali' });
+        addLog({ level: 'INFO', msg: '▶ Bot dimulai' });
       }
     }
 
     async function resetSim() {
-      if (!confirm('Reset semua data simulasi dan restart bot?')) return;
+      if (!confirm('Reset data simulasi? Bot tidak akan otomatis restart — bisa pelajari data dulu.')) return;
       try {
         const r = await fetch('/api/reset', { method: 'POST' });
         const j = await r.json();
-        alert(j.message || 'Reset berhasil');
+        addLog({ level: 'INFO', msg: j.message });
       } catch (e) {
         alert('Gagal reset: ' + e.message);
+      }
+    }
+
+    async function startBot() {
+      if (!confirm('Start bot? Trading akan dimulai kembali.')) return;
+      try {
+        const r = await fetch('/api/start', { method: 'POST' });
+        const j = await r.json();
+        addLog({ level: 'INFO', msg: j.message });
+      } catch (e) {
+        alert('Gagal start: ' + e.message);
       }
     }
 
@@ -3509,7 +3527,7 @@ function startDashboard() {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ state: { lastPrice: state.lastPrice, activePosition: state.activePosition }, stats }));
     } else if (req.url === "/api/reset" && req.method === "POST") {
-      // Reset simulasi DRY_RUN — bersihkan stats & posisi aktif
+      // Reset data simulasi saja — bot TIDAK otomatis restart
       stats.totalPnL    = 0;
       stats.totalTrades = 0;
       stats.wins        = 0;
@@ -3525,24 +3543,31 @@ function startDashboard() {
       state.balanceHistory   = [];
       smcState.lastEntryTime = 0;
       tradeLog.length        = 0;
-      if (!state.running) {
-        // Restart trading loop kalau sebelumnya di-stop oleh hard stop
-        state.running = true;
-        (async () => {
-          while (state.running) {
-            try { await tradingLoop(); } catch (err) { log("ERROR", `Loop error: ${err.message}`); }
-            await new Promise(r => setTimeout(r, CONFIG.CHECK_INTERVAL_MS));
-          }
-        })();
-        log("INFO", "Bot di-restart setelah reset simulasi");
-      }
       saveStats();
       saveState();
       broadcastSSE({ type: "stats", ...stats });
-      broadcastSSE({ type: "reset", message: "Simulasi direset" });
+      broadcastSSE({ type: "reset", message: "Data simulasi direset — klik Start Bot untuk mulai lagi" });
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, message: "Simulasi berhasil direset" }));
-      log("INFO", "Simulasi direset via dashboard");
+      res.end(JSON.stringify({ ok: true, message: "Data simulasi direset. Klik Start Bot untuk mulai trading." }));
+      log("INFO", "Data simulasi direset via dashboard (bot masih berhenti)");
+    } else if (req.url === "/api/start" && req.method === "POST") {
+      // Start / restart trading loop secara manual
+      if (state.running) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, message: "Bot sudah berjalan" }));
+        return;
+      }
+      state.running = true;
+      (async () => {
+        while (state.running) {
+          try { await tradingLoop(); } catch (err) { log("ERROR", `Loop error: ${err.message}`); }
+          await new Promise(r => setTimeout(r, CONFIG.CHECK_INTERVAL_MS));
+        }
+      })();
+      broadcastSSE({ type: "started", message: "Bot dimulai" });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, message: "Bot dimulai" }));
+      log("INFO", "Bot di-start manual via dashboard");
     } else {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(DASHBOARD_HTML);

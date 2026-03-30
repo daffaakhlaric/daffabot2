@@ -4348,66 +4348,59 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     function renderSMC(s) {
-      console.log('renderSMC called with:', JSON.stringify(s, null, 2));
-      if (!s) {
-        console.log('smcData is empty or undefined!');
-        return;
+      console.log('renderSMC called with:', s);
+      if (!s) return;
+
+      // HTF
+      const htfEl = document.getElementById('smc-htf');
+      if (htfEl) {
+        htfEl.textContent = s.htfTrend || '--';
+        htfEl.className   = s.htfTrend === 'BULLISH' ? 'green' : s.htfTrend === 'BEARISH' ? 'red' : 'val';
+        if (s.htfStrength) htfEl.title = s.htfStrength;
       }
 
-      try {
-        // HTF
-        const htfEl = document.getElementById('smc-htf');
-        if (htfEl) {
-          htfEl.textContent = s.htfTrend || '--';
-          htfEl.className   = s.htfTrend === 'BULLISH' ? 'green' : s.htfTrend === 'BEARISH' ? 'red' : 'val';
-          if (s.htfStrength) htfEl.title = s.htfStrength;
-        }
+      // Session
+      const sesEl = document.getElementById('smc-session');
+      if (sesEl) {
+        sesEl.textContent  = s.session || '--';
+        sesEl.style.color  = s.session?.includes('OVERLAP') ? '#d29922'
+          : (s.session?.includes('LONDON') || s.session?.includes('NEW_YORK')) ? '#3fb950'
+          : '#f85149';
+      }
 
-        // Session
-        const sesEl = document.getElementById('smc-session');
-        if (sesEl) {
-          sesEl.textContent  = s.session || '--';
-          sesEl.style.color  = s.session?.includes('OVERLAP') ? '#d29922'
-            : (s.session?.includes('LONDON') || s.session?.includes('NEW_YORK')) ? '#3fb950'
-            : '#f85149';
-        }
+      // ATR
+      const atrEl = document.getElementById('smc-atr');
+      if (atrEl) {
+        atrEl.textContent  = s.atrPct !== undefined ? s.atrPct + '%' : '--';
+        atrEl.style.color  = parseFloat(s.atrPct) < 0.03 ? '#f85149'
+          : parseFloat(s.atrPct) > 0.1 ? '#3fb950' : '#d29922';
+      }
 
-        // ATR
-        const atrEl = document.getElementById('smc-atr');
-        if (atrEl) {
-          atrEl.textContent  = s.atrPct !== undefined ? s.atrPct + '%' : '--';
-          atrEl.style.color  = parseFloat(s.atrPct) < 0.03 ? '#f85149'
-            : parseFloat(s.atrPct) > 0.1 ? '#3fb950' : '#d29922';
-        }
+      // Checklist
+      const setCheck = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val ? '✅' : '❌'; };
+      setCheck('smc-ind',    s.inducement?.valid);
+      setCheck('smc-liq',    s.liquidityGrab?.detected);
+      setCheck('smc-choch',  s.choch?.detected);
+      setCheck('smc-fvg',    s.inFVG?.inFVG);
+      setCheck('smc-candle', s.candleOK?.confirmed);
+      setCheck('smc-sweep',  s.sweep?.detected);
+      setCheck('smc-bos',    s.bos?.detected);
 
-        // Checklist
-        const setCheck = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val ? '✅' : '❌'; };
-        setCheck('smc-ind',    s.inducement?.valid);
-        setCheck('smc-liq',    s.liquidityGrab?.detected);
-        setCheck('smc-choch',  s.choch?.detected);
-        setCheck('smc-fvg',    s.inFVG?.inFVG);
-        setCheck('smc-candle', s.candleOK?.confirmed);
-        setCheck('smc-sweep',  s.sweep?.detected);
-        setCheck('smc-bos',    s.bos?.detected);
-
-        // Reversal Score
-        const rsEl = document.getElementById('smc-rev-score');
-        if (rsEl && s.revScore) {
-          rsEl.textContent  = s.revScore.score + ' ' + (s.revScore.grade || '');
-          rsEl.style.color  = s.revScore.grade === 'A' ? '#3fb950'
+      // Reversal Score
+      const rsEl = document.getElementById('smc-rev-score');
+      if (rsEl && s.revScore) {
+        rsEl.textContent  = s.revScore.score + ' ' + (s.revScore.grade || '');
+        rsEl.style.color  = s.revScore.grade === 'A' ? '#3fb950'
+          : s.revScore.grade === 'B' ? '#d29922'
+          : s.revScore.grade === 'C' ? '#f0883e' : '#f85149';
+        rsEl.title = s.revScore.reasons?.join(' | ') || '';
+        const barEl = document.getElementById('smc-rev-bar');
+        if (barEl) {
+          barEl.style.width      = Math.min(100, s.revScore.score) + '%';
+          barEl.style.background = s.revScore.grade === 'A' ? '#3fb950'
             : s.revScore.grade === 'B' ? '#d29922'
             : s.revScore.grade === 'C' ? '#f0883e' : '#f85149';
-          rsEl.title = s.revScore.reasons?.join(' | ') || '';
-          const barEl = document.getElementById('smc-rev-bar');
-          if (barEl) {
-            barEl.style.width      = Math.min(100, s.revScore.score) + '%';
-            barEl.style.background = s.revScore.grade === 'A' ? '#3fb950'
-              : s.revScore.grade === 'B' ? '#d29922'
-              : s.revScore.grade === 'C' ? '#f0883e' : '#f85149';
-          }
         }
-      } catch (err) {
-        console.error('Error in renderSMC:', err);
       }
 
       // Status bar

@@ -4033,7 +4033,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       // BUG #6 FIX: gunakan isPaused flag dari server, jangan hapus badge di setiap event
       if (d.isPaused !== undefined) {
         isPaused = d.isPaused;
-        document.getElementById('pause-badge').style.display = isPaused ? 'inline' : 'none';
+        const pbEl = document.getElementById('pause-badge');
+        if (pbEl) pbEl.style.display = isPaused ? 'inline' : 'none';
       }
       if (d.type === 'balance') { handleBalance(d); return; }
       if (d.price) {

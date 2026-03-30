@@ -807,18 +807,23 @@ async function closePosition(reason, currentPrice) {
   // FIX #2: Post-SL Cooldown — cegah revenge trading
   if (reason === "STOP_LOSS" || reason === "FORCE_CLOSE_MAX_LOSS" || reason.includes("HARD_STOP")) {
     const lossStreak = stats.losses;
-    // Durasi cooldown bertingkat berdasarkan loss streak
+    // Durasi cooldown bertingkat berdasarkan loss streak (min 2x baru aktif)
     const cooldownMs =
       lossStreak >= 5 ? 120 * 60 * 1000 :  // 2 jam kalau loss 5+
       lossStreak >= 3 ? 60  * 60 * 1000 :  // 1 jam kalau loss 3+
-                        15  * 60 * 1000;    // 15 menit normal
-    state.pausedUntil = Date.now() + cooldownMs;
-    state.pauseReason =
-      `SL cooldown — loss streak ${lossStreak}x ` +
-      `(${Math.round(cooldownMs / 60000)} menit)`;
-    log("WARN",
-      `⏸ Cooldown ${Math.round(cooldownMs / 60000)} menit setelah SL ke-${lossStreak} — cegah revenge trading`
-    );
+      lossStreak >= 2 ? 15  * 60 * 1000 :  // 15 menit kalau loss 2
+                        0;                   // 1 loss tidak perlu cooldown
+    
+    // Hanya pause kalau ada cooldown
+    if (cooldownMs > 0) {
+      state.pausedUntil = Date.now() + cooldownMs;
+      state.pauseReason =
+        `SL cooldown — loss streak ${lossStreak}x ` +
+        `(${Math.round(cooldownMs / 60000)} menit)`;
+      log("WARN",
+        `⏸ Cooldown ${Math.round(cooldownMs / 60000)} menit setelah SL ke-${lossStreak} — cegah revenge trading`
+      );
+    }
     // Emergency pause kalau loss streak ≥ 5
     if (lossStreak >= 5) {
       log("ERROR",
@@ -831,13 +836,16 @@ async function closePosition(reason, currentPrice) {
         resumeAt:  new Date(state.pausedUntil).toLocaleTimeString("id-ID"),
       });
     }
-    broadcastSSE({
-      type:      "sl_cooldown",
-      lossStreak,
-      cooldownMs,
-      resumeAt:  state.pausedUntil,
-      message:   state.pauseReason,
-    });
+    // Hanya broadcast kalau ada cooldown
+    if (cooldownMs > 0) {
+      broadcastSSE({
+        type:      "sl_cooldown",
+        lossStreak,
+        cooldownMs,
+        resumeAt:  state.pausedUntil,
+        message:   state.pauseReason,
+      });
+    }
     // Simpan harga SL terakhir untuk avoid entry
     smcState.lastSLPrice = currentPrice;
   }

@@ -7,12 +7,24 @@
  * 2. RSI-based opportunity detection
  * 3. Trend alignment (EMA)
  * 4. Volume analysis
+ * 5. HYPE DETECTOR - Real hype detection for PEPE
  */
 
 "use strict";
 
 const https = require("https");
 const httpsAgent = new https.Agent({ rejectUnauthorized: true });
+
+// Import Hype Detector
+const { 
+  MARKET_STATE, 
+  analyzeHype, 
+  calculateHypeMetrics, 
+  getHypeState, 
+  setHypeState, 
+  isHypeLocked,
+  resetHypeState
+} = require('./hypeDetector');
 
 const SYMBOLS = {
   BTC: "BTCUSDT",
@@ -260,7 +272,8 @@ async function analyzeSymbol(symbol) {
 
 /**
  * Select the best pair to trade
- * Returns: { selected: 'BTCUSDT' | 'PEPEUSDT', analysis: {...}, reason: string }
+ * Uses HYPE DETECTOR for PEPE - requires 4/7 conditions for HYPE state
+ * Returns: { selected: 'BTCUSDT' | 'PEPEUSDT', analysis: {...}, reason: string, hypeState: {...} }
  */
 async function selectPair() {
   console.log("[PairSelector] Analyzing market conditions...");
@@ -272,25 +285,68 @@ async function selectPair() {
   
   const results = { BTC: btcAnalysis, PEPE: pepeAnalysis };
   
-  // Determine best pair
+  // Check for lock (prevent rapid switching)
+  if (isHypeLocked()) {
+    const current = getCurrentPair();
+    if (current && current.selected) {
+      console.log(`[PairSelector] Pair locked, maintaining ${current.selected}`);
+      return current;
+    }
+  }
+  
+  // Calculate HYPE metrics for PEPE
+  let hypeAnalysis = null;
+  try {
+    const hypeMetrics = await calculateHypeMetrics(
+      pepeAnalysis.klines,
+      { 
+        rsi: pepeAnalysis.rsi, 
+        ema9: pepeAnalysis.ema9, 
+        ema21: pepeAnalysis.ema21,
+        bb: pepeAnalysis.bb
+      },
+      btcAnalysis.klines
+    );
+    
+    if (hypeMetrics) {
+      hypeAnalysis = await analyzeHype(hypeMetrics.pepe, hypeMetrics.btc);
+      console.log(`[PAIR SELECTOR] PEPE Score: ${hypeAnalysis.hypeScore}/100`);
+      console.log(`[PAIR SELECTOR] State: ${hypeAnalysis.state}`);
+      console.log(`[PAIR SELECTOR] Conditions: ${hypeAnalysis.conditionsPassed}/7`);
+      console.log(`[PAIR SELECTOR] Reason: ${hypeAnalysis.reasons}`);
+    }
+  } catch (err) {
+    console.log(`[PairSelector] Hype analysis error: ${err.message}`);
+  }
+  
+  // Determine best pair using HYPE state
   let selected;
   let reason;
+  let marketState = 'NORMAL';
   
-  // Check for errors
-  if (btcAnalysis.error && pepeAnalysis.error) {
-    // Default to PEPE if both fail
-    selected = SYMBOLS.PEPE;
-    reason = "Both symbols failed analysis, defaulting to PEPE";
-  } else if (btcAnalysis.error) {
-    selected = SYMBOLS.PEPE;
-    reason = "BTC analysis failed, using PEPE";
-  } else if (pepeAnalysis.error) {
-    selected = SYMBOLS.BTC;
-    reason = "PEPE analysis failed, using BTC";
-  } else {
-    // Both successful - compare scores
-    const scoreDiff = btcAnalysis.score - pepeAnalysis.score;
+  // Use hype analysis if available
+  if (hypeAnalysis) {
+    marketState = hypeAnalysis.state;
     
+    if (hypeAnalysis.state === MARKET_STATE.HYPE) {
+      // HYPE CONFIRMED - Allow PEPE trading
+      selected = SYMBOLS.PEPE;
+      reason = `PEPE HYPE CONFIRMED: ${hypeAnalysis.hypeScore}/100 (${hypeAnalysis.conditionsPassed}/7 conditions)`;
+      // Lock PEPE for 30 minutes
+      setHypeState(MARKET_STATE.HYPE, 30);
+    } else if (hypeAnalysis.state === MARKET_STATE.WATCHLIST) {
+      // WATCHLIST - Monitor but don't trade PEPE
+      selected = SYMBOLS.BTC;
+      reason = `PEPE WATCHLIST: ${hypeAnalysis.hypeScore}/100 (${hypeAnalysis.conditionsPassed}/7) - monitoring`;
+      setHypeState(MARKET_STATE.WATCHLIST, 15);
+    } else {
+      // NORMAL - Use score-based selection
+      selected = SYMBOLS.BTC;
+      reason = `PEPE NORMAL: ${hypeAnalysis.hypeScore}/100 - using BTC`;
+    }
+  } else {
+    // Fallback to original score-based logic
+    const scoreDiff = btcAnalysis.score - pepeAnalysis.score;
     if (scoreDiff > 15) {
       selected = SYMBOLS.BTC;
       reason = `BTC score significantly higher: ${btcAnalysis.score} vs ${pepeAnalysis.score}`;
@@ -304,19 +360,21 @@ async function selectPair() {
       selected = SYMBOLS.PEPE;
       reason = `PEPE slightly better: ${pepeAnalysis.score} vs ${btcAnalysis.score}`;
     } else {
-      // Equal scores - prefer BTC for stability
       selected = SYMBOLS.BTC;
       reason = `Equal scores (${btcAnalysis.score}), defaulting to BTC for stability`;
     }
   }
   
   console.log(`[PairSelector] Selected: ${selected}`);
+  console.log(`[PairSelector] Market State: ${marketState}`);
   console.log(`[PairSelector] Reason: ${reason}`);
   console.log(`[PairSelector] BTC Score: ${btcAnalysis.score} | PEPE Score: ${pepeAnalysis.score}`);
   
   return {
     selected,
     reason,
+    marketState,
+    hypeAnalysis,
     analysis: results,
     selectedAnalysis: results[selected === SYMBOLS.BTC ? "BTC" : "PEPE"]
   };
@@ -333,13 +391,20 @@ async function getCurrentPair(forceRefresh = false) {
   const now = Date.now();
   
   if (!forceRefresh && cachedSelection && (now - lastSelectionTime) < CACHE_DURATION) {
-    return cachedSelection;
+    // Add current hype state
+    return {
+      ...cachedSelection,
+      hypeState: getHypeState()
+    };
   }
   
   cachedSelection = await selectPair();
   lastSelectionTime = now;
   
-  return cachedSelection;
+  return {
+    ...cachedSelection,
+    hypeState: getHypeState()
+  };
 }
 
 /**
@@ -373,6 +438,11 @@ module.exports = {
   setManualPair,
   clearManualOverride,
   getManualOverride,
+  // Hype Detector exports
+  MARKET_STATE,
+  getHypeState,
+  analyzeHype,
+  calculateHypeMetrics,
   // For testing
   calculateATR,
   calculateEMA,

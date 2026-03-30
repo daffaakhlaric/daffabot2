@@ -1647,7 +1647,7 @@ function checkReversalConfirmation(side, klines, indicators, swings) {
   }
 
   // Butuh score ≥ 4 dari 7 untuk lolos
-  return { pass: score >= 4, score, maxScore: 7, reasons };
+  return { pass: score >= 5, score, maxScore: 7, reasons };
 }
 
 // ── Reversal Detection Functions ──────────────────────────────
@@ -2568,6 +2568,30 @@ async function tradingLoop() {
     }
     const tradeSide = htf.trend; // "BULLISH" atau "BEARISH"
 
+  // Skip entry kalau HTF terlalu lemah — counter-trend berbahaya
+  if (htf.strength === "WEAK") {
+    if (state.tickCount % 6 === 0) {
+      log("INFO", `HTF ${htf.trend} tapi WEAK (sep=${htf.sep}%) — skip, tunggu trend lebih jelas`);
+    }
+    broadcastSSE({
+      type: "tick", price,
+      rsi: indicators.rsi, ema9: indicators.ema9, ema21: indicators.ema21,
+      fundingRate, fearGreed: externalDataCache?.fearGreed,
+      position: pos, bid: ticker?.bidPrice, ask: ticker?.askPrice,
+      isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
+      latestCandle: klines[klines.length - 1], prediction,
+      smcData: {
+        htfTrend:    htf.trend,
+        htfStrength: "WEAK",
+        session:     session.session,
+        atrPct:      parseFloat(atrPct.toFixed(3)),
+        noEntryReason: `HTF WEAK (sep=${htf.sep}%) — tunggu trend lebih kuat`,
+      },
+    });
+    return;
+  }
+
+
     // ── D. Ambil klines 5m untuk SMC ───────────────────────
     let klines5m = klines; // fallback ke 1m
     try { klines5m = await getKlines("5m", 100); } catch (_) {}
@@ -2645,7 +2669,8 @@ async function tradingLoop() {
     // Mode B — Reversal Grade A/B
     const revReady       = revScore.callAI && (sweep.detected || bos.detected) && (liqGrab.detected || choch.detected);
     // Mode C — BOS Direct: BOS saja cukup
-    const bosDirectEntry = bos.detected;
+    const bosDirectEntry = bos.detected && htf.strength === "STRONG"
+    && (choch.detected || liqGrab.detected || sweep.detected);
     const smcReady       = sdReady || smcFull || revReady || bosDirectEntry;
 
     // ── [3] Entry delay — pending signal & candle confirmation ────

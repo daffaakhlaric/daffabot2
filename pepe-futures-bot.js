@@ -1747,12 +1747,15 @@ async function tradingLoop() {
     if (lossPercent >= CONFIG.HARD_STOP_TOTAL) {
       log("ERROR", `HARD STOP! Total loss ${lossPercent.toFixed(2)}% melebihi batas ${CONFIG.HARD_STOP_TOTAL}%`);
       log("ERROR", `Bot dihentikan otomatis. Total PnL: ${stats.totalPnL.toFixed(4)} USDT`);
+      log("INFO", `Dashboard masih aktif di http://localhost:${CONFIG.DASHBOARD_PORT} — buka untuk lihat hasil`);
+      log("INFO", `Reset simulasi: klik tombol "↺ Reset Simulasi" di dashboard`);
+      broadcastSSE({ type: "hardstop", totalPnL: stats.totalPnL, lossPercent: lossPercent.toFixed(2) });
       if (state.activePosition) {
         log("ERROR", "Menutup posisi aktif karena hard stop...");
         await closePosition("HARD_STOP", state.lastPrice || 0);
       }
       state.running = false;
-      process.exit(1);
+      // TIDAK process.exit — biarkan dashboard tetap hidup untuk review
     }
   }
 
@@ -2671,6 +2674,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <h1>PEPE/USDT Futures Bot</h1>
     <span id="dry-badge" class="dry-badge" style="display:none">DRY RUN</span>
     <span id="pause-badge" style="display:none;background:#f8514933;color:#f85149;padding:2px 8px;border-radius:4px;font-size:11px;border:1px solid #f8514966">⏸ PAUSED</span>
+    <span id="hardstop-badge" style="display:none;background:#f8514933;color:#f85149;padding:2px 10px;border-radius:4px;font-size:11px;border:1px solid #f8514966">🛑 HARD STOP</span>
+    <button id="reset-btn" onclick="resetSim()" style="display:none;margin-left:8px;padding:3px 12px;background:#21262d;color:#58a6ff;border:1px solid #58a6ff55;border-radius:4px;font-size:11px;cursor:pointer">↺ Reset Simulasi</button>
   </div>
 
   <div class="grid">
@@ -3139,6 +3144,28 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (d.type === 'analysis') { renderMTF(d); renderBB(d); handleIntelligence(d); }
       if (d.type === 'log') addLog(d);
       if (d.type === 'stats') { renderStats(d); renderWinRate(d); }
+      if (d.type === 'hardstop') {
+        document.getElementById('hardstop-badge').style.display = 'inline';
+        document.getElementById('reset-btn').style.display      = 'inline-block';
+        document.querySelector('.dot').style.background = '#f85149';
+      }
+      if (d.type === 'reset') {
+        document.getElementById('hardstop-badge').style.display = 'none';
+        document.getElementById('reset-btn').style.display      = 'none';
+        document.querySelector('.dot').style.background = '#3fb950';
+        addLog({ level: 'INFO', msg: '↺ Simulasi direset — bot berjalan kembali' });
+      }
+    }
+
+    async function resetSim() {
+      if (!confirm('Reset semua data simulasi dan restart bot?')) return;
+      try {
+        const r = await fetch('/api/reset', { method: 'POST' });
+        const j = await r.json();
+        alert(j.message || 'Reset berhasil');
+      } catch (e) {
+        alert('Gagal reset: ' + e.message);
+      }
     }
 
     // BUG #4 FIX: refresh PnL posisi setiap 1 detik dengan harga terbaru
@@ -3481,6 +3508,41 @@ function startDashboard() {
     } else if (req.url === "/api/state") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ state: { lastPrice: state.lastPrice, activePosition: state.activePosition }, stats }));
+    } else if (req.url === "/api/reset" && req.method === "POST") {
+      // Reset simulasi DRY_RUN — bersihkan stats & posisi aktif
+      stats.totalPnL    = 0;
+      stats.totalTrades = 0;
+      stats.wins        = 0;
+      stats.losses      = 0;
+      stats.winStreak   = 0;
+      stats.lossStreak  = 0;
+      stats.maxDrawdown = 0;
+      stats.bestTrade   = 0;
+      stats.worstTrade  = 0;
+      state.activePosition   = null;
+      state.currentBalance   = state.initialBalance;
+      state.peakBalance      = state.initialBalance;
+      state.balanceHistory   = [];
+      smcState.lastEntryTime = 0;
+      tradeLog.length        = 0;
+      if (!state.running) {
+        // Restart trading loop kalau sebelumnya di-stop oleh hard stop
+        state.running = true;
+        (async () => {
+          while (state.running) {
+            try { await tradingLoop(); } catch (err) { log("ERROR", `Loop error: ${err.message}`); }
+            await new Promise(r => setTimeout(r, CONFIG.CHECK_INTERVAL_MS));
+          }
+        })();
+        log("INFO", "Bot di-restart setelah reset simulasi");
+      }
+      saveStats();
+      saveState();
+      broadcastSSE({ type: "stats", ...stats });
+      broadcastSSE({ type: "reset", message: "Simulasi direset" });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, message: "Simulasi berhasil direset" }));
+      log("INFO", "Simulasi direset via dashboard");
     } else {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(DASHBOARD_HTML);

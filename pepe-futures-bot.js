@@ -3582,8 +3582,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     function formatPepePrice(price) {
       if (!price || price === 0) return '--';
       const p = Number(price);
-      // PEPE di Bitget: selalu 8 desimal (contoh: 0.0000033494)
-      return p.toFixed(8);
+      // PEPE di Bitget: 10 desimal (contoh: 0.0000033494)
+      return p.toFixed(10);
     }
     function fmtVol(v) {
       if (!v || v === 0) return '--';

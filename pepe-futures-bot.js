@@ -312,6 +312,8 @@ async function getTicker() {
     change24h: parseFloat(d.change24h),
     high24h:   parseFloat(d.high24h),
     low24h:    parseFloat(d.low24h),
+    markPrice: parseFloat(d.markPr || d.lastPr),
+    quoteVolume: parseFloat(d.quoteVolume || 0),
   };
 }
 
@@ -3026,19 +3028,32 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     </div>
     <!-- Harga + Chart -->
     <div class="card chart-card">
-      <h3>PEPE/USDT — Harga Real-time (1m)</h3>
+      <h3>PEPE/USDT Perpetual
+        <span style="font-size:10px;color:#8b949e;font-weight:normal;margin-left:8px">Timeframe:</span>
+        <span id="tf-buttons" style="display:inline-flex;gap:4px;margin-left:4px">
+          <button onclick="switchTF('1m')" id="tf-1m" style="padding:2px 8px;border-radius:3px;font-size:10px;cursor:pointer;background:#21262d;color:#8b949e;border:1px solid #30363d">1m</button>
+          <button onclick="switchTF('5m')" id="tf-5m" style="padding:2px 8px;border-radius:3px;font-size:10px;cursor:pointer;background:#388bfd33;color:#58a6ff;border:1px solid #388bfd66">5m</button>
+          <button onclick="switchTF('15m')" id="tf-15m" style="padding:2px 8px;border-radius:3px;font-size:10px;cursor:pointer;background:#21262d;color:#8b949e;border:1px solid #30363d">15m</button>
+          <button onclick="switchTF('1H')" id="tf-1h" style="padding:2px 8px;border-radius:3px;font-size:10px;cursor:pointer;background:#21262d;color:#8b949e;border:1px solid #30363d">1H</button>
+        </span>
+      </h3>
       <div class="price-bar">
-        <span class="big-price" id="price">--</span>
-        <span id="price-change" class="price-change-pos">--</span>
-        <span style="font-size:11px;color:#8b949e">USDT</span>
+        <!-- Harga utama dengan 10 desimal seperti Bitget -->
+        <span class="big-price" id="price" style="font-size:28px;font-family:'Courier New',monospace">--</span>
+        <div style="display:flex;flex-direction:column;justify-content:center;margin-left:8px">
+          <span id="price-change" class="price-change-pos" style="font-size:13px">--</span>
+          <span style="font-size:10px;color:#8b949e">USDT Perpetual</span>
+        </div>
       </div>
-      <div class="price-meta">
-        <div class="price-meta-item"><span class="price-meta-label">BID</span><span class="price-meta-val" id="bid">--</span></div>
-        <div class="price-meta-item"><span class="price-meta-label">ASK</span><span class="price-meta-val" id="ask">--</span></div>
-        <div class="price-meta-item"><span class="price-meta-label">FUNDING RATE</span><span class="price-meta-val" id="funding">--</span></div>
-        <div class="price-meta-item"><span class="price-meta-label">VOLUME 24J</span><span class="price-meta-val" id="vol24h">--</span></div>
-        <div class="price-meta-item"><span class="price-meta-label">FEAR & GREED</span><span class="price-meta-val" id="feargreed">--</span></div>
-        <div class="price-meta-item"><span class="price-meta-label">VWAP</span><span class="price-meta-val" id="vwap-price">--</span></div>
+      <div class="price-meta" style="margin-top:6px">
+        <div class="price-meta-item"><span class="price-meta-label">BID</span><span class="price-meta-val green" id="bid">--</span></div>
+        <div class="price-meta-item"><span class="price-meta-label">ASK</span><span class="price-meta-val red" id="ask">--</span></div>
+        <div class="price-meta-item"><span class="price-meta-label">MARK PRICE</span><span class="price-meta-val" id="mark-price">--</span></div>
+        <div class="price-meta-item"><span class="price-meta-label">24H HIGH</span><span class="price-meta-val green" id="high24h">--</span></div>
+        <div class="price-meta-item"><span class="price-meta-label">24H LOW</span><span class="price-meta-val red" id="low24h">--</span></div>
+        <div class="price-meta-item"><span class="price-meta-label">FUNDING/COUNTDOWN</span><span class="price-meta-val" id="funding">--</span></div>
+        <div class="price-meta-item"><span class="price-meta-label">24H VOL (PEPE)</span><span class="price-meta-val" id="vol24h">--</span></div>
+        <div class="price-meta-item"><span class="price-meta-label">24H VOL (USDT)</span><span class="price-meta-val" id="vol24h-usdt">--</span></div>
       </div>
       <div id="price-chart" style="margin-top:12px"></div>
     </div>
@@ -3212,9 +3227,24 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       try { handle(JSON.parse(e.data)); } catch {}
     };
 
-    function fmt(n, dec = 8) { return Number(n).toFixed(dec); }
+    function fmt(n, dec = 10) {
+      if (!n || n === 0) return '--';
+      const p = Number(n);
+      if (p < 0.000001) return p.toFixed(10);
+      if (p < 0.0001)   return p.toFixed(8);
+      return p.toFixed(dec);
+    }
     function fmtPct(n) { return (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%'; }
-    function formatPepePrice(price) { return price < 0.001 ? Number(price).toFixed(8) : Number(price).toFixed(6); }
+    function formatPepePrice(price) {
+      if (!price || price === 0) return '--';
+      const p = Number(price);
+      // PEPE di Bitget selalu tampil 10 desimal
+      // contoh: 0.0000033993
+      if (p < 0.000001)      return p.toFixed(10); // 0.0000033993
+      if (p < 0.0001)        return p.toFixed(8);
+      if (p < 0.01)          return p.toFixed(6);
+      return p.toFixed(4);
+    }
     function fmtVol(v) {
       if (!v || v === 0) return '--';
       if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
@@ -3225,6 +3255,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
     // ── TradingView Lightweight Chart ──────────────────────────
     let chart = null, candleSeries = null, volSeries = null;
+    let ema9Series = null, ema21Series = null;
+    let currentTF = '5m';
+    let currentKlines = [];
 
     function initChart() {
       const container = document.getElementById('price-chart');
@@ -3258,6 +3291,25 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       });
       chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
 
+      // ── EMA Lines overlay ──────────────────────────────
+      ema9Series = chart.addLineSeries({
+        color:     '#58a6ff',
+        lineWidth: 1,
+        title:     'EMA9',
+        priceLineVisible:  false,
+        lastValueVisible:  true,
+        crosshairMarkerVisible: false,
+      });
+
+      ema21Series = chart.addLineSeries({
+        color:     '#f0883e',
+        lineWidth: 1,
+        title:     'EMA21',
+        priceLineVisible:  false,
+        lastValueVisible:  true,
+        crosshairMarkerVisible: false,
+      });
+
       // Responsive resize
       const ro = new ResizeObserver(() => {
         if (chart) chart.applyOptions({ width: container.offsetWidth });
@@ -3280,16 +3332,172 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       candleSeries.setData(candles);
       volSeries.setData(volumes);
       chart.timeScale().fitContent();
+
+      // Update EMA setelah set data
+      updateEMALines(klines);
+      currentKlines = klines;
     }
 
     function updateChartCandle(candle) {
       if (!candleSeries || !candle) return;
       if (!chart) initChart();
-      const c = { time: Math.floor(candle.time / 1000), open: candle.open, high: candle.high, low: candle.low, close: candle.close };
-      const v = { time: Math.floor(candle.time / 1000), value: candle.volume, color: candle.close >= candle.open ? '#3fb95044' : '#f8514944' };
-      candleSeries.update(c);
-      volSeries.update(v);
+
+      // Hanya update chart kalau TF = 1m (TF lain di-update oleh auto-refresh interval)
+      if (currentTF !== '1m') return;
+
+      const c = {
+        time:  Math.floor(candle.time / 1000),
+        open:  candle.open, high: candle.high,
+        low:   candle.low,  close: candle.close,
+      };
+      const v = {
+        time:  Math.floor(candle.time / 1000),
+        value: candle.volume,
+        color: candle.close >= candle.open ? '#3fb95044' : '#f8514944',
+      };
+      try {
+        candleSeries.update(c);
+        volSeries.update(v);
+      } catch (_) {}
+
+      // Update EMA real-time di 1m
+      if (currentKlines.length > 0) {
+        const idx = currentKlines.findIndex(k =>
+          Math.floor(k.time/1000) === c.time
+        );
+        if (idx >= 0) currentKlines[idx] = candle;
+        else { currentKlines.push(candle); currentKlines.shift(); }
+        updateEMACandle(currentKlines);
+      }
     }
+
+    // ── EMA Calculator (untuk chart) ────────────────────────────
+    function calcEMAArr(closes, period) {
+      if (closes.length < period) return [];
+      const k = 2 / (period + 1);
+      const res = [];
+      let ema = closes.slice(0, period).reduce((a,b) => a+b, 0) / period;
+      res.push(ema);
+      for (let i = period; i < closes.length; i++) {
+        ema = closes[i] * k + ema * (1 - k);
+        res.push(ema);
+      }
+      return res;
+    }
+
+    function updateEMALines(klines) {
+      if (!ema9Series || !ema21Series || !klines?.length) return;
+      const closes    = klines.map(k => k.close);
+      const times     = klines.map(k => Math.floor(k.time / 1000));
+      const ema9Vals  = calcEMAArr(closes, 9);
+      const ema21Vals = calcEMAArr(closes, 21);
+
+      const ema9Data = ema9Vals.map((v, i) => ({
+        time:  times[i + (closes.length - ema9Vals.length)],
+        value: v,
+      })).filter(d => d.time > 0);
+
+      const ema21Data = ema21Vals.map((v, i) => ({
+        time:  times[i + (closes.length - ema21Vals.length)],
+        value: v,
+      })).filter(d => d.time > 0);
+
+      try {
+        ema9Series.setData(ema9Data);
+        ema21Series.setData(ema21Data);
+      } catch (_) {}
+    }
+
+    function updateEMACandle(klines) {
+      if (!ema9Series || !ema21Series || !klines?.length) return;
+      const closes = klines.map(k => k.close);
+      const lastTime = Math.floor(klines[klines.length-1].time / 1000);
+
+      function lastEMA(period) {
+        const k = 2 / (period + 1);
+        if (closes.length < period) return null;
+        let ema = closes.slice(0, period).reduce((a,b) => a+b, 0) / period;
+        for (let i = period; i < closes.length; i++) {
+          ema = closes[i] * k + ema * (1 - k);
+        }
+        return ema;
+      }
+
+      const e9  = lastEMA(9);
+      const e21 = lastEMA(21);
+      if (e9)  ema9Series.update({ time: lastTime, value: e9 });
+      if (e21) ema21Series.update({ time: lastTime, value: e21 });
+    }
+
+    // ── Timeframe Switch & Auto-refresh ─────────────────────────
+    async function switchTF(tf) {
+      currentTF = tf;
+
+      // Update tombol aktif
+      ['1m','5m','15m','1h'].forEach(t => {
+        const btn = document.getElementById('tf-' + t);
+        if (!btn) return;
+        if (t === tf) {
+          btn.style.background = '#388bfd33';
+          btn.style.color      = '#58a6ff';
+          btn.style.border     = '1px solid #388bfd66';
+        } else {
+          btn.style.background = '#21262d';
+          btn.style.color      = '#8b949e';
+          btn.style.border     = '1px solid #30363d';
+        }
+      });
+
+      // Fetch klines dari server
+      try {
+        const res  = await fetch('/api/klines?tf=' + tf + '&limit=150');
+        const data = await res.json();
+        if (data.klines && data.klines.length > 0) {
+          currentKlines = data.klines;
+          setChartData(data.klines);
+          updateEMALines(data.klines);
+        }
+      } catch (err) {
+        console.warn('Gagal fetch klines:', err.message);
+      }
+    }
+
+    // Auto-refresh chart setiap 10 detik (kecuali 1m yang sudah real-time dari SSE)
+    setInterval(async () => {
+      if (currentTF === '1m') return;
+      try {
+        const res  = await fetch('/api/klines?tf=' + currentTF + '&limit=20');
+        const data = await res.json();
+        if (data.klines?.length > 0) {
+          const latest = data.klines[data.klines.length - 1];
+          const c = {
+            time:  Math.floor(latest.time / 1000),
+            open:  latest.open,
+            high:  latest.high,
+            low:   latest.low,
+            close: latest.close,
+          };
+          const v = {
+            time:  Math.floor(latest.time / 1000),
+            value: latest.volume,
+            color: latest.close >= latest.open ? '#3fb95044' : '#f8514944',
+          };
+          try {
+            if (candleSeries) candleSeries.update(c);
+            if (volSeries)    volSeries.update(v);
+            // Update klines cache untuk EMA
+            if (currentKlines.length > 0) {
+              const idx = currentKlines.findIndex(k =>
+                Math.floor(k.time/1000) === c.time
+              );
+              if (idx >= 0) currentKlines[idx] = latest;
+              else currentKlines.push(latest);
+              updateEMACandle(currentKlines);
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }, 10000);
 
     // BUG #6 FIX: track pause state secara lokal
     let isPaused = false;
@@ -3394,7 +3602,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         if (d.externalData) handleIntelligence({ externalData: d.externalData });
         if (d.position) renderPosition(d.position, d.price || 0);
         if (d.tradeLog) renderTradeLog(d.tradeLog);
-        if (d.klines && d.klines.length > 0) setChartData(d.klines);
+        if (d.klines && d.klines.length > 0) {
+          // Init dengan data 1m dari SSE
+          currentKlines = d.klines;
+          setChartData(d.klines);
+          updateEMALines(d.klines);
+          // Langsung switch ke 5m setelah init
+          setTimeout(() => switchTF('5m'), 500);
+        }
       }
       if (d.type === 'trade') { renderTradeLog(d.tradeLog); return; }
       // Fast price update (tiap 3 detik)
@@ -3410,7 +3625,15 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         }
         if (d.bid) document.getElementById('bid').textContent = formatPepePrice(d.bid);
         if (d.ask) document.getElementById('ask').textContent = formatPepePrice(d.ask);
-        if (d.volume24h) document.getElementById('vol24h').textContent = fmtVol(d.volume24h);
+        if (d.high24h) document.getElementById('high24h').textContent = formatPepePrice(d.high24h);
+        if (d.low24h) document.getElementById('low24h').textContent = formatPepePrice(d.low24h);
+        if (d.markPrice) document.getElementById('mark-price').textContent = formatPepePrice(d.markPrice);
+        if (d.volume24h) {
+          document.getElementById('vol24h').textContent = fmtVol(d.volume24h);
+          // Vol dalam USDT
+          const volUsdt = d.volume24h * (window.lastPrice || 0);
+          document.getElementById('vol24h-usdt').textContent = fmtVol(volUsdt) + ' USDT';
+        }
         return;
       }
       if (d.type === 'pause') {
@@ -3442,8 +3665,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         rsiEl.textContent = Number(d.rsi).toFixed(2);
         rsiEl.className = d.rsi > 70 ? 'val red' : d.rsi < 30 ? 'val green' : 'val';
       }
-      if (d.ema9)  document.getElementById('ema9').textContent  = fmt(d.ema9);
-      if (d.ema21) document.getElementById('ema21').textContent = fmt(d.ema21);
+      if (d.ema9)  document.getElementById('ema9').textContent  = formatPepePrice(d.ema9);
+      if (d.ema21) document.getElementById('ema21').textContent = formatPepePrice(d.ema21);
       if (d.fundingRate !== undefined) {
         const fr = (d.fundingRate * 100).toFixed(4) + '%';
         const el = document.getElementById('funding');
@@ -3866,7 +4089,7 @@ function broadcastSSE(data) {
 }
 
 function startDashboard() {
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     if (req.url === "/events") {
       res.writeHead(200, {
         "Content-Type":  "text/event-stream",
@@ -3911,6 +4134,30 @@ function startDashboard() {
       req.on("close", () => {
         state.dashboardClients = state.dashboardClients.filter((c) => c !== res);
       });
+    } else if (req.url?.startsWith("/api/klines")) {
+      // Parse query params
+      const urlObj  = new URL(req.url, 'http://localhost');
+      const tf      = urlObj.searchParams.get('tf')    || '5m';
+      const limit   = parseInt(urlObj.searchParams.get('limit') || '150');
+
+      // Map TF ke granularity Bitget
+      const tfMap = {
+        '1m': '1m', '5m': '5m', '15m': '15m',
+        '1H': '1H', '4H': '4H', '1D': '1D',
+      };
+      const granularity = tfMap[tf] || '5m';
+
+      try {
+        const klines = await getKlines(granularity, Math.min(limit, 200));
+        res.writeHead(200, {
+          'Content-Type':                'application/json',
+          'Access-Control-Allow-Origin': '*',
+        });
+        res.end(JSON.stringify({ klines, tf, granularity }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message, klines: [] }));
+      }
     } else if (req.url === "/api/state") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ state: { lastPrice: state.lastPrice, activePosition: state.activePosition }, stats }));
@@ -4045,6 +4292,10 @@ function startDashboard() {
         ask:       ticker.askPrice,
         change24h: ticker.change24h,
         volume24h: ticker.volume24h,
+        high24h:   ticker.high24h,
+        low24h:    ticker.low24h,
+        markPrice: ticker.markPrice,
+        quoteVolume: ticker.quoteVolume,
       });
     } catch { /* abaikan error — trading loop tetap jalan */ }
   }, 3000);

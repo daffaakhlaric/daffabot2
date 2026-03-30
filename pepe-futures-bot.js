@@ -4061,7 +4061,12 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       else if (d.type === 'analysis' && !d.position) document.getElementById('position-content').innerHTML = '<div class="no-pos">Tidak ada posisi aktif</div>';
       if (d.analysis) renderAI(d.analysis);
       if (d.prediction) renderPrediction(d.prediction);
-      if (d.smcData)   renderSMC(d.smcData);
+      if (d.smcData) {
+        console.log('SMC data received:', d.smcData);
+        renderSMC(d.smcData);
+      } else {
+        console.log('No smcData in message, type:', d.type);
+      }
       if (d.type === 'analysis') { renderMTF(d); renderBB(d); handleIntelligence(d); }
       // Handler untuk periodic Claude analysis
       // (update card AI tanpa trigger entry logic)

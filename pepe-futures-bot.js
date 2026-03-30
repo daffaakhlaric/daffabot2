@@ -3563,7 +3563,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <script>
     const sse = new EventSource('/events');
     sse.onmessage = (e) => {
-      try { handle(JSON.parse(e.data)); } catch {}
+      try { handle(JSON.parse(e.data)); } catch (err) { console.error('SSE error:', err); }
     };
 
     function fmt(n, dec = 10) {
@@ -4061,7 +4061,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       else if (d.type === 'analysis' && !d.position) document.getElementById('position-content').innerHTML = '<div class="no-pos">Tidak ada posisi aktif</div>';
       if (d.analysis) renderAI(d.analysis);
       if (d.prediction) renderPrediction(d.prediction);
-      if (d.smcData) renderSMC(d.smcData);
+      if (d.smcData) {
+        console.log('smcData received in handle, calling renderSMC');
+        renderSMC(d.smcData);
+      }
       if (d.type === 'analysis') { renderMTF(d); renderBB(d); handleIntelligence(d); }
       // Handler untuk periodic Claude analysis
       // (update card AI tanpa trigger entry logic)
@@ -4304,6 +4307,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     function renderSMC(s) {
+      console.log('renderSMC called with:', s);
       if (!s) return;
 
       // HTF

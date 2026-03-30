@@ -3864,7 +3864,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         const h = Math.floor(secsLeft / 3600);
         const m = Math.floor((secsLeft % 3600) / 60);
         const s = secsLeft % 60;
-        timerEl.textContent = `AKTIF — berakhir ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+        timerEl.textContent = "AKTIF - berakhir " + String(h).padStart(2,'0') +":"+ String(m).padStart(2,'0') +":"+ String(s).padStart(2,'0');
         timerEl.style.color = '#3fb950';
       } else {
         // Di luar session — hitung ke London open berikutnya
@@ -3873,7 +3873,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         const h = Math.floor(secsLeft / 3600);
         const m = Math.floor((secsLeft % 3600) / 60);
         const s = secsLeft % 60;
-        timerEl.textContent = `London ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+        timerEl.textContent = "London " + String(h).padStart(2,'0') +":"+ String(m).padStart(2,'0') +":"+ String(s).padStart(2,'0');
         timerEl.style.color = '#d29922';
       }
     }, 1000);

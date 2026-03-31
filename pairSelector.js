@@ -285,12 +285,14 @@ async function selectPair() {
   
   const results = { BTC: btcAnalysis, PEPE: pepeAnalysis };
   
-  // Check for lock (prevent rapid switching)
-  if (isHypeLocked()) {
+  // Check for lock (prevent rapid switching) - but always analyze to detect HYPE
+  const wasLocked = isHypeLocked();
+  let cachedPair = null;
+  if (wasLocked) {
     const current = getCurrentPair();
     if (current && current.selected) {
-      console.log(`[PairSelector] Pair locked, maintaining ${current.selected}`);
-      return current;
+      cachedPair = current.selected;
+      console.log(`[PairSelector] Pair locked, will check if PEPE HYPE overrides...`);
     }
   }
   
@@ -365,6 +367,24 @@ async function selectPair() {
     }
   }
   
+  // Override lock if PEPE is in HYPE state - always allow PEPE when hype is confirmed
+  if (wasLocked && selected === SYMBOLS.BTC && hypeAnalysis && hypeAnalysis.state === MARKET_STATE.HYPE) {
+    console.log(`[PairSelector] ⚡ PEPE HYPE DETECTED - Overriding lock to switch to PEPE!`);
+    selected = SYMBOLS.PEPE;
+    reason = `PEPE HYPE OVERRIDE: ${hypeAnalysis.hypeScore}/100 - switching from ${cachedPair}`;
+    marketState = MARKET_STATE.HYPE;
+    setHypeState(MARKET_STATE.HYPE, 30);
+  }
+   
+  // Check if we should enable DUAL TRADING MODE (both BTC and PEPE)
+  const isDualMode = hypeAnalysis && hypeAnalysis.state === MARKET_STATE.HYPE;
+  let bothPairs = null;
+  if (isDualMode) {
+    bothPairs = [SYMBOLS.BTC, SYMBOLS.PEPE];
+    reason = `DUAL MODE: BTC + PEPE (PEPE HYPE: ${hypeAnalysis.hypeScore}/100)`;
+    console.log(`[PairSelector] ⚡⚡ DUAL TRADING MODE ENABLED - Trading both BTC and PEPE!`);
+  }
+   
   console.log(`[PairSelector] Selected: ${selected}`);
   console.log(`[PairSelector] Market State: ${marketState}`);
   console.log(`[PairSelector] Reason: ${reason}`);
@@ -372,6 +392,8 @@ async function selectPair() {
   
   return {
     selected,
+    bothPairs,        // Array of pairs for dual mode: [BTCUSDT, PEPEUSDT] or null
+    isDualMode,       // true if trading both pairs
     reason,
     marketState,
     hypeAnalysis,

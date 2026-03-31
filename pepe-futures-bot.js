@@ -76,8 +76,18 @@ const CONFIG = {
   CLAUDE_ANALYSIS_INTERVAL: 6,    // scalping: setiap 6 tick = ~1 menit (lebih responsif)
 
   // Batas confidence AI — lebih selektif setelah loss streak
-  OPEN_CONFIDENCE:  75,   // dari 70 → 75
+  OPEN_CONFIDENCE:  58,   // BTC 15m: turunkan untuk sering trading
+  OPEN_CONFIDENCE_MIN: 55, // Tuning range
+  OPEN_CONFIDENCE_MAX: 65,
   CLOSE_CONFIDENCE: 55,   // tidak dipakai SMC (SL/TP auto dari swing)
+  
+  // ATR Filter (NEW)
+  ATR_MIN_PERCENT: 0.15,  // Hard filter: ATR < 0.15% = compression, no entry
+  ATR_LOW_THRESHOLD: 0.15,
+  ATR_HIGH_THRESHOLD: 0.50,
+  
+  // Entry Quality Score (NEW)
+  ENTRY_SCORE_MIN: 70,    // Min score untuk entry
 
   // Hemat kredit AI: skip panggilan kalau tidak ada sinyal kuat
   CLAUDE_SMART_FILTER: false,   // SMC: Claude hanya dipanggil saat setup lengkap
@@ -144,6 +154,8 @@ const CONFIG = {
 
   // ── ADAPTIVE AUTO PAIR TRADING SYSTEM ──────────────────────────
   ADAPTIVE_PAIR_ENABLED:    true,       // Aktifkan auto pair selection
+  DUAL_TRADING_MODE:        true,       // Jika true: trading BTC + PEPE bersamaan saat PEPE trending
+                                         // Jika false: switching antara BTC dan PEPE
   PAIR_SELECTION_INTERVAL:  300000,     // 5 menit - interval evaluasi ulang pair
   BTC_SPECIFIC_CONFIG: {
     STOP_LOSS_PCT:    1.5,    // Lebih konservatif untuk BTC
@@ -195,8 +207,13 @@ let state = {
   
   // ── ADAPTIVE PAIR SELECTION STATE ─────────────────────────────
   currentPair:         "PEPEUSDT",  // Current trading pair
-  currentPairMode:     "PEPE",       // "BTC" or "PEPE"
+  currentPairMode:     "PEPE",       // "BTC" or "PEPE" or "DUAL"
   pairSelectionReason:  "",           // Reason for current selection
+  isDualMode:          false,         // true if trading both BTC and PEPE
+  btcPosition:         null,          // BTC position data
+  pepePosition:        null,          // PEPE position data
+  lastBtcPrice:        0,             // Last BTC price for dual mode
+  lastPepePrice:       0,             // Last PEPE price for dual mode
   lastPairSelection:    0,            // Timestamp of last selection
   pairAnalysis:         null,         // Latest pair analysis data
   btcAnalysis:          null,         // Latest BTC strategy analysis
@@ -704,28 +721,32 @@ function calcLiquidationPrice(side, entryPrice, leverage) {
   }
 }
 
-async function openPosition(side, leverage, price, overrideQty = null) {
+async function openPosition(side, leverage, price, overrideQty = null, symbol = null) {
+  const tradeSymbol = symbol || CONFIG.SYMBOL;
+  const isPepe = tradeSymbol === "PEPEUSDT";
+  const config = isPepe ? CONFIG.PEPE_SPECIFIC_CONFIG : CONFIG.BTC_SPECIFIC_CONFIG;
+  
   const qty = overrideQty || calcOrderSize(price, leverage);
   const liqPrice = calcLiquidationPrice(side, price, leverage);
   const stopLoss = side === "LONG"
-    ? price * (1 - CONFIG.STOP_LOSS_PCT / 100)
-    : price * (1 + CONFIG.STOP_LOSS_PCT / 100);
+    ? price * (1 - config.STOP_LOSS_PCT / 100)
+    : price * (1 + config.STOP_LOSS_PCT / 100);
   const takeProfit = side === "LONG"
-    ? price * (1 + CONFIG.TAKE_PROFIT_PCT / 100)
-    : price * (1 - CONFIG.TAKE_PROFIT_PCT / 100);
+    ? price * (1 + config.TAKE_PROFIT_PCT / 100)
+    : price * (1 - config.TAKE_PROFIT_PCT / 100);
 
-  log("TRADE", `${C.bold}BUKA ${side}${C.reset} | Harga: ${price.toFixed(8)} | Qty: ${qty} | Leverage: ${leverage}x`);
-  log("TRADE", `  Stop Loss  : ${stopLoss.toFixed(8)} (${CONFIG.STOP_LOSS_PCT}%)`);
-  log("TRADE", `  Take Profit: ${takeProfit.toFixed(8)} (${CONFIG.TAKE_PROFIT_PCT}%)`);
+  log("TRADE", `${C.bold}BUKA ${side} ${tradeSymbol}${C.reset} | Harga: ${price.toFixed(8)} | Qty: ${qty} | Leverage: ${leverage}x`);
+  log("TRADE", `  Stop Loss  : ${stopLoss.toFixed(8)} (${config.STOP_LOSS_PCT}%)`);
+  log("TRADE", `  Take Profit: ${takeProfit.toFixed(8)} (${config.TAKE_PROFIT_PCT}%)`);
   log("TRADE", `  ${C.red}Liquidation: ${liqPrice.toFixed(8)}${C.reset} ← JANGAN BIARKAN SAMPAI SINI!`);
 
   if (CONFIG.DRY_RUN) {
-    log("INFO", `[DRY RUN] Simulasi order ${side} berhasil`);
+    log("INFO", `[DRY RUN] Simulasi order ${side} ${tradeSymbol} berhasil`);
   } else {
-    await setLeverage(leverage);
+    await setLeverage(leverage, tradeSymbol);
     const orderSide = side === "LONG" ? "buy" : "sell";
     const res = await bitgetRequest("POST", "/api/v2/mix/order/place-order", {}, {
-      symbol:      CONFIG.SYMBOL,
+      symbol:      tradeSymbol,
       productType: CONFIG.PRODUCT_TYPE,
       marginMode:  CONFIG.MARGIN_MODE,
       marginCoin:  CONFIG.MARGIN_COIN,
@@ -742,9 +763,10 @@ async function openPosition(side, leverage, price, overrideQty = null) {
     log("TRADE", `Order sukses! Order ID: ${res.data?.orderId}`);
   }
 
-  // Update state
-  state.activePosition = {
+  // Update state - use btcPosition or pepePosition for dual mode
+  const position = {
     side,
+    symbol: tradeSymbol,
     entryPrice:   price,
     size:         qty,
     leverage,
@@ -754,28 +776,50 @@ async function openPosition(side, leverage, price, overrideQty = null) {
     trailingHigh: price,   // untuk trailing stop LONG
     trailingLow:  price,   // untuk trailing stop SHORT
     trailingTP:   takeProfit, // untuk trailing TP dinamis
-    tpTrailPct:   CONFIG.TAKE_PROFIT_PCT * 0.5, // 50% dari TP awal untuk trailing
+    tpTrailPct:   config.TAKE_PROFIT_PCT * 0.5, // 50% dari TP awal untuk trailing
     breakevenSet: false,  // flag auto breakeven
     lockLevel:    undefined, // level lock profit aktif
     momentumWeakCount: 0,  // counter untuk early exit momentum
     openTime:     new Date().toISOString(),
   };
 
+  if (state.isDualMode) {
+    if (isPepe) {
+      state.pepePosition = position;
+      log("INFO", `📊 PEPE position opened: ${side} @ ${price}`);
+    } else {
+      state.btcPosition = position;
+    }
+  }
+  state.activePosition = position;
+
   saveState();
   recordTrade("OPEN", side, price, qty, leverage, liqPrice);
   return state.activePosition;
 }
 
-async function closePosition(reason, currentPrice) {
-  if (!state.activePosition) return;
+async function closePosition(reason, currentPrice, symbol = null) {
+  const tradeSymbol = symbol || (state.activePosition?.symbol) || CONFIG.SYMBOL;
+  const isPepe = tradeSymbol === "PEPEUSDT";
+  
+  // Get the right position based on symbol
+  let pos = state.activePosition;
+  if (state.isDualMode) {
+    if (isPepe && state.pepePosition) {
+      pos = state.pepePosition;
+    } else if (!isPepe && state.btcPosition) {
+      pos = state.btcPosition;
+    }
+  }
+  
+  if (!pos) return;
 
-  const pos = state.activePosition;
   const pnlPct = pos.side === "LONG"
     ? ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100 * pos.leverage
     : ((pos.entryPrice - currentPrice) / pos.entryPrice) * 100 * pos.leverage;
   const pnlUSDT = (CONFIG.POSITION_SIZE_USDT * pnlPct) / 100;
 
-  log("TRADE", `${C.bold}TUTUP ${pos.side}${C.reset} | Alasan: ${reason}`);
+  log("TRADE", `${C.bold}TUTUP ${pos.side} ${tradeSymbol}${C.reset} | Alasan: ${reason}`);
   log("TRADE", `  Entry   : ${pos.entryPrice.toFixed(8)}`);
   log("TRADE", `  Exit    : ${currentPrice.toFixed(8)}`);
   log("TRADE", `  PnL     : ${pnlPct >= 0 ? C.green : C.red}${pnlPct.toFixed(2)}% (${pnlUSDT >= 0 ? "+" : ""}${pnlUSDT.toFixed(4)} USDT)${C.reset}`);
@@ -883,6 +927,14 @@ async function closePosition(reason, currentPrice) {
     smcState.lastSLPrice = currentPrice;
   }
 
+  // Clear position - handle dual mode
+  if (state.isDualMode && pos) {
+    if (pos.symbol === "PEPEUSDT") {
+      state.pepePosition = null;
+    } else {
+      state.btcPosition = null;
+    }
+  }
   state.activePosition = null;
   saveState();
   saveStats();
@@ -1967,6 +2019,116 @@ JSON only:
 }
 
 // ─────────────────────────────────────────────────────────────
+// DUAL TRADING: PEPE Strategy for Dual Mode
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Run PEPE trading when in dual mode (BTC + PEPE)
+ * Uses simpler strategy based on hype detection
+ */
+async function runPepeStrategy(pepeTicker, pepeKlines) {
+  if (!state.isDualMode || !pepeTicker || !pepeKlines || pepeKlines.length < 20) {
+    return;
+  }
+  
+  // Check if PEPE position already exists
+  if (state.pepePosition) {
+    log("DEBUG", "PEPE position already exists, skipping entry check");
+    return;
+  }
+  
+  const pepePrice = pepeTicker.lastPrice;
+  log("INFO", `🔍 PEPE Strategy Check: $${pepePrice.toFixed(8)}`);
+  
+  try {
+    // Calculate simple indicators for PEPE
+    const closes = pepeKlines.slice(-20).map(c => c.close);
+    const recentCloses = pepeKlines.slice(-5).map(c => c.close);
+    
+    // Simple EMA calculation
+    const ema9 = closes.slice(-9).reduce((a, b) => a + b, 0) / 9;
+    const ema21 = closes.slice(-21 < closes.length ? -21 : 0).reduce((a, b) => a + b, 0) / Math.min(21, closes.length);
+    
+    // Simple RSI calculation
+    let gains = 0, losses = 0;
+    for (let i = 1; i < closes.length; i++) {
+      const change = closes[i] - closes[i-1];
+      if (change > 0) gains += change;
+      else losses -= change;
+    }
+    const avgGain = gains / closes.length;
+    const avgLoss = losses / closes.length;
+    const rs = avgGain / (avgLoss || 0.0001);
+    const rsi = 100 - (100 / (1 + rs));
+    
+    // Price momentum
+    const priceChange = (recentCloses[recentCloses.length-1] - recentCloses[0]) / recentCloses[0] * 100;
+    
+    // Check hype state from pair analysis
+    const pairResult = state.pairAnalysis?.PEPE;
+    const hypeScore = pairResult?.hypeScore || 0;
+    const isHype = hypeScore >= 71;
+    
+    log("INFO", `📊 PEPE Indicators: RSI=${rsi.toFixed(1)}, EMA9=${ema9.toFixed(8)}, EMA21=${ema21.toFixed(8)}, Change=${priceChange.toFixed(2)}%, Hype=${hypeScore}`);
+    
+    // Simple entry logic for PEPE
+    // LONG: RSI in sweet spot (40-60), price above EMA, positive momentum, hype confirmed
+    // SHORT: RSI overbought (>65), price below EMA, negative momentum
+    
+    let tradeSide = null;
+    const inSweetSpot = rsi >= 40 && rsi <= 65;
+    const aboveEma = pepePrice > ema9 && pepePrice > ema21;
+    const belowEma = pepePrice < ema9 && pepePrice < ema21;
+    const positiveMomentum = priceChange > 0.5;
+    const negativeMomentum = priceChange < -0.5;
+    
+    // Entry conditions for PEPE in dual mode
+    if (isHype && inSweetSpot && aboveEma && positiveMomentum) {
+      tradeSide = "LONG";
+      log("INFO", `🟢 PEPE LONG Signal: Hype=${hypeScore}, RSI=${rsi.toFixed(1)}, Momentum=${priceChange.toFixed(2)}%`);
+    } else if (isHype && rsi > 65 && belowEma && negativeMomentum) {
+      tradeSide = "SHORT";
+      log("INFO", `🔴 PEPE SHORT Signal: RSI=${rsi.toFixed(1)}, Below EMA, Momentum=${priceChange.toFixed(2)}%`);
+    }
+    
+    if (tradeSide) {
+      const leverage = CONFIG.PEPE_SPECIFIC_CONFIG?.LEVERAGE || 20;
+      const config = CONFIG.PEPE_SPECIFIC_CONFIG;
+      const tpPct = config?.TAKE_PROFIT_PCT || 3;
+      const slPct = config?.STOP_LOSS_PCT || 1.5;
+      
+      // Open PEPE position
+      log("TRADE", `🚀 PEPE ENTRY ${tradeSide} | Price: ${pepePrice.toFixed(8)} | Lev: ${leverage}x`);
+      
+      const opened = await openPosition(
+        tradeSide === "LONG" ? "LONG" : "SHORT",
+        leverage,
+        pepePrice,
+        null,
+        "PEPEUSDT"
+      );
+      
+      if (opened) {
+        // Set PEPE-specific SL/TP
+        state.pepePosition.stopLoss = tradeSide === "LONG"
+          ? pepePrice * (1 - slPct / 100)
+          : pepePrice * (1 + slPct / 100);
+        state.pepePosition.takeProfit = tradeSide === "LONG"
+          ? pepePrice * (1 + tpPct / 100)
+          : pepePrice * (1 - tpPct / 100);
+        
+        log("TRADE", `PEPE SL: ${state.pepePosition.stopLoss.toFixed(8)} | TP: ${state.pepePosition.takeProfit.toFixed(8)}`);
+      }
+    } else {
+      log("DEBUG", "PEPE no entry signal");
+    }
+    
+  } catch (err) {
+    log("ERROR", `PEPE strategy error: ${err.message}`);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 // LOGIKA TRADING UTAMA
 // ─────────────────────────────────────────────────────────────
 
@@ -2015,21 +2177,45 @@ async function tradingLoop() {
         
         if (pairResult && pairResult.selected) {
           const newPair = pairResult.selected;
-          const pairMode = newPair === "BTCUSDT" ? "BTC" : "PEPE";
+          
+          // Check for DUAL TRADING MODE
+          const isDualMode = CONFIG.DUAL_TRADING_MODE && pairResult.isDualMode;
+          
+          let pairMode;
+          if (isDualMode) {
+            pairMode = "DUAL";
+            log("INFO", `⚡⚡ DUAL TRADING MODE: BTC + PEPE (${pairResult.reason})`);
+          } else {
+            pairMode = newPair === "BTCUSDT" ? "BTC" : "PEPE";
+          }
           
           // Only log and update if pair changed
-          if (newPair !== state.currentPair) {
-            log("INFO", `🔄 PAIR SWITCH: ${state.currentPair} → ${newPair} (${pairResult.reason})`);
+          if (newPair !== state.currentPair || isDualMode !== state.isDualMode) {
+            if (isDualMode) {
+              log("INFO", `⚡⚡ DUAL MODE: BTC + PEPE (${pairResult.reason})`);
+            } else {
+              log("INFO", `🔄 PAIR SWITCH: ${state.currentPair} → ${newPair} (${pairResult.reason})`);
+            }
           }
           
           state.currentPair = newPair;
           state.currentPairMode = pairMode;
+          state.isDualMode = isDualMode;
           state.pairSelectionReason = pairResult.reason;
           state.lastPairSelection = Date.now();
           state.pairAnalysis = pairResult.analysis;
           
           // Update CONFIG based on selected pair
-          if (pairMode === "BTC") {
+          if (isDualMode) {
+            // In dual mode, we use BTC config as main, but track both
+            CONFIG.SYMBOL = "BTCUSDT";
+            CONFIG.STOP_LOSS_PCT = CONFIG.BTC_SPECIFIC_CONFIG.STOP_LOSS_PCT;
+            CONFIG.TAKE_PROFIT_PCT = CONFIG.BTC_SPECIFIC_CONFIG.TAKE_PROFIT_PCT;
+            CONFIG.TRAILING_OFFSET = CONFIG.BTC_SPECIFIC_CONFIG.TRAILING_OFFSET;
+            CONFIG.POSITION_SIZE_USDT = CONFIG.BTC_SPECIFIC_CONFIG.POSITION_SIZE_USDT;
+            CONFIG.MIN_SL_PCT = CONFIG.BTC_SPECIFIC_CONFIG.MIN_SL_PCT;
+            CONFIG.MAX_SL_PCT = CONFIG.BTC_SPECIFIC_CONFIG.MAX_SL_PCT;
+          } else if (pairMode === "BTC") {
             CONFIG.SYMBOL = "BTCUSDT";
             CONFIG.STOP_LOSS_PCT = CONFIG.BTC_SPECIFIC_CONFIG.STOP_LOSS_PCT;
             CONFIG.TAKE_PROFIT_PCT = CONFIG.BTC_SPECIFIC_CONFIG.TAKE_PROFIT_PCT;
@@ -2047,13 +2233,11 @@ async function tradingLoop() {
             CONFIG.MAX_SL_PCT = CONFIG.PEPE_SPECIFIC_CONFIG.MAX_SL_PCT;
           }
           
-          // Get BTC strategy analysis if trading BTC
-          if (pairMode === "BTC") {
-            try {
-              state.btcAnalysis = await btcStrategy.quickAnalysis();
-            } catch (e) {
-              log("WARN", `BTC strategy analysis failed: ${e.message}`);
-            }
+          // Get BTC strategy analysis
+          try {
+            state.btcAnalysis = await btcStrategy.quickAnalysis();
+          } catch (e) {
+            log("WARN", `BTC strategy analysis failed: ${e.message}`);
           }
         }
       } catch (err) {
@@ -2073,7 +2257,54 @@ async function tradingLoop() {
     ]);
   } catch (err) {
     log("ERROR", `Gagal ambil data market: ${err.message}`);
+    // Broadcast error state ke dashboard agar user tahu ada masalah koneksi
+    broadcastSSE({
+      type: "error",
+      message: `❌ Gagal koneksi ke Bitget: ${err.message}. Cek VPN/internet!`,
+      lastPrice: state.lastPrice || '--',
+      lastUpdate: new Date().toISOString(),
+      smcData: null,
+    });
     return;
+  }
+
+  // ── 1b. Ambil data PEPE untuk DUAL MODE ─────────────────────
+  let pepeTicker = null;
+  let pepeKlines = null;
+  if (state.isDualMode) {
+    try {
+      const [pt, pk] = await Promise.all([
+        bitgetRequest("GET", "/api/v2/mix/market/ticker", { symbol: "PEPEUSDT", productType: "usdt-futures" }),
+        bitgetRequest("GET", "/api/v2/mix/market/candles", { symbol: "PEPEUSDT", productType: "usdt-futures", granularity: "1m", limit: "50" })
+      ]);
+      if (pt.code === "00000" && pt.data[0]) {
+        pepeTicker = {
+          lastPrice: parseFloat(pt.data[0].lastPr),
+          bidPrice: parseFloat(pt.data[0].bidPr),
+          askPrice: parseFloat(pt.data[0].askPr),
+        };
+      }
+      if (pk.code === "00000") {
+        pepeKlines = pk.data.map((c) => ({
+          time: parseInt(c[0]),
+          open: parseFloat(c[1]),
+          high: parseFloat(c[2]),
+          low: parseFloat(c[3]),
+          close: parseFloat(c[4]),
+          volume: parseFloat(c[5]),
+        }));
+      }
+      state.lastPepePrice = pepeTicker?.lastPrice || 0;
+      log("INFO", `📊 PEPE Data: $${state.lastPepePrice.toFixed(8)}`);
+    } catch (e) {
+      log("WARN", `Gagal ambil data PEPE: ${e.message}`);
+    }
+  }
+
+  // ── 1c. Run PEPE Strategy in Dual Mode ─────────────────────
+  // Run PEPE strategy after BTC data is processed
+  if (state.isDualMode && pepeTicker && pepeKlines) {
+    await runPepeStrategy(pepeTicker, pepeKlines);
   }
 
   const price = ticker.lastPrice;
@@ -2637,10 +2868,11 @@ async function tradingLoop() {
       return;
     }
 
-    // Skip entry kalau ATR terlalu rendah (market flat)
-    if (atrPct < 0.03) {
+    // [ATR HARD FILTER] Skip entry kalau ATR terlalu rendah (market compression)
+    const atrStatus = atrPct < CONFIG.ATR_LOW_THRESHOLD ? "LOW" : atrPct > CONFIG.ATR_HIGH_THRESHOLD ? "HIGH" : "NORMAL";
+    if (atrPct < CONFIG.ATR_MIN_PERCENT) {
       if (state.tickCount % 6 === 0) {
-        log("INFO", `ATR terlalu rendah (${atrPct.toFixed(3)}%) — market flat, skip`);
+        log("FILTER", `[FILTER] ATR too low (${atrPct.toFixed(3)}%) — market compression → HOLD`);
       }
       broadcastSSE({
         type: "tick", price, rsi: indicators.rsi,
@@ -2649,7 +2881,13 @@ async function tradingLoop() {
         position: pos, bid: ticker?.bidPrice, ask: ticker?.askPrice,
         isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
         latestCandle: klines[klines.length - 1], prediction,
-        smcData: { atrPct: parseFloat(atrPct.toFixed(3)), flat: true, session: session.session, htfTrend: htf?.trend },
+        smcData: { 
+          atrPct: parseFloat(atrPct.toFixed(3)), 
+          atrStatus: atrStatus,
+          flat: true, 
+          session: session.session, 
+          htfTrend: htf?.trend 
+        },
       });
       return;
     }
@@ -3000,13 +3238,74 @@ async function tradingLoop() {
         );
       }
 
+      // Add entry metrics to smcData for dashboard
+      smcData.entryScore = entryScore;
+      smcData.entryMode = entryMode;
+      smcData.atrStatus = atrStatus;
+      smcData.confidenceRequired = CONFIG.OPEN_CONFIDENCE;
       smcData.claudeFilter = claudeFilter;
 
+      // ═══════════════════════════════════════════════════
+      // ENTRY QUALITY SCORE (BTC 15m optimized)
+      // ═══════════════════════════════════════════════════
+      const ema9 = indicators.ema9 || price;
+      const ema21 = indicators.ema21 || price;
+      const rsi = indicators.rsi || 50;
+      
+      // Trend direction
+      const trendAligned = tradeSide === "BULLISH" ? (ema9 > ema21) : (ema9 < ema21);
+      
+      // RSI pullback zone (trend continuation)
+      const rsiPullback = tradeSide === "BULLISH" 
+        ? (rsi >= 42 && rsi <= 50) 
+        : (rsi >= 50 && rsi <= 58);
+      
+      // Volume confirmation
+      const volumeConfirmed = indicators.volumeRatio >= 0.8;
+      
+      // ATR valid
+      const atrValid = atrPct >= CONFIG.ATR_MIN_PERCENT;
+      
+      // AI agrees
+      const aiAgrees = claudeFilter.approve;
+      
+      // Calculate score
+      let entryScore = 0;
+      if (trendAligned) entryScore += 30;
+      if (rsiPullback) entryScore += 25;
+      if (volumeConfirmed) entryScore += 20;
+      if (atrValid) entryScore += 15;
+      if (aiAgrees) entryScore += 10;
+      
+      // Entry mode label
+      const entryMode = (trendAligned && rsiPullback) ? "TREND_PULLBACK" : "MOMENTUM";
+      
+      log("ENTRY", `[ENTRY SCORE] ${entryScore}/100 → ${entryScore >= CONFIG.ENTRY_SCORE_MIN ? 'VALID' : 'INVALID'} | ` +
+        `Trend:${trendAligned?'✅':'❌'}(${tradeSide}) RSI:${rsiPullback?'✅':'❌'} Vol:${volumeConfirmed?'✅':'❌'} ATR:${atrValid?'✅':'❌'} AI:${aiAgrees?'✅':'❌'}`);
+      
+      log("ENTRY", `[ENTRY CHECK] AI confidence ${claudeFilter.confidence}% / Required ${CONFIG.OPEN_CONFIDENCE}%`);
+
+      // Safety: BB squeeze + no breakout = no entry
+      const bbSqueezeActive = squeezeData?.squeeze && !squeezeData?.breakout;
+      const volumeTooLow = indicators.volumeRatio < 0.5;
+      
+      if (bbSqueezeActive) {
+        log("FILTER", "[FILTER] BB squeeze active + no breakout → HOLD");
+      }
+      if (volumeTooLow) {
+        log("FILTER", "[FILTER] Volume too low (${indicators.volumeRatio}) → HOLD");
+      }
+      
+      // ═══════════════════════════════════════════════════
       // SD Zone & BOS Direct: threshold 65 | SMC/Reversal: 70
       const confThreshold = (sdReady || (bosDirectEntry && !smcFull)) ? 65 : CONFIG.OPEN_CONFIDENCE;
 
       // ── I. Entry ────────────────────────────────────────
-      if (claudeFilter.approve && claudeFilter.confidence >= confThreshold) {
+      // Allow entry if: score >= 70 AND confidence >= threshold AND no safety issues
+      if (entryScore >= CONFIG.ENTRY_SCORE_MIN && 
+          claudeFilter.confidence >= confThreshold &&
+          !bbSqueezeActive && 
+          !volumeTooLow) {
         log("TRADE",
           `🚀 ENTRY ${tradeSide} [${modeLabel}] | ` +
           `SL:${slPct.toFixed(3)}% TP:${tpPct.toFixed(3)}% ` +
@@ -3046,9 +3345,13 @@ async function tradingLoop() {
         ema9: indicators.ema9, ema21: indicators.ema21,
         fundingRate, fearGreed: externalDataCache?.fearGreed,
         analysis: {
-          action:          claudeFilter.approve && claudeFilter.confidence >= CONFIG.OPEN_CONFIDENCE
+          action:          entryScore >= CONFIG.ENTRY_SCORE_MIN && claudeFilter.confidence >= confThreshold && !bbSqueezeActive && !volumeTooLow
             ? (tradeSide === "BULLISH" ? "LONG" : "SHORT") : "HOLD",
           confidence:      claudeFilter.confidence,
+          entryScore:      entryScore,
+          entryMode:       entryMode,
+          atrStatus:       atrStatus,
+          confidenceReq:    CONFIG.OPEN_CONFIDENCE,
           sentiment:       tradeSide,
           leverage:        CONFIG.DEFAULT_LEVERAGE,
           stop_loss_pct:   slPct,
@@ -4120,6 +4423,22 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     function handle(d) {
       window.currentPosition = d.position !== undefined ? d.position : window.currentPosition;
       window.currentPairMode = d.currentPairMode || 'PEPE';  // Default to PEPE
+
+      // Handle error messages from server
+      if (d.type === 'error') {
+        const errEl = document.getElementById('smc-status-bar');
+        if (errEl) {
+          errEl.textContent = d.message || '⚠️ Koneksi terputus!';
+          errEl.style.cssText = 'padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:center;background:#f8514922;color:#f85149;border:1px solid #f8514966';
+        }
+        // Show last known price if available
+        if (d.lastPrice && d.lastPrice !== '--') {
+          const priceEl = document.getElementById('price-display');
+          if (priceEl) priceEl.textContent = d.lastPrice;
+        }
+        console.error('Server error:', d.message);
+        return;
+      }
 
       if (d.type === 'init') {
         document.getElementById('dry-badge').style.display    = d.dryRun ? 'inline' : 'none';

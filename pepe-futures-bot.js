@@ -2246,6 +2246,15 @@ async function tradingLoop() {
     }
   }
 
+  // ── Refresh BTC pullback analysis setiap 3 tick saat BTC mode aktif ──
+  if ((state.currentPairMode === "BTC" || state.currentPairMode === "DUAL") && state.tickCount % 3 === 0) {
+    try {
+      state.btcAnalysis = await btcStrategy.quickAnalysis();
+    } catch (e) {
+      log("WARN", `BTC quick analysis refresh failed: ${e.message}`);
+    }
+  }
+
   // ── 1. Ambil data market ──────────────────────────────────
   let ticker, klines, fundingRate, orderBook;
   try {
@@ -3029,7 +3038,21 @@ async function tradingLoop() {
     // Mode C — BOS Direct: BOS saja cukup
     const bosDirectEntry = bos.detected && htf.strength === "STRONG"
     && (choch.detected || liqGrab.detected || sweep.detected);
-    const smcReady       = sdReady || smcFull || revReady || bosDirectEntry;
+
+    // ── Mode E — BTC TREND PULLBACK (relaxed SMC: any 2 signals) ──
+    const isBTCMode = state.currentPairMode === "BTC" || state.currentPairMode === "DUAL";
+    const btcA      = state.btcAnalysis;
+    const smcScore  = [inducmt.valid, liqGrab.detected, choch.detected, inFVG.inFVG, candleOK.confirmed]
+      .filter(Boolean).length;
+    // btcPullback fires when: pullback strategy agrees + at least 2 SMC signals + no conflicting direction
+    const btcPullbackReady = isBTCMode
+      && btcA && !btcA.error
+      && btcA.action !== "HOLD"
+      && smcScore >= 2
+      && ((btcA.action === "LONG"  && tradeSide === "BULLISH") ||
+          (btcA.action === "SHORT" && tradeSide === "BEARISH"));
+
+    const smcReady = sdReady || smcFull || revReady || bosDirectEntry || btcPullbackReady;
 
     // ── [3] Entry delay — pending signal & candle confirmation ────
     if (smcReady) {
@@ -3104,7 +3127,9 @@ async function tradingLoop() {
           ? "FULL SMC"
           : (bosDirectEntry && !revReady)
             ? `BOS DIRECT (${bos.type || "BOS"})`
-            : `REVERSAL Grade-${revScore.grade} (${revScore.score}/100)`;
+            : btcPullbackReady
+              ? `BTC PULLBACK (SMC:${smcScore}/5 conf:${btcA?.confidence}%)`
+              : `REVERSAL Grade-${revScore.grade} (${revScore.score}/100)`;
 
       // ── G. Hitung SL/TP ─────────────────────────────────
       // Mode D (sdReady): SL tepat di bawah/atas S/D zone
@@ -3178,7 +3203,7 @@ async function tradingLoop() {
         revScore:     revScore.score,
         revGrade:     revScore.grade,
         revReasons:   revScore.reasons.join(", "),
-        smcMode:      sdReady ? "SD_ZONE" : smcFull ? "FULL_SMC" : (bosDirectEntry && !revReady) ? "BOS_DIRECT" : "REVERSAL_ONLY",
+        smcMode:      sdReady ? "SD_ZONE" : smcFull ? "FULL_SMC" : (bosDirectEntry && !revReady) ? "BOS_DIRECT" : btcPullbackReady ? "BTC_PULLBACK" : "REVERSAL_ONLY",
       };
 
       // ── H. Tentukan claudeFilter berdasarkan mode ───────
@@ -3217,6 +3242,21 @@ async function tradingLoop() {
           `⚡ BOS DIRECT [${tradeSide}] ${bosDesc} ${extras} | ` +
           `ATR:${atrPct.toFixed(3)}% HTF:${htf.trend} Session:${session.session} ` +
           `→ MASUK LANGSUNG tanpa Claude`
+        );
+      } else if (btcPullbackReady) {
+        // Mode E: BTC Trend Pullback — direct entry, no Claude call
+        const btcConf = Math.min(85, (btcA.confidence || 58));
+        claudeFilter = {
+          approve:    true,
+          confidence: btcConf,
+          reason:     btcA.reason || `BTC pullback ${btcA.action} SMC:${smcScore}/5`,
+          risk:       btcConf >= 70 ? "LOW" : "MEDIUM",
+          direct:     true,
+        };
+        log("TRADE",
+          `₿ BTC PULLBACK [${tradeSide}] ${btcA.action} | ` +
+          `RSI:${btcA.rsi?.toFixed(1)} ATR:${btcA.atrPct?.toFixed(3)}% SMC:${smcScore}/5 | ` +
+          `Conf:${btcConf}% → MASUK LANGSUNG`
         );
       } else {
         // Mode A/B: SMC Lengkap atau Reversal — pakai Claude sebagai filter
@@ -3298,7 +3338,10 @@ async function tradingLoop() {
       
       // ═══════════════════════════════════════════════════
       // SD Zone & BOS Direct: threshold 65 | SMC/Reversal: 70
-      const confThreshold = (sdReady || (bosDirectEntry && !smcFull)) ? 65 : CONFIG.OPEN_CONFIDENCE;
+      // BTC pullback uses lower threshold (58); SD/BOS direct: 65; else CONFIG default
+      const confThreshold = btcPullbackReady
+        ? 58
+        : (sdReady || (bosDirectEntry && !smcFull)) ? 65 : CONFIG.OPEN_CONFIDENCE;
 
       // ── I. Entry ────────────────────────────────────────
       // Allow entry if: score >= 70 AND confidence >= threshold AND no safety issues
@@ -4492,13 +4535,21 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           window.currentPairMode = d.currentPairMode;  // Store for price formatting
           const pairBadge = document.getElementById('pair-mode-badge');
           if (pairBadge) {
-            pairBadge.textContent = d.currentPairMode;
             if (d.currentPairMode === 'BTC') {
+              pairBadge.textContent    = '₿ BTC TREND MODE';
               pairBadge.style.background = '#f0883e33';
-              pairBadge.style.color = '#f0883e';
+              pairBadge.style.color      = '#f0883e';
+              pairBadge.style.border     = '1px solid #f0883e55';
+            } else if (d.currentPairMode === 'DUAL') {
+              pairBadge.textContent    = '₿🐸 DUAL MODE';
+              pairBadge.style.background = '#d2992233';
+              pairBadge.style.color      = '#d29922';
+              pairBadge.style.border     = '1px solid #d2992255';
             } else {
+              pairBadge.textContent    = '🐸 MEME MOMENTUM MODE';
               pairBadge.style.background = '#3fb95033';
-              pairBadge.style.color = '#3fb950';
+              pairBadge.style.color      = '#3fb950';
+              pairBadge.style.border     = '1px solid #3fb95055';
             }
           }
           // Update chart symbol

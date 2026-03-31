@@ -364,45 +364,104 @@ async function analyzeBTC() {
 }
 
 /**
- * Quick analysis for trading loop - lighter weight
+ * Quick analysis for trading loop — BTC TREND PULLBACK STRATEGY
+ * Entry only on continuation pullbacks, NOT mean reversion.
+ * LONG : HTF BULLISH + EMA9>EMA21 + RSI 42-52 + price>EMA21 + vol>=0.8
+ * SHORT: HTF BEARISH + EMA9<EMA21 + RSI 48-58 + price<EMA21 + vol>=0.8
  */
 async function quickAnalysis() {
   try {
-    const klines = await fetchKlines(SYMBOL, TIMEFRAME, 50);
-    const closes = klines.map(k => k.close);
-    
+    const klines = await fetchKlines(SYMBOL, TIMEFRAME, 100);
+    const closes  = klines.map(k => k.close);
+    const volumes = klines.map(k => k.volume);
+
+    const ema9  = calculateEMA(closes, 9);
+    const ema21 = calculateEMA(closes, 21);
     const ema20 = calculateEMA(closes, 20);
     const ema50 = calculateEMA(closes, 50);
-    const rsi = calculateRSI(klines, 14);
-    const atr = calculateATR(klines, 14);
-    
+    const rsi   = calculateRSI(klines, 14);
+    const atr   = calculateATR(klines, 14);
+
     const currentPrice = closes[closes.length - 1];
+    const atrPct       = atr ? (atr / currentPrice) * 100 : 0;
+
+    const nonZeroVols = volumes.slice(-20).filter(v => v > 0);
+    const avgVol      = nonZeroVols.length > 0
+      ? nonZeroVols.reduce((a, b) => a + b, 0) / nonZeroVols.length : 1;
+    const volumeRatio = volumes[volumes.length - 1] / avgVol;
+
+    // HTF trend from EMA20/EMA50
     const trend = ema20 > ema50 ? "BULLISH" : (ema20 < ema50 ? "BEARISH" : "NEUTRAL");
-    
-    // Quick signal
-    let action = "HOLD";
-    if (rsi < 35 && trend === "BULLISH") {
-      action = "LONG";
-    } else if (rsi > 65 && trend === "BEARISH") {
-      action = "SHORT";
+
+    let action     = "HOLD";
+    let confidence = 0;
+    let reason     = "";
+    const signals  = [];
+
+    // [FILTER] ATR hard filter — do not trade low-volatility BTC
+    if (atrPct < 0.12) {
+      reason = `[FILTER] ATR too low for BTC entry (${atrPct.toFixed(3)}% < 0.12%)`;
+      console.log(`[ENTRY CHECK BTC] Trend: ${trend} | RSI: ${rsi?.toFixed(1)} | ATR%: ${atrPct.toFixed(3)} | Confidence: 0 | Decision: HOLD | Reason: ${reason}`);
+      return { action: "HOLD", price: currentPrice, trend, rsi, ema9, ema21, ema20, ema50, atr, atrPct, volumeRatio, confidence: 0, reason, signals: [reason], timestamp: Date.now() };
     }
-    
-    return {
-      action,
-      price: currentPrice,
-      trend,
-      rsi,
-      ema20,
-      ema50,
-      atr,
-      timestamp: Date.now()
-    };
+
+    // BTC TREND PULLBACK STRATEGY
+    const inLongPullback  = rsi != null && rsi >= 42 && rsi <= 52;
+    const inShortPullback = rsi != null && rsi >= 48 && rsi <= 58;
+    const volOK           = volumeRatio >= 0.8;
+
+    if (trend === "BULLISH" && ema9 > ema21 && inLongPullback && currentPrice > ema21 && volOK) {
+      action     = "LONG";
+      confidence = 58;
+      signals.push(`HTF BULLISH trend (EMA20>${ema50 < ema20 ? "EMA50" : "EMA50"}: ${((ema20-ema50)/ema50*100).toFixed(2)}%)`);
+      signals.push(`EMA9(${ema9?.toFixed(2)}) > EMA21(${ema21?.toFixed(2)})`);
+      signals.push(`RSI pullback zone: ${rsi.toFixed(1)} in [42-52]`);
+      signals.push(`Price(${currentPrice.toFixed(2)}) > EMA21(${ema21?.toFixed(2)})`);
+      signals.push(`Vol ${volumeRatio.toFixed(2)}x avg`);
+      // Boost for confirmed pullback
+      confidence += 10;
+      if (atrPct > 0.18) { confidence += 5; signals.push(`ATR boost: ${atrPct.toFixed(3)}%`); }
+      confidence = Math.min(85, confidence);
+      reason = `BTC LONG pullback: RSI=${rsi.toFixed(1)}, EMA bull, vol=${volumeRatio.toFixed(2)}x`;
+
+    } else if (trend === "BEARISH" && ema9 < ema21 && inShortPullback && currentPrice < ema21 && volOK) {
+      action     = "SHORT";
+      confidence = 58;
+      signals.push(`HTF BEARISH trend (EMA20<EMA50: ${((ema20-ema50)/ema50*100).toFixed(2)}%)`);
+      signals.push(`EMA9(${ema9?.toFixed(2)}) < EMA21(${ema21?.toFixed(2)})`);
+      signals.push(`RSI pullback zone: ${rsi.toFixed(1)} in [48-58]`);
+      signals.push(`Price(${currentPrice.toFixed(2)}) < EMA21(${ema21?.toFixed(2)})`);
+      signals.push(`Vol ${volumeRatio.toFixed(2)}x avg`);
+      confidence += 10;
+      if (atrPct > 0.18) { confidence += 5; signals.push(`ATR boost: ${atrPct.toFixed(3)}%`); }
+      confidence = Math.min(85, confidence);
+      reason = `BTC SHORT pullback: RSI=${rsi.toFixed(1)}, EMA bear, vol=${volumeRatio.toFixed(2)}x`;
+
+    } else {
+      // Log why no signal
+      const reasons = [];
+      if (trend === "NEUTRAL") reasons.push("trend NEUTRAL");
+      if (trend === "BULLISH") {
+        if (!(ema9 > ema21))       reasons.push(`EMA9(${ema9?.toFixed(0)})<EMA21(${ema21?.toFixed(0)})`);
+        if (!inLongPullback)       reasons.push(`RSI ${rsi?.toFixed(1)} not in 42-52`);
+        if (!(currentPrice > ema21)) reasons.push("price<EMA21");
+        if (!volOK)                reasons.push(`vol ${volumeRatio.toFixed(2)}x<0.8`);
+      }
+      if (trend === "BEARISH") {
+        if (!(ema9 < ema21))       reasons.push(`EMA9(${ema9?.toFixed(0)})>EMA21(${ema21?.toFixed(0)})`);
+        if (!inShortPullback)      reasons.push(`RSI ${rsi?.toFixed(1)} not in 48-58`);
+        if (!(currentPrice < ema21)) reasons.push("price>EMA21");
+        if (!volOK)                reasons.push(`vol ${volumeRatio.toFixed(2)}x<0.8`);
+      }
+      reason = `No pullback setup: ${reasons.join(", ")}`;
+    }
+
+    console.log(`[ENTRY CHECK BTC] Trend: ${trend} | RSI: ${rsi?.toFixed(1)} | ATR%: ${atrPct.toFixed(3)} | Confidence: ${confidence} | Decision: ${action} | Reason: ${reason}`);
+
+    return { action, price: currentPrice, trend, rsi, ema9, ema21, ema20, ema50, atr, atrPct, volumeRatio, confidence, reason, signals, timestamp: Date.now() };
+
   } catch (error) {
-    return {
-      error: true,
-      message: error.message,
-      timestamp: Date.now()
-    };
+    return { error: true, action: "HOLD", message: error.message, timestamp: Date.now() };
   }
 }
 
@@ -423,8 +482,8 @@ function getBTCConfig() {
     POSITION_SIZE_USDT: 5,  // More USDT per trade for BTC
     // Timeframe
     TIMEFRAME: TIMEFRAME,
-    // Analysis
-    OPEN_CONFIDENCE: 70,   // Higher confidence needed
+    // Analysis — pullback strategy needs lower bar
+    OPEN_CONFIDENCE: 55,
     // Cooldowns
     SL_COOLDOWN_CANDLES: 2  // Shorter cooldown for BTC
   };

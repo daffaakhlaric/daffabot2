@@ -812,7 +812,7 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
   } else {
     const phaseMultiplierN  = state.phase?.riskMultiplier ?? 1.0;
     const dryRunMultiplierN = CONFIG.DRY_RUN ? getAdaptiveRisk(stats.lossStreak || 0).riskMultiplier : 1.0;
-    notionalUSDT = parseFloat((CONFIG.POSITION_SIZE_USDT * phaseMultiplierN * dryRunMultiplierN * leverage).toFixed(4));
+    notionalUSDT = parseFloat((CONFIG.POSITION_SIZE_USDT * phaseMultiplierN * dryRunMultiplierN).toFixed(4));
   }
 
   const position = {

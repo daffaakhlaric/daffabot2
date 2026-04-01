@@ -248,6 +248,10 @@ async function analyzeSymbol(symbol) {
       score += 5;
     }
     
+    // EMA9 and EMA21 for hype detection
+    const ema9_15m  = calculateEMA(closes15m, 9);
+    const ema21_15m = calculateEMA(closes15m, 21);
+
     return {
       symbol,
       score,
@@ -257,6 +261,11 @@ async function analyzeSymbol(symbol) {
       trend: { m15: trend15m, h1: trend1h },
       volatility: { m15: atr15mPct, h1: atr1hPct },
       volumeRatio: volumeRatio15m,
+      // Raw klines needed for hype analysis
+      klines15m,
+      klines1h,
+      ema9:  ema9_15m,
+      ema21: ema21_15m,
       timestamp: Date.now()
     };
   } catch (error) {
@@ -300,14 +309,14 @@ async function selectPair() {
   let hypeAnalysis = null;
   try {
     const hypeMetrics = await calculateHypeMetrics(
-      pepeAnalysis.klines,
-      { 
-        rsi: pepeAnalysis.rsi, 
-        ema9: pepeAnalysis.ema9, 
+      pepeAnalysis.klines15m,
+      {
+        rsi: pepeAnalysis.rsi?.m15 ?? 50,
+        ema9: pepeAnalysis.ema9,
         ema21: pepeAnalysis.ema21,
         bb: pepeAnalysis.bb
       },
-      btcAnalysis.klines
+      btcAnalysis.klines15m
     );
     
     if (hypeMetrics) {

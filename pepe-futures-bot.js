@@ -21,8 +21,9 @@ const dns      = require("dns");
 require("dotenv").config();
 
 // ── ADAPTIVE AUTO PAIR TRADING SYSTEM ───────────────────────────
-const pairSelector = require("./pairSelector");
-const btcStrategy  = require("./btcStrategy");
+const pairSelector    = require("./pairSelector");
+const btcStrategy     = require("./btcStrategy");
+const { evaluatePhase, phaseLogLine, PHASES } = require("./phaseIndicator");
 
 // ── Bypass DNS hijacking ISP (Indosat/IOH memblokir api.bitget.com) ──────────
 // ISP Indonesia sering redirect DNS ke server mereka sendiri.
@@ -217,7 +218,11 @@ let state = {
   lastPairSelection:    0,            // Timestamp of last selection
   pairAnalysis:         null,         // Latest pair analysis data
   btcAnalysis:          null,         // Latest BTC strategy analysis
-  
+
+  // Phase Indicator
+  phase:                null,         // Current phase result from phaseIndicator
+  phaseCooldownLeft:    0,            // MARKET_BAD: remaining cooldown trades
+
   // Market Regime Detection
   lastRegime:          null,         // "TREND" or "RANGE"
 };
@@ -681,9 +686,10 @@ async function setMarginMode() {
 function calcOrderSize(price, leverage) {
   // BUG #1 FIX: CONTRACT_SIZE = 1000 (bukan 1)
   // Bitget PEPEUSDT USDT-M: 1 kontrak = 1000 PEPE, minimum 1 kontrak
-  const CONTRACT_SIZE = 1000;
-  const MIN_QTY       = 1000;
-  const notional  = CONFIG.POSITION_SIZE_USDT * leverage;
+  const CONTRACT_SIZE  = 1000;
+  const MIN_QTY        = 1000;
+  const riskMultiplier = state.phase?.riskMultiplier ?? 1.0;
+  const notional       = CONFIG.POSITION_SIZE_USDT * riskMultiplier * leverage;
   const qty       = notional / price;
   const contracts = Math.max(1, Math.floor(qty / CONTRACT_SIZE));
   const finalQty  = contracts * CONTRACT_SIZE;
@@ -697,9 +703,10 @@ function calcOrderSize(price, leverage) {
  * qty × price × slPct% = riskUsdt
  */
 function calcOrderSizeByRisk(price, slPct) {
-  const CONTRACT_SIZE = 1000;
-  const riskUsdt  = CONFIG.POSITION_SIZE_USDT;
-  const rawQty    = riskUsdt / (price * slPct / 100);
+  const CONTRACT_SIZE  = 1000;
+  const riskMultiplier = state.phase?.riskMultiplier ?? 1.0;
+  const riskUsdt       = CONFIG.POSITION_SIZE_USDT * riskMultiplier;
+  const rawQty         = riskUsdt / (price * slPct / 100);
   const contracts = Math.max(1, Math.floor(rawQty / CONTRACT_SIZE));
   const finalQty  = contracts * CONTRACT_SIZE;
   const notional  = finalQty * price;
@@ -877,7 +884,15 @@ async function closePosition(reason, currentPrice, symbol = null) {
   // Update stats
   stats.totalTrades++;
   stats.totalPnL += pnlUSDT;
-  if (pnlPct >= 0) stats.wins++; else stats.losses++;
+  if (pnlPct >= 0) {
+    stats.wins++;
+    stats.winStreak  = (stats.winStreak  || 0) + 1;
+    stats.lossStreak = 0;
+  } else {
+    stats.losses++;
+    stats.lossStreak = (stats.lossStreak || 0) + 1;
+    stats.winStreak  = 0;
+  }
   if (stats.totalPnL < stats.maxDrawdown) stats.maxDrawdown = stats.totalPnL;
 
   // BUG #4 FIX: update currentBalance setiap posisi ditutup
@@ -888,6 +903,23 @@ async function closePosition(reason, currentPrice, symbol = null) {
   autoAdjustStrategy();
 
   recordTrade("CLOSE", pos.side, currentPrice, pos.size, pos.leverage, pos.liqPrice, reason, pnlUSDT);
+
+  // ── PHASE INDICATOR — re-evaluate after every close ──────────
+  const newPhase = evaluatePhase(tradeLog, stats);
+  const prevPhase = state.phase?.phase;
+  state.phase = newPhase;
+  // Reset cooldown counter when entering MARKET_BAD; decrement when already in it
+  if (newPhase.phase === PHASES.MARKET_BAD && prevPhase !== PHASES.MARKET_BAD) {
+    state.phaseCooldownLeft = newPhase.cooldownTrades;
+    log("WARN", `[PHASE] Entered MARKET_BAD — ${newPhase.cooldownTrades} cooldown trades before new entries`);
+  } else if (newPhase.phase === PHASES.MARKET_BAD && state.phaseCooldownLeft > 0) {
+    state.phaseCooldownLeft--;
+    log("WARN", `[PHASE] MARKET_BAD cooldown: ${state.phaseCooldownLeft} trade(s) left`);
+  } else if (newPhase.phase !== PHASES.MARKET_BAD) {
+    state.phaseCooldownLeft = 0;
+  }
+  log("INFO", phaseLogLine(newPhase));
+  broadcastSSE({ type: "phase", phase: newPhase });
 
   // FIX #2: Post-SL Cooldown — cegah revenge trading
   // Updated: 2→15min, 3→45min, 4→2jam
@@ -2206,6 +2238,15 @@ async function tradingLoop() {
     log("INFO", "Bot RESUME dari pause otomatis");
   }
 
+  // ── PHASE INDICATOR: MARKET_BAD cooldown gate ─────────────
+  if (state.phase?.phase === PHASES.MARKET_BAD && state.phaseCooldownLeft > 0) {
+    if (state.tickCount % 6 === 0) {
+      log("WARN", `[PHASE] MARKET_BAD cooldown — ${state.phaseCooldownLeft} trade(s) remaining before new entries`);
+    }
+    broadcastSSE({ type: "phase", phase: state.phase });
+    return;
+  }
+
   // ── ADAPTIVE PAIR SELECTION ─────────────────────────────────
   // Evaluate pair selection periodically
   if (CONFIG.ADAPTIVE_PAIR_ENABLED) {
@@ -2276,7 +2317,7 @@ async function tradingLoop() {
           
           // Get BTC strategy analysis
           try {
-            state.btcAnalysis = await btcStrategy.quickAnalysis();
+            state.btcAnalysis = await btcStrategy.quickAnalysis(stats.lossStreak || 0);
           } catch (e) {
             log("WARN", `BTC strategy analysis failed: ${e.message}`);
           }
@@ -2290,7 +2331,7 @@ async function tradingLoop() {
   // ── Refresh BTC pullback analysis setiap 3 tick saat BTC mode aktif ──
   if ((state.currentPairMode === "BTC" || state.currentPairMode === "DUAL") && state.tickCount % 3 === 0) {
     try {
-      state.btcAnalysis = await btcStrategy.quickAnalysis();
+      state.btcAnalysis = await btcStrategy.quickAnalysis(stats.lossStreak || 0);
     } catch (e) {
       log("WARN", `BTC quick analysis refresh failed: ${e.message}`);
     }
@@ -3211,10 +3252,17 @@ async function tradingLoop() {
     const btcA      = state.btcAnalysis;
     const smcScore  = [inducmt.valid, liqGrab.detected, choch.detected, inFVG.inFVG, candleOK.confirmed]
       .filter(Boolean).length;
+
+    // === LOSS STREAK GUARD — strategy-level pause ===
+    if (isBTCMode && btcA && btcA.lossStreakPause) {
+      log("WARN", `[STRATEGY] Loss streak protection active — BTC entries suppressed (streak ${stats.lossStreak})`);
+    }
+
     // btcPullback fires when: pullback strategy agrees + at least 2 SMC signals + no conflicting direction
     const btcPullbackReady = isBTCMode
       && btcA && !btcA.error
       && btcA.action !== "HOLD"
+      && !btcA.lossStreakPause
       && smcScore >= 2
       && ((btcA.action === "LONG"  && tradeSide === "BULLISH") ||
           (btcA.action === "SHORT" && tradeSide === "BEARISH"));
@@ -4085,6 +4133,16 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         <div class="price-meta-item"><span class="price-meta-label">24H VOL (USDT)</span><span class="price-meta-val" id="vol24h-usdt">--</span></div>
       </div>
       <div id="price-chart" style="margin-top:12px"></div>
+
+      <!-- PEPE mini-chart — only visible in DUAL MODE -->
+      <div id="pepe-chart-panel" style="display:none;margin-top:16px;border-top:1px solid #30363d;padding-top:12px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <span style="font-size:11px;color:#8b949e;font-weight:600;letter-spacing:.05em">🐸 PEPEUSDT</span>
+          <span style="font-size:10px;color:#3fb950;background:#3fb95022;border:1px solid #3fb95044;border-radius:3px;padding:1px 6px">DUAL MODE</span>
+          <span id="pepe-mini-price" style="font-size:11px;color:#c9d1d9;margin-left:auto">--</span>
+        </div>
+        <div id="pepe-mini-chart" style="height:180px"></div>
+      </div>
     </div>
 
     <!-- Indikator -->
@@ -4124,6 +4182,33 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         color:#d29922;font-size:11px;text-align:center">
         ⏸ Cooldown aktif — resume:
         <span id="cooldown-resume">--</span>
+      </div>
+    </div>
+
+    <!-- Phase Indicator -->
+    <div class="card" id="phase-card">
+      <h3>Phase Indicator</h3>
+      <div id="phase-badge-wrap" style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <span id="phase-badge" style="font-size:13px;font-weight:700;padding:4px 14px;border-radius:5px;border:1px solid #30363d;background:#21262d;color:#8b949e">-- LOADING --</span>
+        <span id="phase-risk" style="font-size:11px;color:#8b949e">Risk ×--</span>
+      </div>
+      <div id="phase-desc" style="font-size:11px;color:#8b949e;margin-bottom:8px">Menunggu data trade...</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;font-size:10px">
+        <div style="text-align:center;padding:6px;background:#21262d;border-radius:5px">
+          <div style="color:#8b949e;margin-bottom:2px">WIN RATE</div>
+          <div id="phase-winrate" style="font-weight:700;color:#c9d1d9">--%</div>
+        </div>
+        <div style="text-align:center;padding:6px;background:#21262d;border-radius:5px">
+          <div style="color:#8b949e;margin-bottom:2px">PROFIT FACTOR</div>
+          <div id="phase-pf" style="font-weight:700;color:#c9d1d9">--</div>
+        </div>
+        <div style="text-align:center;padding:6px;background:#21262d;border-radius:5px">
+          <div style="color:#8b949e;margin-bottom:2px">TRADES (20)</div>
+          <div id="phase-count" style="font-weight:700;color:#c9d1d9">--</div>
+        </div>
+      </div>
+      <div id="phase-cooldown" style="display:none;margin-top:8px;padding:6px 10px;border-radius:4px;background:#f8514922;border:1px solid #f8514966;color:#f85149;font-size:11px;text-align:center">
+        🚨 MARKET_BAD cooldown — <span id="phase-cooldown-left">0</span> trade(s) remaining
       </div>
     </div>
 
@@ -4350,6 +4435,66 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         if (chart) chart.applyOptions({ width: container.offsetWidth });
       });
       ro.observe(container);
+    }
+
+    // ── PEPE Mini Chart (Dual Mode) ────────────────────────────
+    let pepeChart = null, pepeCandleSeries = null;
+    let pepeChartInterval = null;
+
+    function initPepeChart() {
+      const container = document.getElementById('pepe-mini-chart');
+      if (!container || pepeChart) return;
+      pepeChart = LightweightCharts.createChart(container, {
+        width:  container.offsetWidth || 800,
+        height: 180,
+        layout: { background: { color: '#161b22' }, textColor: '#c9d1d9' },
+        grid:   { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        rightPriceScale: { borderColor: '#30363d' },
+        timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false },
+      });
+      pepeCandleSeries = pepeChart.addCandlestickSeries({
+        upColor: '#3fb950', downColor: '#f85149',
+        borderUpColor: '#3fb950', borderDownColor: '#f85149',
+        wickUpColor: '#3fb950', wickDownColor: '#f85149',
+      });
+      const ro2 = new ResizeObserver(() => {
+        if (pepeChart) pepeChart.applyOptions({ width: container.offsetWidth });
+      });
+      ro2.observe(container);
+    }
+
+    async function refreshPepeChart() {
+      try {
+        const res  = await fetch('/api/klines?tf=5m&limit=100&symbol=PEPEUSDT');
+        const data = await res.json();
+        if (!data.klines || data.klines.length === 0) return;
+        if (!pepeChart) initPepeChart();
+        const candles = data.klines.map(k => ({
+          time:  Math.floor(k.time / 1000),
+          open:  k.open, high: k.high, low: k.low, close: k.close,
+        }));
+        pepeCandleSeries.setData(candles);
+        const last = data.klines[data.klines.length - 1];
+        const priceEl = document.getElementById('pepe-mini-price');
+        if (priceEl) priceEl.textContent = last.close.toFixed(8);
+      } catch(e) { /* silent */ }
+    }
+
+    function showPepeChart(show) {
+      const panel = document.getElementById('pepe-chart-panel');
+      if (!panel) return;
+      if (show) {
+        panel.style.display = 'block';
+        if (!pepeChart) initPepeChart();
+        refreshPepeChart();
+        if (!pepeChartInterval) {
+          pepeChartInterval = setInterval(refreshPepeChart, 15000);
+        }
+      } else {
+        panel.style.display = 'none';
+        if (pepeChartInterval) { clearInterval(pepeChartInterval); pepeChartInterval = null; }
+      }
     }
 
     function setChartData(klines) {
@@ -4735,10 +4880,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           const regime = d.analysis?.regime || (d.smcdData?.regime) || null;
           
           if (pairBadge) {
-            if (d.currentPairMode === 'BTC' || d.currentPairMode === 'DUAL') {
-              // Show regime (RANGE or TREND)
+            if (d.currentPairMode === 'DUAL') {
+              pairBadge.textContent    = '₿🐸 DUAL MODE';
+              pairBadge.style.background = '#d2992233';
+              pairBadge.style.color      = '#d29922';
+              pairBadge.style.border     = '1px solid #d2992255';
+            } else if (d.currentPairMode === 'BTC') {
               if (regime === 'RANGE') {
-                pairBadge.textContent    = '₿ BTC RANGE MODE ACTIVE';
+                pairBadge.textContent    = '₿ BTC RANGE MODE';
                 pairBadge.style.background = '#f8514933';
                 pairBadge.style.color      = '#f85149';
                 pairBadge.style.border     = '1px solid #f8514955';
@@ -4748,18 +4897,6 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 pairBadge.style.color      = '#f0883e';
                 pairBadge.style.border     = '1px solid #f0883e55';
               }
-            } else if (d.currentPairMode === 'DUAL') {
-              if (regime === 'RANGE') {
-                pairBadge.textContent    = '₿🐸 RANGE MODE';
-                pairBadge.style.background = '#f8514933';
-                pairBadge.style.color      = '#f85149';
-                pairBadge.style.border     = '1px solid #f8514955';
-              } else {
-                pairBadge.textContent    = '₿🐸 DUAL MODE';
-                pairBadge.style.background = '#d2992233';
-                pairBadge.style.color      = '#d29922';
-                pairBadge.style.border     = '1px solid #d2992255';
-              }
             } else {
               pairBadge.textContent    = '🐸 MEME MOMENTUM MODE';
               pairBadge.style.background = '#3fb95033';
@@ -4767,7 +4904,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
               pairBadge.style.border     = '1px solid #3fb95055';
             }
           }
-          // Update chart symbol
+          // Show/hide PEPE mini-chart based on dual mode
+          showPepeChart(d.currentPairMode === 'DUAL');
+          // Update chart symbol label
           const chartSymbol = document.getElementById('chart-symbol');
           if (chartSymbol && d.currentPair) {
             chartSymbol.textContent = d.currentPair.replace('USDT', '/USDT');
@@ -4871,6 +5010,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         return;
       }
       if (d.type === 'log') addLog(d);
+      if (d.type === 'phase') { renderPhase(d.phase); return; }
       if (d.type === 'stats') {
         renderStats(d);
         renderWinRate(d);
@@ -5130,7 +5270,48 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       while (box.children.length > 200) box.removeChild(box.firstChild);
     }
 
+    // ── PHASE INDICATOR RENDER ───────────────────────────────
+    const PHASE_STYLES = {
+      TRAINING:   { bg: '#d2992233', border: '#d2992266', color: '#d29922', icon: '🟡' },
+      STABLE:     { bg: '#3fb95033', border: '#3fb95066', color: '#3fb950', icon: '🟢' },
+      PROFIT:     { bg: '#f0883e33', border: '#f0883e66', color: '#f0883e', icon: '🔥' },
+      MARKET_BAD: { bg: '#f8514933', border: '#f8514966', color: '#f85149', icon: '🚨' },
+    };
+
+    function renderPhase(p) {
+      if (!p) return;
+      const badge    = document.getElementById('phase-badge');
+      const riskEl   = document.getElementById('phase-risk');
+      const descEl   = document.getElementById('phase-desc');
+      const wrEl     = document.getElementById('phase-winrate');
+      const pfEl     = document.getElementById('phase-pf');
+      const cntEl    = document.getElementById('phase-count');
+      const cdEl     = document.getElementById('phase-cooldown');
+      const cdLeft   = document.getElementById('phase-cooldown-left');
+      const s        = PHASE_STYLES[p.phase] || PHASE_STYLES.TRAINING;
+
+      if (badge) {
+        badge.textContent       = s.icon + ' ' + p.phase;
+        badge.style.background  = s.bg;
+        badge.style.borderColor = s.border;
+        badge.style.color       = s.color;
+      }
+      if (riskEl)  riskEl.textContent  = 'Risk x' + p.riskMultiplier;
+      if (descEl)  descEl.textContent  = p.description || '';
+      if (wrEl)    wrEl.textContent    = p.winRate > 0 ? p.winRate + '%' : p.phase === 'TRAINING' ? 'Learning' : '--%';
+      if (pfEl)    pfEl.textContent    = p.profitFactor > 0 ? p.profitFactor : '--';
+      if (cntEl)   cntEl.textContent   = p.tradeCount + '/20';
+
+      // Cooldown bar (MARKET_BAD only)
+      if (cdEl) {
+        const showCd = p.phase === 'MARKET_BAD' && (p.cooldownTrades > 0 || window._phaseCooldownLeft > 0);
+        cdEl.style.display = showCd ? 'block' : 'none';
+        if (cdLeft) cdLeft.textContent = window._phaseCooldownLeft ?? p.cooldownTrades;
+      }
+    }
+
     function renderStats(s) {
+      if (s.phase) { renderPhase(s.phase); window._phaseCooldownLeft = s.phaseCooldownLeft || 0; }
       document.getElementById('wins').textContent    = s.wins || 0;
       document.getElementById('losses').textContent  = s.losses || 0;
       const wr = s.totalTrades > 0 ? ((s.wins / s.totalTrades) * 100).toFixed(1) : '0';
@@ -5409,8 +5590,9 @@ function startDashboard() {
     } else if (req.url?.startsWith("/api/klines")) {
       // Parse query params
       const urlObj  = new URL(req.url, 'http://localhost');
-      const tf      = urlObj.searchParams.get('tf')    || '5m';
+      const tf      = urlObj.searchParams.get('tf')     || '5m';
       const limit   = parseInt(urlObj.searchParams.get('limit') || '150');
+      const symParam = urlObj.searchParams.get('symbol') || null;
 
       // Map TF ke granularity Bitget
       const tfMap = {
@@ -5420,12 +5602,35 @@ function startDashboard() {
       const granularity = tfMap[tf] || '5m';
 
       try {
-        const klines = await getKlines(granularity, Math.min(limit, 200));
+        let klines;
+        if (symParam && symParam !== CONFIG.SYMBOL) {
+          // Fetch klines for a different symbol (e.g. PEPEUSDT in dual mode)
+          const altRes = await bitgetRequest("GET", "/api/v2/mix/market/candles", {
+            symbol:      symParam,
+            productType: CONFIG.PRODUCT_TYPE,
+            granularity,
+            limit:       Math.min(limit, 200).toString(),
+          });
+          if (altRes.code !== "00000") throw new Error(`Klines error: ${altRes.msg}`);
+          klines = altRes.data.map((c) => ({
+            time:   parseInt(c[0]),
+            open:   parseFloat(c[1]),
+            high:   parseFloat(c[2]),
+            low:    parseFloat(c[3]),
+            close:  parseFloat(c[4]),
+            volume: parseFloat(c[5]),
+          })).reverse();
+          if (klines.length >= 2 && klines[0].time > klines[klines.length - 1].time) {
+            klines.reverse();
+          }
+        } else {
+          klines = await getKlines(granularity, Math.min(limit, 200));
+        }
         res.writeHead(200, {
           'Content-Type':                'application/json',
           'Access-Control-Allow-Origin': '*',
         });
-        res.end(JSON.stringify({ klines, tf, granularity }));
+        res.end(JSON.stringify({ klines, tf, granularity, symbol: symParam || CONFIG.SYMBOL }));
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message, klines: [] }));
@@ -5551,6 +5756,9 @@ function startDashboard() {
       cooldownActive:   !!(state.pausedUntil && Date.now() < state.pausedUntil),
       cooldownReason:   state.pauseReason,
       cooldownResumeAt: state.pausedUntil,
+      // Phase Indicator
+      phase:            state.phase,
+      phaseCooldownLeft: state.phaseCooldownLeft,
     });
   }, 30000);
 

@@ -62,18 +62,24 @@ async function analyzeHype(pepeData, btcData) {
   conditions.push(candleCondition);
   reasons.push(`Candle Expansion ${candleCondition ? '✅' : '❌'}`);
 
-  // 7. Funding rate increasing momentum
+  // 7. Funding rate increasing momentum (optional — often unavailable)
   const fundingCondition = pepeData.fundingMomentum > 0;
-  conditions.push(fundingCondition);
-  reasons.push(`Funding Momentum ${fundingCondition ? '✅' : '❌'}`);
+  // Only include funding as a condition if we have real data (non-zero)
+  if (pepeData.fundingMomentum !== 0) {
+    conditions.push(fundingCondition);
+    reasons.push(`Funding Momentum ${fundingCondition ? '✅' : '❌'}`);
+  } else {
+    reasons.push(`Funding N/A ⏭️`);
+  }
 
+  const totalConditions = conditions.length; // may be 6 if funding skipped
   const conditionsPassed = conditions.filter(c => c).length;
-  const hypeScore = Math.round((conditionsPassed / 7) * 100);
+  const hypeScore = Math.round((conditionsPassed / totalConditions) * 100);
 
-  // Determine state based on score
+  // Determine state: HYPE needs 4 out of active conditions (≥57%)
   let state = MARKET_STATE.NORMAL;
-  if (hypeScore >= 71) state = MARKET_STATE.HYPE;
-  else if (hypeScore >= 41) state = MARKET_STATE.WATCHLIST;
+  if (hypeScore >= 57) state = MARKET_STATE.HYPE;
+  else if (hypeScore >= 34) state = MARKET_STATE.WATCHLIST;
 
   // Anti-false trend filter - IMMEDIATELY cancel if any trigger
   const antiTriggers = [];
@@ -103,7 +109,7 @@ async function analyzeHype(pepeData, btcData) {
     state,
     hypeScore,
     conditionsPassed,
-    totalConditions: 7,
+    totalConditions,
     reasons: reasons.join(' | ')
   };
 

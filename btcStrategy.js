@@ -405,12 +405,23 @@ async function quickAnalysis() {
       return { action: "HOLD", price: currentPrice, trend, rsi, ema9, ema21, ema20, ema50, atr, atrPct, volumeRatio, confidence: 0, reason, signals: [reason], timestamp: Date.now() };
     }
 
+    // ── Recent price momentum (last 5 candles on 15m = ~75 min) ──
+    // Protects against EMA lag when price already reversed direction
+    const last5closes = closes.slice(-5);
+    const netMove5    = (last5closes[4] - last5closes[0]) / last5closes[0] * 100;
+    const greenCount  = klines.slice(-5).filter(k => k.close > k.open).length;
+    const redCount    = klines.slice(-5).filter(k => k.close < k.open).length;
+    // Price is clearly moving UP: net +0.3% OR 3+ green candles → block SHORT
+    const priceMomentumBullish = netMove5 > 0.3 || greenCount >= 3;
+    // Price is clearly moving DOWN: net -0.3% OR 3+ red candles → block LONG
+    const priceMomentumBearish = netMove5 < -0.3 || redCount >= 3;
+
     // BTC TREND PULLBACK STRATEGY
     const inLongPullback  = rsi != null && rsi >= 42 && rsi <= 52;
     const inShortPullback = rsi != null && rsi >= 48 && rsi <= 58;
     const volOK           = volumeRatio >= 0.8;
 
-    if (trend === "BULLISH" && ema9 > ema21 && inLongPullback && currentPrice > ema21 && volOK) {
+    if (trend === "BULLISH" && ema9 > ema21 && inLongPullback && currentPrice > ema21 && volOK && !priceMomentumBearish) {
       action     = "LONG";
       confidence = 58;
       signals.push(`HTF BULLISH trend (EMA20>${ema50 < ema20 ? "EMA50" : "EMA50"}: ${((ema20-ema50)/ema50*100).toFixed(2)}%)`);
@@ -424,7 +435,7 @@ async function quickAnalysis() {
       confidence = Math.min(85, confidence);
       reason = `BTC LONG pullback: RSI=${rsi.toFixed(1)}, EMA bull, vol=${volumeRatio.toFixed(2)}x`;
 
-    } else if (trend === "BEARISH" && ema9 < ema21 && inShortPullback && currentPrice < ema21 && volOK) {
+    } else if (trend === "BEARISH" && ema9 < ema21 && inShortPullback && currentPrice < ema21 && volOK && !priceMomentumBullish) {
       action     = "SHORT";
       confidence = 58;
       signals.push(`HTF BEARISH trend (EMA20<EMA50: ${((ema20-ema50)/ema50*100).toFixed(2)}%)`);

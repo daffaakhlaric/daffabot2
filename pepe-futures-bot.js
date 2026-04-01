@@ -1331,48 +1331,80 @@ async function analyzeWithClaude(marketData) {
   const posStr = p.activePosition
     ? `${p.activePosition.side} entry=${p.activePosition.entryPrice.toFixed(8)} ${p.activePosition.leverage}x PnL=${p.activePosition.pnlPct !== undefined ? (p.activePosition.pnlPct >= 0 ? "+" : "") + p.activePosition.pnlPct.toFixed(2) + "%" : "?"} Liq=${p.activePosition.liqPrice ? p.activePosition.liqPrice.toFixed(8) : "?"}`
     : "tidak ada";
+  const isBTC   = state.currentPairMode === "BTC" || state.currentPairMode === "DUAL";
+  const pairTag = isBTC ? "BTC/USDT" : "PEPE/USDT";
+  const priceStr = isBTC ? p.price.toFixed(2) : p.price.toFixed(8);
+  const ema9Str  = isBTC ? p.ema9.toFixed(2)  : p.ema9.toFixed(8);
+  const ema21Str = isBTC ? p.ema21.toFixed(2) : p.ema21.toFixed(8);
+
   const geckoStr = p.geckoData
-    ? `PEPE 1h=${p.geckoData.change1h.toFixed(2)}% 24h=${p.geckoData.change24h.toFixed(2)}% 7d=${p.geckoData.change7d.toFixed(2)}% Vol=$${(p.geckoData.volume24h/1e6).toFixed(1)}M${p.geckoData.isPepeTrending ? ` TRENDING#${p.geckoData.trendingRank}` : ""}`
+    ? isBTC
+      ? `BTC trending: CMC data available`
+      : `PEPE 1h=${p.geckoData.change1h.toFixed(2)}% 24h=${p.geckoData.change24h.toFixed(2)}% 7d=${p.geckoData.change7d.toFixed(2)}% Vol=$${(p.geckoData.volume24h/1e6).toFixed(1)}M${p.geckoData.isPepeTrending ? ` TRENDING#${p.geckoData.trendingRank}` : ""}`
     : "gecko:N/A";
   const cmcStr = p.cmcData
-    ? `BTCdom=${p.cmcData.btcDominance.toFixed(1)}% MktCap24h=${p.cmcData.marketCapChange24h >= 0 ? "+" : ""}${p.cmcData.marketCapChange24h.toFixed(2)}% PEPEvol=${p.cmcData.pepeVolumeChange24h >= 0 ? "+" : ""}${p.cmcData.pepeVolumeChange24h.toFixed(2)}%`
+    ? `BTCdom=${p.cmcData.btcDominance.toFixed(1)}% MktCap24h=${p.cmcData.marketCapChange24h >= 0 ? "+" : ""}${p.cmcData.marketCapChange24h.toFixed(2)}%${!isBTC ? ` PEPEvol=${p.cmcData.pepeVolumeChange24h >= 0 ? "+" : ""}${p.cmcData.pepeVolumeChange24h.toFixed(2)}%` : ""}`
     : "cmc:N/A";
   const mtfStr = p.mtf
     ? `1m:${p.mtf.tf1m.trend}/RSI${p.mtf.tf1m.rsi.toFixed(0)} 5m:${p.mtf.tf5m.trend}/RSI${p.mtf.tf5m.rsi.toFixed(0)} 15m:${p.mtf.tf15m.trend}/RSI${p.mtf.tf15m.rsi.toFixed(0)} Consensus:${p.consensus}`
     : "MTF:N/A";
   const bbStr = p.bb
-    ? `U=${p.bb.upper.toFixed(8)} M=${p.bb.middle.toFixed(8)} L=${p.bb.lower.toFixed(8)} %B=${p.bb.pctB.toFixed(3)} Squeeze=${p.squeeze?.squeeze ? "YA" : "tidak"} Break=${p.squeeze?.breakoutDirection || "NONE"}`
+    ? `U=${isBTC ? p.bb.upper.toFixed(2) : p.bb.upper.toFixed(8)} M=${isBTC ? p.bb.middle.toFixed(2) : p.bb.middle.toFixed(8)} L=${isBTC ? p.bb.lower.toFixed(2) : p.bb.lower.toFixed(8)} %B=${p.bb.pctB.toFixed(3)} Squeeze=${p.squeeze?.squeeze ? "YA" : "tidak"} Break=${p.squeeze?.breakoutDirection || "NONE"}`
     : "BB:N/A";
-  const prompt = `Bot PEPE/USDT Bitget futures. MODE: SCALPING AGRESIF (hold <30 menit, target cepat). Balas HANYA JSON.
 
-PASAR: ${p.price.toFixed(8)} Bid/Ask:${p.bid.toFixed(8)}/${p.ask.toFixed(8)} Vol24h:${(p.volume24h/1e9).toFixed(2)}B Δ24h:${(p.change24h*100).toFixed(2)}%
-TEKNIKAL: RSI:${p.rsi.toFixed(1)} EMA9:${p.ema9.toFixed(8)} EMA21:${p.ema21.toFixed(8)} VolRatio:${p.volumeRatio.toFixed(2)}x
-ORDERBOOK: Bid/Ask ratio=${p.orderBook.bidAskRatio.toFixed(3)}
-FUNDING: ${(p.fundingRate*100).toFixed(4)}%${Math.abs(p.fundingRate) > 0.001 ? " ⚠tinggi" : ""} SIGNAL:${p.fundingSignal}${p.fundingRate < -0.0001 ? " ⚡mayoritas short→bias LONG" : p.fundingRate > 0.0001 ? " ⚠mayoritas long→pertimbangkan SHORT" : ""}
-F&G: ${p.fearGreed.value}(${p.fearGreed.classification}) Avg7d:${p.fearGreed.avg7d} Trend:${p.fearGreed.trend}
-${geckoStr}
-${cmcStr}
-POSISI: ${posStr}
-MTF: ${mtfStr}
-BB: ${bbStr}
-VWAP: ${p.vwap.toFixed(8)} vs harga ${p.vwapPct >= 0 ? "+" : ""}${p.vwapPct.toFixed(3)}% POC:${p.volProf?.poc.toFixed(8) || "N/A"}
-CANDLE: Bull:[${p.candlePatterns?.bullishPatterns.join(",") || "-"}] Bear:[${p.candlePatterns?.bearishPatterns.join(",") || "-"}] Bias:${p.candlePatterns?.dominantBias}(${p.candlePatterns?.strength})
-PERFORMA: WR:${p.winRate.toFixed(1)}% Streak:${p.streak > 0 ? "+" : ""}${p.streak} TotalPnL:${p.totalPnL >= 0 ? "+" : ""}${p.totalPnL.toFixed(4)}USDT
+  // BTC analysis context dari quickAnalysis
+  const btcCtx = isBTC && state.btcAnalysis && !state.btcAnalysis.error
+    ? `BTC15m: Trend=${state.btcAnalysis.trend} EMA20=${state.btcAnalysis.ema20?.toFixed(2)} EMA50=${state.btcAnalysis.ema50?.toFixed(2)} ATR%=${state.btcAnalysis.atrPct?.toFixed(3)} Momentum=${state.btcAnalysis.reason?.substring(0, 60)}`
+    : "";
 
-Aturan SCALPING AGRESIF:
+  // Aturan spesifik per pair
+  const pairRules = isBTC ? `
+Aturan BTC TREND PULLBACK (15m):
+- Mode: CONTINUATION trading, BUKAN mean-reversion
+- LONG hanya jika: EMA20>EMA50 (uptrend) + EMA9>EMA21 + RSI 42-52 (pullback) + harga>EMA21 + vol≥0.8x
+- SHORT hanya jika: EMA20<EMA50 (downtrend) + EMA9<EMA21 + RSI 48-58 (pullback) + harga<EMA21 + vol≥0.8x
+- BLOK SHORT jika 5 candle terakhir net >+0.3% atau ≥3 candle hijau — EMA lag bisa menipu
+- BLOK LONG jika 5 candle terakhir net <-0.3% atau ≥3 candle merah
+- Funding negatif + uptrend = LONG lebih aman
+- Fear&Greed <25 = hindari SHORT agresif
+- Leverage 3-5x (BTC lebih konservatif)
+- SL 0.8-1.5%, TP 1.5-3.0% (RR minimal 1:2)
+- buka≥58% confidence
+- Jika RSI > 60 dalam downtrend = HOLD, tunggu pullback` : `
+Aturan SCALPING AGRESIF PEPE:
 - buka≥${CONFIG.OPEN_CONFIDENCE}% tutup≥${CONFIG.CLOSE_CONFIDENCE}%
 - RSI 55-65 + EMA cross = confidence minimal 65%
 - RSI 45-55 + volume spike = confidence minimal 60%
 - BB breakout + volume = confidence minimal 70%
 - Jangan tunggu kondisi sempurna — scalping butuh action
-- Funding negatif saat market BULLISH = LONG lebih aman (short membayar long, artinya mayoritas short)
+- Funding negatif saat market BULLISH = LONG lebih aman
 - Fear&Greed Extreme Fear (<20) = peluang bounce LONG
 - Volume ratio < 0.1x → HOLD (tidak ada momentum)
 - Volume ratio > 0.3x = konfirmasi sinyal KUAT
 - Leverage 7-10x untuk semua entry
-- SL ketat 0.5-1.0%, TP cepat 1.0-2.0%
-- Jangan confidence < 50% kecuali kondisi sangat buruk
-{"action":"LONG|SHORT|CLOSE|HOLD","leverage":7-10,"confidence":0-100,"sentiment":"BULLISH|BEARISH|NEUTRAL|VOLATILE","stop_loss_pct":0.5-1.5,"take_profit_pct":1.0-2.5,"reasoning":"<30 kata"}`;
+- SL ketat 0.5-1.0%, TP cepat 1.0-2.0%`;
+
+  const leverageRange = isBTC ? "3-5" : "7-10";
+  const slRange       = isBTC ? "0.8-1.5" : "0.5-1.5";
+  const tpRange       = isBTC ? "1.5-3.0" : "1.0-2.5";
+
+  const prompt = `Bot ${pairTag} Bitget futures. Balas HANYA JSON.
+
+PASAR: ${priceStr} Bid/Ask:${isBTC ? p.bid.toFixed(2) : p.bid.toFixed(8)}/${isBTC ? p.ask.toFixed(2) : p.ask.toFixed(8)} Vol24h:${(p.volume24h/1e9).toFixed(2)}B Δ24h:${(p.change24h*100).toFixed(2)}%
+TEKNIKAL: RSI:${p.rsi.toFixed(1)} EMA9:${ema9Str} EMA21:${ema21Str} VolRatio:${p.volumeRatio.toFixed(2)}x
+ORDERBOOK: Bid/Ask ratio=${p.orderBook.bidAskRatio.toFixed(3)}
+FUNDING: ${(p.fundingRate*100).toFixed(4)}%${Math.abs(p.fundingRate) > 0.001 ? " ⚠tinggi" : ""} SIGNAL:${p.fundingSignal}${p.fundingRate < -0.0001 ? " ⚡mayoritas short→bias LONG" : p.fundingRate > 0.0001 ? " ⚠mayoritas long→pertimbangkan SHORT" : ""}
+F&G: ${p.fearGreed.value}(${p.fearGreed.classification}) Avg7d:${p.fearGreed.avg7d} Trend:${p.fearGreed.trend}
+${geckoStr}
+${cmcStr}
+${btcCtx ? btcCtx + "\n" : ""}POSISI: ${posStr}
+MTF: ${mtfStr}
+BB: ${bbStr}
+VWAP: ${isBTC ? p.vwap.toFixed(2) : p.vwap.toFixed(8)} vs harga ${p.vwapPct >= 0 ? "+" : ""}${p.vwapPct.toFixed(3)}% POC:${p.volProf?.poc ? (isBTC ? p.volProf.poc.toFixed(2) : p.volProf.poc.toFixed(8)) : "N/A"}
+CANDLE: Bull:[${p.candlePatterns?.bullishPatterns.join(",") || "-"}] Bear:[${p.candlePatterns?.bearishPatterns.join(",") || "-"}] Bias:${p.candlePatterns?.dominantBias}(${p.candlePatterns?.strength})
+PERFORMA: WR:${p.winRate.toFixed(1)}% Streak:${p.streak > 0 ? "+" : ""}${p.streak} TotalPnL:${p.totalPnL >= 0 ? "+" : ""}${p.totalPnL.toFixed(4)}USDT
+${pairRules}
+{"action":"LONG|SHORT|CLOSE|HOLD","leverage":${leverageRange},"confidence":0-100,"sentiment":"BULLISH|BEARISH|NEUTRAL|VOLATILE","stop_loss_pct":${slRange},"take_profit_pct":${tpRange},"reasoning":"<30 kata"}`;
 
 
   const bodyStr = JSON.stringify({
@@ -2415,6 +2447,7 @@ async function tradingLoop() {
         ask:           ticker.askPrice,
         volume24h:     ticker.volume24h,
         change24h:     ticker.change24h,
+        pairMode:      state.currentPairMode,
         rsi:           indicators.rsi,
         ema9:          indicators.ema9,
         ema21:         indicators.ema21,

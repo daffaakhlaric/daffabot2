@@ -803,7 +803,17 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
   // Get regime from state (set during entry)
   const positionRegime = state.lastRegime || "TREND";
   
-  const notionalUSDT = parseFloat((qty * price).toFixed(4));
+  // PEPE: qty = jumlah token, notional = qty × price (benar)
+  // BTC:  qty = contracts (pakai CONTRACT_SIZE=1000 konvensi PEPE → salah untuk BTC)
+  //       Hitung notional dari risk budget: POSITION_SIZE × phaseMultiplier × dryRunMultiplier × leverage
+  let notionalUSDT;
+  if (isPepe) {
+    notionalUSDT = parseFloat((qty * price).toFixed(4));
+  } else {
+    const phaseMultiplierN  = state.phase?.riskMultiplier ?? 1.0;
+    const dryRunMultiplierN = CONFIG.DRY_RUN ? getAdaptiveRisk(stats.lossStreak || 0).riskMultiplier : 1.0;
+    notionalUSDT = parseFloat((CONFIG.POSITION_SIZE_USDT * phaseMultiplierN * dryRunMultiplierN * leverage).toFixed(4));
+  }
 
   const position = {
     side,
@@ -931,7 +941,7 @@ async function closePosition(reason, currentPrice, symbol = null) {
   updateWinRateTracker(pnlUSDT, pnlPct);
   autoAdjustStrategy();
 
-  recordTrade("CLOSE", pos.side, currentPrice, pos.size, pos.leverage, pos.liqPrice, reason, pnlUSDT);
+  recordTrade("CLOSE", pos.side, currentPrice, pos.size, pos.leverage, pos.liqPrice, reason, pnlUSDT, pos.notionalUSDT ?? null);
 
   // ── PHASE INDICATOR — re-evaluate after every close ──────────
   const newPhase = evaluatePhase(tradeLog, stats);
@@ -4912,7 +4922,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         } else {
           setBotRunning(true);
         }
-        if (d.stats) renderWinRate(d.stats);
+        if (d.stats) { renderStats(d.stats); renderWinRate(d.stats); }
+        if (d.phase) { renderPhase(d.phase); window._phaseCooldownLeft = d.phaseCooldownLeft || 0; }
         if (d.balance) handleBalance(d.balance);
         if (d.externalData) handleIntelligence({ externalData: d.externalData });
         if (d.position) renderPosition(d.position, d.price || 0);
@@ -5681,12 +5692,14 @@ function startDashboard() {
         position:    state.activePosition,
         stats,
         dryRun:      CONFIG.DRY_RUN,
-        botStopped:  !state.running,         // kirim status stopped ke dashboard
-        balance:     _initBal,               // BUG #1a FIX
-        externalData: externalDataCache,     // BUG #1a FIX
-        isPaused:    !!(state.pausedUntil && Date.now() < state.pausedUntil), // BUG #6 FIX
-        tradeLog:    tradeLog.slice(-50),    // Log transaksi 50 terakhir
-        klines:      state.lastKlines.slice(-150), // Data chart 150 candle terakhir
+        botStopped:  !state.running,
+        balance:     _initBal,
+        externalData: externalDataCache,
+        isPaused:    !!(state.pausedUntil && Date.now() < state.pausedUntil),
+        tradeLog:    tradeLog.slice(-50),
+        klines:      state.lastKlines.slice(-150),
+        phase:       state.phase,
+        phaseCooldownLeft: state.phaseCooldownLeft,
       })}\n\n`);
 
       req.on("close", () => {
@@ -5993,6 +6006,10 @@ async function main() {
 
   // Load data tersimpan
   loadPersistedData();
+  // Evaluasi phase langsung dari data yang sudah di-load
+  // supaya dashboard tidak perlu menunggu trade close pertama
+  state.phase = evaluatePhase(tradeLog, stats);
+  log("INFO", phaseLogLine(state.phase));
 
   // BUG #4 FIX: ambil balance awal
   if (!CONFIG.DRY_RUN && CONFIG.API_KEY) {

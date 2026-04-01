@@ -767,6 +767,9 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
   }
 
   // Update state - use btcPosition or pepePosition for dual mode
+  // Get regime from state (set during entry)
+  const positionRegime = state.lastRegime || "TREND";
+  
   const position = {
     side,
     symbol: tradeSymbol,
@@ -784,7 +787,10 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
     lockLevel:    undefined, // level lock profit aktif
     momentumWeakCount: 0,  // counter untuk early exit momentum
     openTime:     new Date().toISOString(),
+    regime:       positionRegime, // Store regime at entry time
   };
+
+  log("INFO", `📊 Position opened in ${positionRegime} mode`);
 
   if (state.isDualMode) {
     if (isPepe) {
@@ -2521,11 +2527,29 @@ async function tradingLoop() {
       }
       // Skip semua SL/TP lainnya selama minimum hold time
     } else {
+    
+    // ═══════════════════════════════════════════════════════════════
+    // TIMEOUT EXIT - Close if trade held too long with low profit
+    // IF trade_duration > 120 minutes AND profit < 0.2% → EXIT
+    // ═══════════════════════════════════════════════════════════════
+    const TIMEOUT_MINUTES = 120;
+    const TIMEOUT_PROFIT_PCT = 0.2;
+    const holdDurationMs = pos.openTime ? Date.now() - new Date(pos.openTime).getTime() : 0;
+    const holdMinutes = holdDurationMs / (60 * 1000);
+    const rawProfitPct = pos.side === "LONG"
+      ? (price - pos.entryPrice) / pos.entryPrice * 100
+      : (pos.entryPrice - price) / pos.entryPrice * 100;
+    
+    if (holdMinutes >= TIMEOUT_MINUTES && rawProfitPct < TIMEOUT_PROFIT_PCT) {
+      log("TRADE", `⏰ TIMEOUT EXIT: Held ${holdMinutes.toFixed(0)}min with only ${rawProfitPct.toFixed(2)}% profit → Closing position`);
+      await closePosition("TIMEOUT_EXIT", price);
+      return;
+    }
 
-    // ── FITUR #1: AUTO BREAKEVEN ───────────────────────────────
-    // Geser SL ke entry + buffer fee saat profit raw ≥ 0.4%
-    // Fee PEPE = 0.12% × 2 = 0.24% round trip + buffer 0.1%
-    const BREAKEVEN_TRIGGER_PCT = 0.4;  // % profit (raw, belum × leverage)
+    // ── FITUR #1: AUTO BREAKEVEN (Regime-based) ───────────────────────
+    // RANGE: breakeven at +0.25% | TREND: breakeven at +0.5%
+    const positionRegime = pos.regime || "TREND";
+    const BREAKEVEN_TRIGGER_PCT = positionRegime === "RANGE" ? 0.25 : 0.5;
     const BREAKEVEN_BUFFER_PCT  = 0.15; // buffer di atas entry untuk nutup fee
 
     if (!pos.breakevenSet) {
@@ -2547,12 +2571,12 @@ async function tradingLoop() {
           pos.stopLoss    = newSL;
           pos.breakevenSet = true;
           log("TRADE",
-            `🔒 BREAKEVEN SET! SL digeser ke entry+buffer: ` +
+            `🔒 BREAKEVEN SET (${positionRegime} MODE)! SL digeser ke entry+buffer: ` +
             `${newSL.toFixed(8)} (profit raw ${rawProfitPct.toFixed(3)}%)`
           );
           broadcastSSE({
             type:    "breakeven",
-            message: `Breakeven aktif — SL = ${newSL.toFixed(8)}`,
+            message: `Breakeven aktif (${positionRegime}) — SL = ${newSL.toFixed(8)}`,
             sl:      newSL,
             entry:   pos.entryPrice,
           });
@@ -2561,14 +2585,23 @@ async function tradingLoop() {
       }
     }
 
-    // ── FITUR #4: LOCK PROFIT — Anti Profit Balik Jadi Loss ───
-    // Level lock: tiap profit naik X%, SL digeser untuk kunci Y% profit
-    const LOCK_LEVELS = [
-      { triggerRaw: 1.0, lockRaw: 0.3 },  // profit ≥1% → kunci 0.3%
-      { triggerRaw: 1.5, lockRaw: 0.6 },  // profit ≥1.5% → kunci 0.6%
-      { triggerRaw: 2.0, lockRaw: 1.0 },  // profit ≥2% → kunci 1%
-      { triggerRaw: 3.0, lockRaw: 1.8 },  // profit ≥3% → kunci 1.8%
-    ];
+    // ── FITUR #4: LOCK PROFIT (Regime-based) ──────────────────────────
+    // RANGE: aggressive lock at +0.4% | TREND: existing levels
+    // Level lock: Regime-based lock levels
+    // RANGE: aggressive fast locks | TREND: existing levels
+    const LOCK_LEVELS = positionRegime === "RANGE"
+      ? [
+          { triggerRaw: 0.4, lockRaw: 0.15 },  // profit ≥0.4% → kunci 0.15% (fast!)
+          { triggerRaw: 0.6, lockRaw: 0.25 },  // profit ≥0.6% → kunci 0.25%
+          { triggerRaw: 0.8, lockRaw: 0.35 },  // profit ≥0.8% → kunci 0.35%
+          { triggerRaw: 1.0, lockRaw: 0.45 },  // profit ≥1.0% → kunci 0.45%
+        ]
+      : [
+          { triggerRaw: 1.0, lockRaw: 0.3 },  // profit ≥1% → kunci 0.3%
+          { triggerRaw: 1.5, lockRaw: 0.6 },  // profit ≥1.5% → kunci 0.6%
+          { triggerRaw: 2.0, lockRaw: 1.0 },  // profit ≥2% → kunci 1%
+          { triggerRaw: 3.0, lockRaw: 1.8 },  // profit ≥3% → kunci 1.8%
+        ];
 
     const rawProfitLock = pos.side === "LONG"
       ? (price - pos.entryPrice) / pos.entryPrice * 100
@@ -2624,10 +2657,13 @@ async function tradingLoop() {
       }
     }
 
-    // ── FITUR #2: TRAILING TP DINAMIS ───────────────────────
-    // TP tidak lagi fixed, ikut naik/turun saat harga berlanjut
+    // ── FITUR #2: TRAILING TP DINAMIS (Regime-based) ─────────────
+    // RANGE: trailing distance = 0.35% | TREND: existing (0.5 * TP)
     if (!pos.trailingTP) pos.trailingTP = pos.takeProfit;
-    if (!pos.tpTrailPct) pos.tpTrailPct = CONFIG.TAKE_PROFIT_PCT * 0.5; // 50% dari TP awal
+    if (!pos.tpTrailPct) {
+      // Use regime-based trailing distance
+      pos.tpTrailPct = positionRegime === "RANGE" ? 0.35 : CONFIG.TAKE_PROFIT_PCT * 0.5;
+    }
 
     if (pos.side === "LONG") {
       // Update trailing TP ke atas saat harga naik melewati TP lama
@@ -3026,7 +3062,7 @@ async function tradingLoop() {
         position: pos, bid: ticker?.bidPrice, ask: ticker?.askPrice,
         isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
         latestCandle: klines[klines.length - 1], prediction,
-        smcData: { htfTrend: "NEUTRAL", session: session.session, atrPct: parseFloat(atrPct.toFixed(3)), regime: currentRegime },
+        smcData: { htfTrend: "NEUTRAL", session: session.session, atrPct: parseFloat(atrPct.toFixed(3)), regime: currentRegime, exitMode: currentRegime === "RANGE" ? "EXIT MODE: RANGE SCALP" : "EXIT MODE: TREND RUN" },
       });
       return;
     }
@@ -3190,6 +3226,9 @@ async function tradingLoop() {
       log("INFO", `Reversal confirmation OK (${revConfirm.score}/${revConfirm.maxScore}): ${revConfirm.reasons.join(", ")}`);
     }
 
+    // Exit mode label based on regime
+    const exitModeLabel = currentRegime === "RANGE" ? "EXIT MODE: RANGE SCALP" : "EXIT MODE: TREND RUN";
+
     // Bangun smcData untuk broadcast (dipakai di kedua cabang)
     smcData = {
       htfTrend:      htf?.trend,
@@ -3198,6 +3237,7 @@ async function tradingLoop() {
       session:       session.session,
       atrPct:        parseFloat(atrPct.toFixed(3)),
       regime:        currentRegime,
+      exitMode:      exitModeLabel,
       inducement:    inducmt,
       liquidityGrab: liqGrab,
       choch,
@@ -3216,7 +3256,7 @@ async function tradingLoop() {
     
     // Debug: log smcData yang dikirim
     if (state.tickCount % 6 === 0) {
-      log("DEBUG", `Broadcasting smcData: htfTrend=${smcData.htfTrend}, session=${smcData.session}, atrPct=${smcData.atrPct}, regime=${currentRegime}, smcReady=${smcData.smcReady}`);
+      log("DEBUG", `Broadcasting smcData: htfTrend=${smcData.htfTrend}, session=${smcData.session}, atrPct=${smcData.atrPct}, regime=${currentRegime}, exitMode=${exitModeLabel}, smcReady=${smcData.smcReady}`);
     }
 
     if (smcReady) {
@@ -3424,15 +3464,35 @@ async function tradingLoop() {
       
       log("ENTRY", `[ENTRY CHECK] AI confidence ${claudeFilter.confidence}% / Required ${CONFIG.OPEN_CONFIDENCE}%`);
 
-      // Safety: BB squeeze + no breakout = no entry
-      const bbSqueezeActive = squeezeData?.squeeze && !squeezeData?.breakout;
+      // ═══════════════════════════════════════════════════════════════
+      // BB SQUEEZE PROTECTION - Enhanced
+      // Block entry if squeeze is active unless confirmed breakout with volume
+      // ═══════════════════════════════════════════════════════════════
+      const squeezeActive = squeezeData?.squeeze || false;
+      const breakoutConfirmed = squeezeData?.breakoutDirection !== "NONE";
+      const volumeExpansion = indicators.volumeRatio > 1.2;
+      
+      // Check if price is outside Bollinger bands (breakout)
+      const priceOutsideBB = bbData && (price > bbData.upper || price < bbData.lower);
+      
+      // Allow entry only if:
+      // 1. No squeeze active, OR
+      // 2. Squeeze active AND breakout confirmed with volume expansion
+      const squeezeSafe = !squeezeActive || (breakoutConfirmed && volumeExpansion);
+      
+      // Log squeeze status
+      if (squeezeActive && !breakoutConfirmed) {
+        log("FILTER", "[FILTER] BB SQUEEZE ACTIVE - Market compression - breakout risk → HOLD");
+      } else if (squeezeActive && breakoutConfirmed && !volumeExpansion) {
+        log("FILTER", "[FILTER] BB BREAKOUT detected but volume too low (${indicators.volumeRatio.toFixed(1)}) → HOLD");
+      } else if (squeezeActive && breakoutConfirmed && volumeExpansion) {
+        log("FILTER", "[FILTER] BB BREAKOUT + VOLUME CONFIRMED - Entry allowed ✅");
+      }
+      
       const volumeTooLow = indicators.volumeRatio < 0.5;
       
-      if (bbSqueezeActive) {
-        log("FILTER", "[FILTER] BB squeeze active + no breakout → HOLD");
-      }
       if (volumeTooLow) {
-        log("FILTER", "[FILTER] Volume too low (${indicators.volumeRatio}) → HOLD");
+        log("FILTER", "[FILTER] Volume too low (${indicators.volumeRatio.toFixed(1)}) → HOLD");
       }
       
       // ═══════════════════════════════════════════════════
@@ -3443,10 +3503,10 @@ async function tradingLoop() {
         : (sdReady || (bosDirectEntry && !smcFull)) ? 65 : CONFIG.OPEN_CONFIDENCE;
 
       // ── I. Entry ────────────────────────────────────────
-      // Allow entry if: score >= 70 AND confidence >= threshold AND no safety issues
+      // Allow entry if: score >= 70 AND confidence >= threshold AND squeeze is safe
       if (entryScore >= CONFIG.ENTRY_SCORE_MIN && 
           claudeFilter.confidence >= confThreshold &&
-          !bbSqueezeActive && 
+          squeezeSafe && 
           !volumeTooLow) {
         log("TRADE",
           `🚀 ENTRY ${tradeSide} [${modeLabel}] | ` +
@@ -3487,7 +3547,7 @@ async function tradingLoop() {
         ema9: indicators.ema9, ema21: indicators.ema21,
         fundingRate, fearGreed: externalDataCache?.fearGreed,
         analysis: {
-          action:          entryScore >= CONFIG.ENTRY_SCORE_MIN && claudeFilter.confidence >= confThreshold && !bbSqueezeActive && !volumeTooLow
+          action:          entryScore >= CONFIG.ENTRY_SCORE_MIN && claudeFilter.confidence >= confThreshold && squeezeSafe && !volumeTooLow
             ? (tradeSide === "BULLISH" ? "LONG" : "SHORT") : "HOLD",
           confidence:      claudeFilter.confidence,
           entryScore:      entryScore,
@@ -3502,6 +3562,10 @@ async function tradingLoop() {
             ? `BOS Direct Entry: ${claudeFilter.reason}`
             : `SMC+Claude: ${claudeFilter.approve ? "✅" : "❌"} — ${claudeFilter.reason}`,
           regime:          currentRegime,
+          squeezeSafe:     squeezeSafe,
+          squeezeActive:   squeezeActive,
+          breakoutConfirmed: breakoutConfirmed,
+          volumeExpansion: volumeExpansion,
         },
         position:    state.activePosition,
         bb:          bbData,
@@ -3511,7 +3575,7 @@ async function tradingLoop() {
         candlePatterns,
         externalData: externalDataCache,
         latestCandle: klines[klines.length - 1],
-        smcData: { regime: currentRegime, atrPct: parseFloat(atrPct.toFixed(3)) },
+        smcData: { regime: currentRegime, atrPct: parseFloat(atrPct.toFixed(3)), squeezeSafe, squeezeActive, breakoutConfirmed },
         prediction,
         smcData,
       });

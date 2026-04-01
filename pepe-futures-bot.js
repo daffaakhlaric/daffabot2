@@ -247,6 +247,27 @@ let tradeLog = [];
 let compoundedBalance = CONFIG.POSITION_SIZE_USDT;
 
 // ─────────────────────────────────────────────────────────────
+// DRY RUN ADAPTIVE RISK
+// In DRY_RUN mode loss streaks never pause trading — instead they
+// scale down position size and raise the confidence bar so the bot
+// keeps scanning and learning while behaving more defensively.
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Returns risk scaling for DRY_RUN loss-streak protection.
+ * Called from the entry check block; has NO effect in LIVE mode.
+ * @param {number} streak - consecutive loss count
+ * @returns {{ riskMultiplier: number, confidenceBoost: number, label: string }}
+ */
+function getAdaptiveRisk(streak) {
+  if (streak >= 5) return { riskMultiplier: 0.40, confidenceBoost: 20, label: "⚠️ STREAK≥5 — ultra-defensive" };
+  if (streak >= 4) return { riskMultiplier: 0.50, confidenceBoost: 15, label: "🔴 STREAK≥4 — defensive" };
+  if (streak >= 3) return { riskMultiplier: 0.60, confidenceBoost: 10, label: "🟠 STREAK≥3 — cautious" };
+  if (streak >= 2) return { riskMultiplier: 0.80, confidenceBoost:  5, label: "🟡 STREAK≥2 — selective" };
+  return               { riskMultiplier: 1.00, confidenceBoost:  0, label: "🟢 NORMAL" };
+}
+
+// ─────────────────────────────────────────────────────────────
 // UTILITAS UMUM
 // ─────────────────────────────────────────────────────────────
 
@@ -688,8 +709,10 @@ function calcOrderSize(price, leverage) {
   // Bitget PEPEUSDT USDT-M: 1 kontrak = 1000 PEPE, minimum 1 kontrak
   const CONTRACT_SIZE  = 1000;
   const MIN_QTY        = 1000;
-  const riskMultiplier = state.phase?.riskMultiplier ?? 1.0;
-  const notional       = CONFIG.POSITION_SIZE_USDT * riskMultiplier * leverage;
+  const phaseMultiplier2  = state.phase?.riskMultiplier ?? 1.0;
+  const dryRunMultiplier2 = CONFIG.DRY_RUN ? (getAdaptiveRisk(stats.lossStreak || 0).riskMultiplier) : 1.0;
+  const riskMultiplier    = phaseMultiplier2 * dryRunMultiplier2;
+  const notional          = CONFIG.POSITION_SIZE_USDT * riskMultiplier * leverage;
   const qty       = notional / price;
   const contracts = Math.max(1, Math.floor(qty / CONTRACT_SIZE));
   const finalQty  = contracts * CONTRACT_SIZE;
@@ -704,8 +727,11 @@ function calcOrderSize(price, leverage) {
  */
 function calcOrderSizeByRisk(price, slPct) {
   const CONTRACT_SIZE  = 1000;
-  const riskMultiplier = state.phase?.riskMultiplier ?? 1.0;
-  const riskUsdt       = CONFIG.POSITION_SIZE_USDT * riskMultiplier;
+  // Phase multiplier (both modes) × DRY_RUN adaptive multiplier on loss streak
+  const phaseMultiplier    = state.phase?.riskMultiplier ?? 1.0;
+  const dryRunMultiplier   = CONFIG.DRY_RUN ? (getAdaptiveRisk(stats.lossStreak || 0).riskMultiplier) : 1.0;
+  const riskMultiplier     = phaseMultiplier * dryRunMultiplier;
+  const riskUsdt           = CONFIG.POSITION_SIZE_USDT * riskMultiplier;
   const rawQty         = riskUsdt / (price * slPct / 100);
   const contracts = Math.max(1, Math.floor(rawQty / CONTRACT_SIZE));
   const finalQty  = contracts * CONTRACT_SIZE;
@@ -921,50 +947,73 @@ async function closePosition(reason, currentPrice, symbol = null) {
   log("INFO", phaseLogLine(newPhase));
   broadcastSSE({ type: "phase", phase: newPhase });
 
-  // FIX #2: Post-SL Cooldown — cegah revenge trading
-  // Updated: 2→15min, 3→45min, 4→2jam
+  // ── Post-SL Cooldown ─────────────────────────────────────────
+  // DRY_RUN: NEVER pause — use adaptive risk scaling instead (getAdaptiveRisk).
+  // LIVE:    tiered cooldown + emergency stop still active.
   if (reason === "STOP_LOSS" || reason === "FORCE_CLOSE_MAX_LOSS" || reason.includes("HARD_STOP")) {
-    const lossStreak = stats.losses;
-    // Durasi cooldown bertingkat berdasarkan loss streak (min 2x baru aktif)
-    const cooldownMs =
-      lossStreak >= 4 ? 120 * 60 * 1000 :  // 2 jam kalau loss 4+
-      lossStreak >= 3 ? 45  * 60 * 1000 :  // 45 menit kalau loss 3
-      lossStreak >= 2 ? 15  * 60 * 1000 :  // 15 menit kalau loss 2
-                        0;                   // 1 loss tidak perlu cooldown
-    
-    // Hanya pause kalau ada cooldown
-    if (cooldownMs > 0) {
-      state.pausedUntil = Date.now() + cooldownMs;
-      state.pauseReason =
-        `SL cooldown — loss streak ${lossStreak}x ` +
-        `(${Math.round(cooldownMs / 60000)} menit)`;
+    const lossStreak = stats.lossStreak || 0;
+
+    // Step 5 — mode log
+    log("INFO",
+      `[MODE=${CONFIG.DRY_RUN ? "DRY_RUN" : "LIVE"}] ` +
+      `LossStreak=${lossStreak} | CooldownDisabled=${CONFIG.DRY_RUN}`
+    );
+
+    if (CONFIG.DRY_RUN) {
+      // DRY_RUN: no pause — log adaptive behavior that will apply at next entry
+      const adaptive = getAdaptiveRisk(lossStreak);
       log("WARN",
-        `⏸ Cooldown ${Math.round(cooldownMs / 60000)} menit setelah SL ke-${lossStreak} — cegah revenge trading`
-      );
-    }
-    // Emergency pause kalau loss streak ≥ 5
-    if (lossStreak >= 5) {
-      log("ERROR",
-        `🛑 EMERGENCY PAUSE! Loss streak ${lossStreak}x berturut — pause 2 jam. Buka dashboard untuk review.`
+        `[DRY_RUN] SL #${lossStreak} — NO cooldown. ` +
+        `Next entry: risk×${adaptive.riskMultiplier} conf+${adaptive.confidenceBoost} | ${adaptive.label}`
       );
       broadcastSSE({
-        type:      "emergency_stop",
+        type:        "sl_cooldown",
         lossStreak,
-        message:   `Loss streak ${lossStreak}x — pause 2 jam otomatis`,
-        resumeAt:  new Date(state.pausedUntil).toLocaleTimeString("id-ID"),
+        cooldownMs:  0,
+        dryRun:      true,
+        message:     `DRY_RUN: no cooldown — adaptive risk active (${adaptive.label})`,
+        adaptive,
       });
+    } else {
+      // LIVE: tiered cooldown
+      const cooldownMs =
+        lossStreak >= 4 ? 120 * 60 * 1000 :  // 2 jam kalau loss 4+
+        lossStreak >= 3 ? 45  * 60 * 1000 :  // 45 menit kalau loss 3
+        lossStreak >= 2 ? 15  * 60 * 1000 :  // 15 menit kalau loss 2
+                          0;
+
+      if (cooldownMs > 0) {
+        state.pausedUntil = Date.now() + cooldownMs;
+        state.pauseReason =
+          `SL cooldown — loss streak ${lossStreak}x ` +
+          `(${Math.round(cooldownMs / 60000)} menit)`;
+        log("WARN",
+          `⏸ Cooldown ${Math.round(cooldownMs / 60000)} menit setelah SL ke-${lossStreak} — cegah revenge trading`
+        );
+        broadcastSSE({
+          type:      "sl_cooldown",
+          lossStreak,
+          cooldownMs,
+          resumeAt:  state.pausedUntil,
+          message:   state.pauseReason,
+        });
+      }
+
+      // Emergency pause — LIVE only
+      if (lossStreak >= 5) {
+        log("ERROR",
+          `🛑 EMERGENCY PAUSE! Loss streak ${lossStreak}x berturut — pause 2 jam. Buka dashboard untuk review.`
+        );
+        broadcastSSE({
+          type:      "emergency_stop",
+          lossStreak,
+          message:   `Loss streak ${lossStreak}x — pause 2 jam otomatis`,
+          resumeAt:  new Date(state.pausedUntil).toLocaleTimeString("id-ID"),
+        });
+      }
     }
-    // Hanya broadcast kalau ada cooldown
-    if (cooldownMs > 0) {
-      broadcastSSE({
-        type:      "sl_cooldown",
-        lossStreak,
-        cooldownMs,
-        resumeAt:  state.pausedUntil,
-        message:   state.pauseReason,
-      });
-    }
-    // Simpan harga SL terakhir untuk avoid entry
+
+    // Always record last SL price to avoid immediate re-entry at same level
     smcState.lastSLPrice = currentPrice;
   }
 
@@ -2226,8 +2275,8 @@ async function tradingLoop() {
     }
   }
 
-  // ── Fitur #7: Cek auto pause ──────────────────────────────
-  if (state.pausedUntil && Date.now() < state.pausedUntil) {
+  // ── Fitur #7: Cek auto pause (LIVE only — DRY_RUN never pauses) ──
+  if (!CONFIG.DRY_RUN && state.pausedUntil && Date.now() < state.pausedUntil) {
     const sisaMin = Math.ceil((state.pausedUntil - Date.now()) / 60000);
     if (state.tickCount % 6 === 0) log("WARN", `Bot PAUSE (${state.pauseReason}) — resume dalam ${sisaMin} menit`);
     broadcastSSE({ type: "pause", reason: state.pauseReason, resumeIn: sisaMin });
@@ -2238,8 +2287,8 @@ async function tradingLoop() {
     log("INFO", "Bot RESUME dari pause otomatis");
   }
 
-  // ── PHASE INDICATOR: MARKET_BAD cooldown gate ─────────────
-  if (state.phase?.phase === PHASES.MARKET_BAD && state.phaseCooldownLeft > 0) {
+  // ── PHASE INDICATOR: MARKET_BAD cooldown gate (LIVE only) ─
+  if (!CONFIG.DRY_RUN && state.phase?.phase === PHASES.MARKET_BAD && state.phaseCooldownLeft > 0) {
     if (state.tickCount % 6 === 0) {
       log("WARN", `[PHASE] MARKET_BAD cooldown — ${state.phaseCooldownLeft} trade(s) remaining before new entries`);
     }
@@ -3579,9 +3628,18 @@ async function tradingLoop() {
       // ═══════════════════════════════════════════════════
       // SD Zone & BOS Direct: threshold 65 | SMC/Reversal: 70
       // BTC pullback uses lower threshold (58); SD/BOS direct: 65; else CONFIG default
-      const confThreshold = btcPullbackReady
+      // DRY_RUN: adaptive confidence boost applied on loss streak (no pause, only selectivity)
+      const adaptive = CONFIG.DRY_RUN ? getAdaptiveRisk(stats.lossStreak || 0) : null;
+      if (adaptive && adaptive.confidenceBoost > 0) {
+        log("INFO",
+          `[DRY_RUN] Adaptive risk: ${adaptive.label} | ` +
+          `risk×${adaptive.riskMultiplier} conf+${adaptive.confidenceBoost}`
+        );
+      }
+      const baseConfThreshold = btcPullbackReady
         ? 58
         : (sdReady || (bosDirectEntry && !smcFull)) ? 65 : CONFIG.OPEN_CONFIDENCE;
+      const confThreshold = baseConfThreshold + (adaptive?.confidenceBoost ?? 0);
 
       // ── I. Entry ────────────────────────────────────────
       // Allow entry if: score >= 70 AND confidence >= threshold AND squeeze is safe
@@ -4162,6 +4220,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <!-- Stats -->
     <div class="card">
       <h3>Statistik</h3>
+      <div id="trading-mode-label" style="font-size:12px;font-weight:600;color:#58a6ff;margin-bottom:10px;letter-spacing:.03em">🧪 TRAINING MODE (NO COOLDOWN)</div>
       <div class="stats-row">
         <div class="stat-item"><div class="stat-num green" id="wins">0</div><div class="label">Win</div></div>
         <div class="stat-item"><div class="stat-num red" id="losses">0</div><div class="label">Loss</div></div>
@@ -5320,6 +5379,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       const pnlEl = document.getElementById('pnl');
       pnlEl.textContent = (s.totalPnL >= 0 ? '+' : '') + pnl;
       pnlEl.className = 'stat-num ' + (s.totalPnL >= 0 ? 'green' : 'red');
+      // Trading mode label
+      const modeEl = document.getElementById('trading-mode-label');
+      if (modeEl && s.tradingModeLabel) {
+        modeEl.textContent = s.tradingModeLabel;
+        modeEl.style.color = s.isDryRun ? '#58a6ff'
+          : s.tradingModeLabel.includes('DEFENSIVE') ? '#f85149' : '#3fb950';
+      }
     }
 
     function renderSMC(s) {
@@ -5752,13 +5818,18 @@ function startDashboard() {
       currentPair:      state.currentPair,
       currentPairMode:  state.currentPairMode,
       pairSelectionReason: state.pairSelectionReason,
-      // Info cooldown kalau aktif
-      cooldownActive:   !!(state.pausedUntil && Date.now() < state.pausedUntil),
+      // Info cooldown kalau aktif (only meaningful in LIVE mode)
+      cooldownActive:   !CONFIG.DRY_RUN && !!(state.pausedUntil && Date.now() < state.pausedUntil),
       cooldownReason:   state.pauseReason,
       cooldownResumeAt: state.pausedUntil,
       // Phase Indicator
       phase:            state.phase,
       phaseCooldownLeft: state.phaseCooldownLeft,
+      // Trading mode label
+      tradingModeLabel: CONFIG.DRY_RUN
+        ? "🧪 TRAINING MODE (NO COOLDOWN)"
+        : (lossStreak >= 5 ? "🚨 DEFENSIVE MODE" : "🟢 NORMAL TRADING"),
+      isDryRun: CONFIG.DRY_RUN,
     });
   }, 30000);
 

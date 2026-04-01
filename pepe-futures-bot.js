@@ -217,6 +217,9 @@ let state = {
   lastPairSelection:    0,            // Timestamp of last selection
   pairAnalysis:         null,         // Latest pair analysis data
   btcAnalysis:          null,         // Latest BTC strategy analysis
+  
+  // Market Regime Detection
+  lastRegime:          null,         // "TREND" or "RANGE"
 };
 
 let stats = {
@@ -2812,6 +2815,100 @@ async function tradingLoop() {
       );
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // MARKET REGIME DETECTION (ATR-based)
+    // ═══════════════════════════════════════════════════════════════
+    const isRangeMode = atrPct < 0.12;
+    const currentRegime = isRangeMode ? "RANGE" : "TREND";
+    
+    // Log regime changes
+    if (state.lastRegime !== currentRegime) {
+      if (isRangeMode) {
+        log("REGIME", `[REGIME] RANGE MODE (Low Volatility) - ATR: ${atrPct.toFixed(3)}%`);
+      } else {
+        log("REGIME", `[REGIME] TREND MODE - ATR: ${atrPct.toFixed(3)}%`);
+      }
+      state.lastRegime = currentRegime;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // BTC RANGE MODE STRATEGY
+    // ═══════════════════════════════════════════════════════════════
+    if (isRangeMode && !pos) {
+      // Range mode entry conditions
+      const rsi = indicators.rsi || 50;
+      const volRatio = indicators.volumeRatio || 0;
+      
+      // Check Bollinger Band touches
+      const bbTouchLower = bbData && bbData.pctB < 0.15;  // Touching lower band
+      const bbTouchUpper = bbData && bbData.pctB > 0.85;  // Touching upper band
+      
+      let rangeTradeSide = null;
+      
+      // LONG: RSI <= 38, touches lower BB, volume >= 0.5
+      if (rsi <= 38 && bbTouchLower && volRatio >= 0.5) {
+        rangeTradeSide = "BULLISH";
+        log("REGIME", `₿ BTC RANGE MODE LONG | RSI=${rsi.toFixed(1)} | BB Lower Touch | Vol=${volRatio.toFixed(1)}`);
+      }
+      // SHORT: RSI >= 62, touches upper BB, volume >= 0.5
+      else if (rsi >= 62 && bbTouchUpper && volRatio >= 0.5) {
+        rangeTradeSide = "BEARISH";
+        log("REGIME", `₿ BTC RANGE MODE SHORT | RSI=${rsi.toFixed(1)} | BB Upper Touch | Vol=${volRatio.toFixed(1)}`);
+      }
+      
+      if (rangeTradeSide) {
+        // Range mode risk management: TP=0.6%, SL=0.4%
+        const rangeTpPct = 0.6;
+        const rangeSlPct = 0.4;
+        
+        const leverage = CONFIG.DEFAULT_LEVERAGE;
+        const orderQty = calcOrderSize(price, leverage);
+        const tpPrice = rangeTradeSide === "BULLISH"
+          ? price * (1 + rangeTpPct / 100)
+          : price * (1 - rangeTpPct / 100);
+        const slPrice = rangeTradeSide === "BULLISH"
+          ? price * (1 - rangeSlPct / 100)
+          : price * (1 + rangeSlPct / 100);
+        
+        log("TRADE",
+          `🚀 BTC RANGE ENTRY ${rangeTradeSide} | ` +
+          `SL:${rangeSlPct}% TP:${rangeTpPct}% | ` +
+          `Lev:${leverage}x | RSI:${rsi.toFixed(1)} BB:%B:${bbData?.pctB?.toFixed(2)}`
+        );
+        
+        const opened = await openPosition(
+          rangeTradeSide === "BULLISH" ? "LONG" : "SHORT",
+          leverage,
+          price,
+          orderQty
+        );
+        
+        if (opened && state.activePosition) {
+          state.activePosition.stopLoss = slPrice;
+          state.activePosition.takeProfit = tpPrice;
+          smcState.lastEntryTime = Date.now();
+          log("TRADE", `SL: ${slPrice.toFixed(2)} | TP: ${tpPrice.toFixed(2)}`);
+        }
+        
+        // Broadcast range mode entry
+        broadcastSSE({
+          type: "analysis",
+          price, rsi: indicators.rsi,
+          ema9: indicators.ema9, ema21: indicators.ema21,
+          fundingRate, 
+          analysis: {
+            action: rangeTradeSide,
+            confidence: 80,
+            regime: "RANGE",
+            reasoning: `Range Mode: RSI=${rsi.toFixed(1)}, BB touch, Vol=${volRatio.toFixed(1)}`,
+          },
+          position: state.activePosition,
+          smcData: { regime: "RANGE", atrPct: parseFloat(atrPct.toFixed(3)) },
+        });
+        return;
+      }
+    }
+
     // Skip entry kalau di luar session aktif
     if (!session.active) {
       // Tetap jalankan SMC detection untuk dashboard
@@ -2929,7 +3026,7 @@ async function tradingLoop() {
         position: pos, bid: ticker?.bidPrice, ask: ticker?.askPrice,
         isPaused: !!(state.pausedUntil && Date.now() < state.pausedUntil),
         latestCandle: klines[klines.length - 1], prediction,
-        smcData: { htfTrend: "NEUTRAL", session: session.session, atrPct: parseFloat(atrPct.toFixed(3)) },
+        smcData: { htfTrend: "NEUTRAL", session: session.session, atrPct: parseFloat(atrPct.toFixed(3)), regime: currentRegime },
       });
       return;
     }
@@ -2952,6 +3049,7 @@ async function tradingLoop() {
         htfStrength: "WEAK",
         session:     session.session,
         atrPct:      parseFloat(atrPct.toFixed(3)),
+        regime:      currentRegime,
         noEntryReason: `HTF WEAK (sep=${htf.sep}%) — tunggu trend lebih kuat`,
       },
     });
@@ -3099,6 +3197,7 @@ async function tradingLoop() {
       tradeSide,
       session:       session.session,
       atrPct:        parseFloat(atrPct.toFixed(3)),
+      regime:        currentRegime,
       inducement:    inducmt,
       liquidityGrab: liqGrab,
       choch,
@@ -3117,7 +3216,7 @@ async function tradingLoop() {
     
     // Debug: log smcData yang dikirim
     if (state.tickCount % 6 === 0) {
-      log("DEBUG", `Broadcasting smcData: htfTrend=${smcData.htfTrend}, session=${smcData.session}, atrPct=${smcData.atrPct}, smcReady=${smcData.smcReady}`);
+      log("DEBUG", `Broadcasting smcData: htfTrend=${smcData.htfTrend}, session=${smcData.session}, atrPct=${smcData.atrPct}, regime=${currentRegime}, smcReady=${smcData.smcReady}`);
     }
 
     if (smcReady) {
@@ -3402,6 +3501,7 @@ async function tradingLoop() {
           reasoning:       claudeFilter.direct
             ? `BOS Direct Entry: ${claudeFilter.reason}`
             : `SMC+Claude: ${claudeFilter.approve ? "✅" : "❌"} — ${claudeFilter.reason}`,
+          regime:          currentRegime,
         },
         position:    state.activePosition,
         bb:          bbData,
@@ -3411,6 +3511,7 @@ async function tradingLoop() {
         candlePatterns,
         externalData: externalDataCache,
         latestCandle: klines[klines.length - 1],
+        smcData: { regime: currentRegime, atrPct: parseFloat(atrPct.toFixed(3)) },
         prediction,
         smcData,
       });
@@ -4534,17 +4635,34 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         if (d.currentPairMode) {
           window.currentPairMode = d.currentPairMode;  // Store for price formatting
           const pairBadge = document.getElementById('pair-mode-badge');
+          const regime = d.analysis?.regime || (d.smcdData?.regime) || null;
+          
           if (pairBadge) {
-            if (d.currentPairMode === 'BTC') {
-              pairBadge.textContent    = '₿ BTC TREND MODE';
-              pairBadge.style.background = '#f0883e33';
-              pairBadge.style.color      = '#f0883e';
-              pairBadge.style.border     = '1px solid #f0883e55';
+            if (d.currentPairMode === 'BTC' || d.currentPairMode === 'DUAL') {
+              // Show regime (RANGE or TREND)
+              if (regime === 'RANGE') {
+                pairBadge.textContent    = '₿ BTC RANGE MODE ACTIVE';
+                pairBadge.style.background = '#f8514933';
+                pairBadge.style.color      = '#f85149';
+                pairBadge.style.border     = '1px solid #f8514955';
+              } else {
+                pairBadge.textContent    = '₿ BTC TREND MODE';
+                pairBadge.style.background = '#f0883e33';
+                pairBadge.style.color      = '#f0883e';
+                pairBadge.style.border     = '1px solid #f0883e55';
+              }
             } else if (d.currentPairMode === 'DUAL') {
-              pairBadge.textContent    = '₿🐸 DUAL MODE';
-              pairBadge.style.background = '#d2992233';
-              pairBadge.style.color      = '#d29922';
-              pairBadge.style.border     = '1px solid #d2992255';
+              if (regime === 'RANGE') {
+                pairBadge.textContent    = '₿🐸 RANGE MODE';
+                pairBadge.style.background = '#f8514933';
+                pairBadge.style.color      = '#f85149';
+                pairBadge.style.border     = '1px solid #f8514955';
+              } else {
+                pairBadge.textContent    = '₿🐸 DUAL MODE';
+                pairBadge.style.background = '#d2992233';
+                pairBadge.style.color      = '#d29922';
+                pairBadge.style.border     = '1px solid #d2992255';
+              }
             } else {
               pairBadge.textContent    = '🐸 MEME MOMENTUM MODE';
               pairBadge.style.background = '#3fb95033';

@@ -803,27 +803,30 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
   // Get regime from state (set during entry)
   const positionRegime = state.lastRegime || "TREND";
   
+  const notionalUSDT = parseFloat((qty * price).toFixed(4));
+
   const position = {
     side,
     symbol: tradeSymbol,
     entryPrice:   price,
     size:         qty,
     leverage,
+    notionalUSDT,          // nilai posisi dalam USDT (qty × harga)
     stopLoss,
     takeProfit,
     liqPrice,
-    trailingHigh: price,   // untuk trailing stop LONG
-    trailingLow:  price,   // untuk trailing stop SHORT
-    trailingTP:   takeProfit, // untuk trailing TP dinamis
-    tpTrailPct:   config.TAKE_PROFIT_PCT * 0.5, // 50% dari TP awal untuk trailing
-    breakevenSet: false,  // flag auto breakeven
-    lockLevel:    undefined, // level lock profit aktif
-    momentumWeakCount: 0,  // counter untuk early exit momentum
+    trailingHigh: price,
+    trailingLow:  price,
+    trailingTP:   takeProfit,
+    tpTrailPct:   config.TAKE_PROFIT_PCT * 0.5,
+    breakevenSet: false,
+    lockLevel:    undefined,
+    momentumWeakCount: 0,
     openTime:     new Date().toISOString(),
-    regime:       positionRegime, // Store regime at entry time
+    regime:       positionRegime,
   };
 
-  log("INFO", `📊 Position opened in ${positionRegime} mode`);
+  log("INFO", `📊 Position opened in ${positionRegime} mode | Notional: ${notionalUSDT.toFixed(2)} USDT (${qty.toLocaleString()} × ${price})`);
 
   if (state.isDualMode) {
     if (isPepe) {
@@ -836,7 +839,7 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
   state.activePosition = position;
 
   saveState();
-  recordTrade("OPEN", side, price, qty, leverage, liqPrice);
+  recordTrade("OPEN", side, price, qty, leverage, liqPrice, "", 0, notionalUSDT);
   return state.activePosition;
 }
 
@@ -3881,16 +3884,21 @@ function calcProfitPrediction(indicators, squeezeData, bbData, vwap, vwapPct,
 // ─────────────────────────────────────────────────────────────
 
 function saveState() {
-  fs.writeFileSync(CONFIG.STATE_FILE, JSON.stringify({ activePosition: state.activePosition }, null, 2));
+  fs.writeFileSync(CONFIG.STATE_FILE, JSON.stringify({
+    activePosition:   state.activePosition,
+    compoundedBalance,
+    initialBalance:   state.initialBalance,
+  }, null, 2));
 }
 
 function saveStats() {
   fs.writeFileSync(CONFIG.STATS_FILE, JSON.stringify(stats, null, 2));
 }
 
-function recordTrade(type, side, price, size, leverage, liqPrice, reason = "", pnlUSDT = 0) {
+function recordTrade(type, side, price, size, leverage, liqPrice, reason = "", pnlUSDT = 0, notionalUSDT = null) {
   const trade = {
     type, side, price, size, leverage, liqPrice, reason, pnlUSDT,
+    notionalUSDT: notionalUSDT ?? parseFloat((size * price).toFixed(4)),
     time: new Date().toISOString(),
   };
   tradeLog.push(trade);
@@ -4007,6 +4015,14 @@ function loadPersistedData() {
       if (saved.activePosition) {
         state.activePosition = saved.activePosition;
         log("INFO", `Posisi aktif dipulihkan dari file: ${saved.activePosition.side} @ ${saved.activePosition.entryPrice}`);
+      }
+      // Restore compoundedBalance agar P&L tidak reset ke -18 setiap PM2 reload
+      if (saved.compoundedBalance && saved.compoundedBalance > 0) {
+        compoundedBalance = saved.compoundedBalance;
+        log("INFO", `compoundedBalance dipulihkan: ${compoundedBalance.toFixed(4)} USDT`);
+      }
+      if (saved.initialBalance && saved.initialBalance > 0) {
+        state.initialBalance = saved.initialBalance;
       }
     }
     if (fs.existsSync(CONFIG.STATS_FILE)) {
@@ -4386,12 +4402,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
               <th style="text-align:right;padding:4px 8px">Harga</th>
               <th style="text-align:right;padding:4px 8px">Size</th>
               <th style="text-align:right;padding:4px 8px">Leverage</th>
+              <th style="text-align:right;padding:4px 8px">Notional</th>
               <th style="text-align:right;padding:4px 8px">PnL (USDT)</th>
               <th style="text-align:left;padding:4px 8px">Alasan</th>
             </tr>
           </thead>
           <tbody id="trade-tbody">
-            <tr><td colspan="8" style="text-align:center;color:#8b949e;padding:16px">Belum ada transaksi</td></tr>
+            <tr><td colspan="9" style="text-align:center;color:#8b949e;padding:16px">Belum ada transaksi</td></tr>
           </tbody>
         </table>
       </div>
@@ -5131,6 +5148,20 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (d.type === 'reset') {
         setBotRunning(false);
         addLog({ level: 'INFO', msg: '↺ Data simulasi direset — klik Start Bot untuk mulai lagi' });
+        // Bersihkan UI langsung tanpa reload
+        document.getElementById('position-content').innerHTML = '<div class="no-pos">Tidak ada posisi aktif</div>';
+        const tbody = document.getElementById('trade-tbody');
+        if (tbody) tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#8b949e;padding:16px">Belum ada transaksi</td></tr>';
+        const pnlEl = document.getElementById('pnl');
+        if (pnlEl) { pnlEl.textContent = '+0.0000'; pnlEl.className = 'stat-num green'; }
+        document.getElementById('wins').textContent    = '0';
+        document.getElementById('losses').textContent  = '0';
+        document.getElementById('winrate').textContent = '0%';
+        const streakEl = document.getElementById('loss-streak-warning');
+        if (streakEl) streakEl.style.display = 'none';
+        const phBadge = document.getElementById('phase-badge');
+        if (phBadge) { phBadge.textContent = '-- RESET --'; phBadge.style.background = '#21262d'; phBadge.style.color = '#8b949e'; }
+        document.getElementById('hardstop-badge').style.display = 'none';
       }
       if (d.type === 'started') {
         document.getElementById('hardstop-badge').style.display = 'none';
@@ -5290,10 +5321,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       // Fitur baru: Trailing TP
       const trailingTPVal = pos.trailingTP ? formatPepePrice(pos.trailingTP) : '--';
       
+      const notionalStr = pos.notionalUSDT
+        ? pos.notionalUSDT.toFixed(2) + ' USDT'
+        : (pos.size && pos.entryPrice ? (pos.size * pos.entryPrice).toFixed(2) + ' USDT' : '--');
       document.getElementById('position-content').innerHTML = \`
         <div class="row"><span class="label">Side</span><span class="val \${pos.side === 'LONG' ? 'green' : 'red'}">\${pos.side}</span></div>
         <div class="row"><span class="label">Entry</span><span class="val">\${formatPepePrice(pos.entryPrice)}</span></div>
         <div class="row"><span class="label">Leverage</span><span class="val">\${pos.leverage}x</span></div>
+        <div class="row"><span class="label">Notional</span><span class="val blue" title="Nilai posisi: qty x harga entry">\${notionalStr}</span></div>
         <div class="row"><span class="label">Stop Loss</span><span class="val yellow">\${formatPepePrice(pos.stopLoss)}</span></div>
         <div class="row"><span class="label">Take Profit</span><span class="val green">\${formatPepePrice(pos.takeProfit)}</span></div>
         <div class="row"><span class="label">PnL</span><span class="val \${pnlClass}">\${fmtPct(pnlPct)}</span></div>
@@ -5584,6 +5619,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         const pnlCls  = isOpen ? 'val' : (t.pnlUSDT >= 0 ? 'green' : 'red');
         const sideCls = t.side === 'LONG' ? 'green' : 'red';
         const typeCls = isOpen ? 'blue' : (t.pnlUSDT >= 0 ? 'green' : 'red');
+        const notional = t.notionalUSDT
+          ? t.notionalUSDT.toFixed(2)
+          : (t.size && t.price ? (t.size * t.price).toFixed(2) : '—');
         return \`<tr style="border-bottom:1px solid #21262d">
           <td style="padding:4px 8px;color:#8b949e;white-space:nowrap">\${tStr}</td>
           <td style="padding:4px 8px" class="\${typeCls}">\${t.type}</td>
@@ -5591,6 +5629,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           <td style="padding:4px 8px;text-align:right">\${formatPepePrice(t.price)}</td>
           <td style="padding:4px 8px;text-align:right">\${Number(t.size).toLocaleString()}</td>
           <td style="padding:4px 8px;text-align:right">\${t.leverage}x</td>
+          <td style="padding:4px 8px;text-align:right;color:#58a6ff;font-weight:600">\${notional} USDT</td>
           <td style="padding:4px 8px;text-align:right" class="\${pnlCls}">\${pnlStr}</td>
           <td style="padding:4px 8px;color:#8b949e;font-size:11px">\${t.reason || '—'}</td>
         </tr>\`;
@@ -5705,7 +5744,16 @@ function startDashboard() {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ state: { lastPrice: state.lastPrice, activePosition: state.activePosition }, stats }));
     } else if (req.url === "/api/reset" && req.method === "POST") {
-      // Reset data simulasi saja — bot TIDAK otomatis restart
+      // ── FULL RESET — bot TIDAK otomatis restart ──────────────
+      // 1. Reset balance & compound
+      compoundedBalance      = CONFIG.POSITION_SIZE_USDT;
+      state.initialBalance   = compoundedBalance;
+      state.currentBalance   = compoundedBalance;
+      state.peakBalance      = compoundedBalance;
+      state.lowestBalance    = compoundedBalance;
+      state.balanceHistory   = [];
+
+      // 2. Reset semua stats — termasuk win rate tracker
       stats.totalPnL    = 0;
       stats.totalTrades = 0;
       stats.wins        = 0;
@@ -5715,19 +5763,45 @@ function startDashboard() {
       stats.maxDrawdown = 0;
       stats.bestTrade   = 0;
       stats.worstTrade  = 0;
+      stats.recentTrades  = [];
+      stats.winRate7d     = 0;
+      stats.avgProfitPct  = 0;
+      stats.avgLossPct    = 0;
+      stats.currentStreak = 0;
+      stats.startTime     = new Date().toISOString();
+
+      // 3. Reset posisi aktif dan trade log
       state.activePosition   = null;
-      state.currentBalance   = state.initialBalance;
-      state.peakBalance      = state.initialBalance;
-      state.balanceHistory   = [];
-      smcState.lastEntryTime = 0;
+      state.pepePosition     = null;
+      state.btcPosition      = null;
       tradeLog.length        = 0;
+
+      // 4. Reset SMC state dan cooldown
+      smcState.lastEntryTime  = 0;
+      smcState.lastSLPrice    = null;
+      smcState.pendingSignal  = null;
+      smcState.pendingCandleCount = 0;
+      state.pausedUntil       = null;
+      state.pauseReason       = "";
+
+      // 5. Reset Phase Indicator
+      state.phase             = null;
+      state.phaseCooldownLeft = 0;
+
+      // 6. Tulis ulang file JSON supaya PM2 reload tidak load data lama
+      fs.writeFileSync(CONFIG.TRADES_FILE, "[]");
       saveStats();
       saveState();
-      broadcastSSE({ type: "stats", ...stats });
+
+      // 7. Broadcast update ke dashboard
+      broadcastSSE({ type: "stats", ...stats, compoundBalance: compoundedBalance });
+      broadcastSSE({ type: "trade", trade: null, tradeLog: [] });
       broadcastSSE({ type: "reset", message: "Data simulasi direset — klik Start Bot untuk mulai lagi" });
+      broadcastSSE({ type: "phase", phase: null });
+
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, message: "Data simulasi direset. Klik Start Bot untuk mulai trading." }));
-      log("INFO", "Data simulasi direset via dashboard (bot masih berhenti)");
+      log("INFO", `Data simulasi direset via dashboard — balance: ${compoundedBalance} USDT (bot masih berhenti)`);
     } else if (req.url === "/api/topup" && req.method === "POST" && CONFIG.DRY_RUN) {
       // Top up saldo simulasi — hanya DRY_RUN
       let body = "";
@@ -5931,9 +6005,13 @@ async function main() {
       log("WARN", `Gagal ambil balance awal: ${err.message}`);
     }
   } else {
-    state.initialBalance = CONFIG.POSITION_SIZE_USDT * 10;
-    state.currentBalance = state.initialBalance;
-    log("INFO", `[DRY RUN] Balance simulasi: ${state.initialBalance} USDT`);
+    // Pakai compoundedBalance yang sudah dipulihkan dari state.json (atau default POSITION_SIZE_USDT)
+    // Jangan hardcode ×10 karena menyebabkan P&L selalu -18 setelah reload
+    if (!state.initialBalance || state.initialBalance <= 0) {
+      state.initialBalance = compoundedBalance;
+    }
+    state.currentBalance = compoundedBalance + (stats.totalPnL || 0);
+    log("INFO", `[DRY RUN] Balance simulasi: ${compoundedBalance.toFixed(4)} USDT | P&L tersimpan: ${(stats.totalPnL || 0).toFixed(4)} USDT`);
   }
 
   // Setup margin mode (live only)

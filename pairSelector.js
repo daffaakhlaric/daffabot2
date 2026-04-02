@@ -396,8 +396,10 @@ async function selectPair() {
    
   console.log(`[PairSelector] Selected: ${selected}`);
   console.log(`[PairSelector] Market State: ${marketState}`);
+  console.log(`[PairSelector] Selected: ${selected}`);
   console.log(`[PairSelector] Reason: ${reason}`);
   console.log(`[PairSelector] BTC Score: ${btcAnalysis.score} | PEPE Score: ${pepeAnalysis.score}`);
+  console.log(`[PairSelector] Hype State: ${hypeAnalysis?.state || 'NONE'} | Hype Score: ${hypeAnalysis?.hypeScore || 0}`);
   
   return {
     selected,

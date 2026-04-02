@@ -23,6 +23,7 @@ require("dotenv").config();
 // ── ADAPTIVE AUTO PAIR TRADING SYSTEM ───────────────────────────
 const pairSelector    = require("./pairSelector");
 const btcStrategy     = require("./btcStrategy");
+const { resetHypeState } = require("./hypeDetector");
 const { evaluatePhase, phaseLogLine, PHASES } = require("./phaseIndicator");
 
 // ── Bypass DNS hijacking ISP (Indosat/IOH memblokir api.bitget.com) ──────────
@@ -155,7 +156,7 @@ const CONFIG = {
   SL_COOLDOWN_CANDLES: 3,    // tunggu 3 candle (≈30 detik di 1m) setelah SL
 
   // ── ADAPTIVE AUTO PAIR TRADING SYSTEM ──────────────────────────
-  ADAPTIVE_PAIR_ENABLED:    false,      // Disabled - use fixed symbol
+  ADAPTIVE_PAIR_ENABLED:    true,       // Enabled - auto pair selection
   DUAL_TRADING_MODE:        false,      // Disabled - single pair only
                                          // Jika false: switching antara BTC dan PEPE
   PAIR_SELECTION_INTERVAL:  300000,     // 5 menit - interval evaluasi ulang pair
@@ -2529,7 +2530,6 @@ async function tradingLoop() {
   }
 
   // ── ADAPTIVE PAIR SELECTION ─────────────────────────────────
-  // Evaluate pair selection periodically
   if (CONFIG.ADAPTIVE_PAIR_ENABLED) {
     const timeSinceLastSelection = Date.now() - state.lastPairSelection;
     
@@ -6405,6 +6405,10 @@ async function validateConfig() {
 
 async function main() {
   printBanner();
+  
+  // Reset hype state on bot start to allow fresh pair selection
+  resetHypeState();
+  log("INFO", "🔄 Hype state reset - fresh pair selection");
 
   log("INFO", `Mode        : ${CONFIG.DRY_RUN ? C.yellow + "DRY RUN (simulasi)" + C.reset : C.red + "LIVE TRADING!" + C.reset}`);
   log("INFO", `Pair        : ${CONFIG.ADAPTIVE_PAIR_ENABLED ? C.cyan + "ADAPTIVE (BTC/PEPE)" + C.reset : CONFIG.SYMBOL}`);

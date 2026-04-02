@@ -959,7 +959,8 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
   } else {
     await setLeverage(leverage, tradeSymbol);
     const orderSide = side === "LONG" ? "buy" : "sell";
-    const res = await bitgetRequest("POST", "/api/v2/mix/order/place-order", {}, {
+    // marginMode WAJIB diset sesuai config
+    const orderParams = {
       symbol:      tradeSymbol,
       productType: CONFIG.PRODUCT_TYPE,
       marginMode:  CONFIG.MARGIN_MODE,
@@ -969,7 +970,8 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
       tradeSide:   "open",
       orderType:   "market",
       leverage:    leverage.toString(),
-    });
+    };
+    const res = await bitgetRequest("POST", "/api/v2/mix/order/place-order", {}, orderParams);
     if (res.code !== "00000") {
       log("ERROR", `Gagal buka order: ${res.msg} | Symbol: ${tradeSymbol} | Qty: ${qty} | Lev: ${leverage}x`);
       // Check if there's a conflicting position
@@ -3437,8 +3439,18 @@ async function tradingLoop() {
         const leverage = dynamicSizing.leverage;
         const notional = dynamicSizing.notional;
         const isPepe = CONFIG.SYMBOL.includes("PEPE");
-        const CONTRACT_SIZE = isPepe ? 1000 : 1;
-        const orderQty = Math.floor((notional / price) / CONTRACT_SIZE) * CONTRACT_SIZE;
+        // BTC: 1 contract = 1 USDT notional (NOT 1 BTC!)
+        // Minimum order is ~5 USDT, so calculate qty correctly
+        let orderQty;
+        if (isPepe) {
+          const CONTRACT_SIZE = 1000;
+          orderQty = Math.floor((notional / price) / CONTRACT_SIZE) * CONTRACT_SIZE;
+          if (orderQty < CONTRACT_SIZE) orderQty = CONTRACT_SIZE;
+        } else {
+          // BTC: qty = notional (in USDT), since 1 contract = 1 USDT
+          orderQty = Math.max(5, Math.floor(notional)); // min 5 USDT
+        }
+        log("INFO", `📊 BTC Order: Notional=${notional} USDT → Qty=${orderQty} (price=${price})`);
         
         const tpPrice = rangeTradeSide === "BULLISH"
           ? price * (1 + rangeTpPct / 100)

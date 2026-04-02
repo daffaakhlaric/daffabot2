@@ -196,6 +196,7 @@ let state = {
   currentBalance:   0,
   available:        0,
   unrealizedPnL:    0,
+  totalAccountBalance: 0,  // Total USDT balance from all accounts
   // Fitur #7: Auto Pause
   pausedUntil:      null,
   pauseReason:      "",
@@ -647,6 +648,46 @@ async function getAccountInfo() {
   };
 }
 
+/**
+ * Get ALL USDT-M futures account balance
+ * Endpoint: /api/v2/mix/account/accounts (all futures balances)
+ */
+async function getAllAccountBalances() {
+  try {
+    const res = await bitgetRequest("GET", "/api/v2/mix/account/accounts", {
+      productType: "usdt-futures"
+    });
+    if (res.code !== "00000") throw new Error(res.msg || "Unknown error");
+    
+    // Find USDT balance in futures
+    const usdtData = res.data?.find((c) => c.currency === "USDT");
+    if (!usdtData) return { totalBalance: 0, available: 0 };
+    
+    const totalBalance = parseFloat(usdtData.available || "0") + parseFloat(usdtData.frozen || "0");
+    const available = parseFloat(usdtData.available || "0");
+    
+    return { totalBalance, available };
+  } catch (err) {
+    log("WARN", `Gagal get all balances: ${err.message}`);
+    return { totalBalance: 0, available: 0 };
+  }
+}
+
+/**
+ * Calculate auto position size based on account balance (LIVE mode only)
+ * Balance  <$60  → $4
+ * Balance  ~$80  → $5  
+ * Balance  ~$100 → $6-7
+ * Balance  ~$150 → $8-10
+ */
+function calculateAutoPositionSize(balance) {
+  if (balance < 60) return 4;
+  if (balance < 80) return 5;
+  if (balance < 100) return 6;
+  if (balance < 150) return 8;
+  return Math.min(10, Math.floor(balance * 0.07)); // Max 10% of balance
+}
+
 async function getActivePosition() {
   const res = await bitgetRequest("GET", "/api/v2/mix/position/single-position", {
     symbol:      CONFIG.SYMBOL,
@@ -743,6 +784,101 @@ function calcOrderSizeByRisk(price, slPct) {
     `qty=${finalQty} notional=${notional.toFixed(2)}USDT lev=${leverage}x`
   );
   return { qty: finalQty, leverage };
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════
+ * ADAPTIVE POSITION SIZING & DYNAMIC LEVERAGE SYSTEM
+ * ═══════════════════════════════════════════════════════════════
+ */
+function calcDynamicPositionSize(balance, phase, confidence, lossStreak) {
+  // STEP 1: BASE NOTIONAL FROM BALANCE
+  let baseNotional;
+  if (balance <= 60) baseNotional = 4;
+  else if (balance <= 80) baseNotional = 5;
+  else if (balance <= 100) baseNotional = 6.5;
+  else if (balance <= 150) baseNotional = 9;
+  else baseNotional = balance * 0.06;
+
+  // STEP 2: PHASE MULTIPLIER
+  let phaseMultiplier;
+  switch (phase) {
+    case 'TRAINING': phaseMultiplier = 0.7; break;
+    case 'STABLE': phaseMultiplier = 1.0; break;
+    case 'PROFIT': phaseMultiplier = 1.3; break;
+    case 'MARKET_BAD': phaseMultiplier = 0.5; break;
+    default: phaseMultiplier = 1.0;
+  }
+
+  // STEP 3: CONFIDENCE MULTIPLIER
+  let confidenceMultiplier;
+  if (confidence < 50) confidenceMultiplier = 0.6;
+  else if (confidence <= 70) confidenceMultiplier = 1.0;
+  else confidenceMultiplier = 1.2;
+
+  // STEP 4: CALCULATE FINAL NOTIONAL
+  let notional = baseNotional * phaseMultiplier * confidenceMultiplier;
+
+  // STEP 5: SAFETY CAP (MANDATORY)
+  if (notional > balance * 0.15) {
+    notional = balance * 0.15;
+  }
+  if (notional < 2) {
+    notional = 2;
+  }
+
+  // STEP 6: DYNAMIC LEVERAGE SYSTEM
+  let leverage = 5; // default
+  
+  // Base leverage by phase
+  switch (phase) {
+    case 'MARKET_BAD': leverage = 3; break;
+    case 'TRAINING': leverage = 4; break;
+    case 'STABLE': leverage = 5; break;
+    case 'PROFIT': leverage = 6; break;
+    default: leverage = 5;
+  }
+
+  // STEP 7: CONFIDENCE ADJUSTMENT (LEVERAGE)
+  if (confidence < 50) leverage -= 1;
+  if (confidence > 75) leverage += 1;
+
+  // Clamp leverage
+  if (leverage < 2) leverage = 2;
+  if (leverage > 7) leverage = 7;
+
+  // STEP 8: LOSS STREAK PROTECTION
+  if (lossStreak >= 2) {
+    notional *= 0.7;
+    leverage -= 1;
+  }
+  if (lossStreak >= 3) {
+    notional *= 0.5;
+    leverage = 2;
+  }
+
+  // Final clamp
+  if (leverage < 2) leverage = 2;
+  if (leverage > 7) leverage = 7;
+
+  // Determine risk level
+  let riskLevel = 'MEDIUM';
+  if (leverage <= 3 || phase === 'MARKET_BAD') riskLevel = 'LOW';
+  else if (leverage >= 6 && phase === 'PROFIT') riskLevel = 'HIGH';
+
+  // Logging
+  log("INFO",
+    `[POSITION] Balance=${balance.toFixed(2)} | Phase=${phase} | Confidence=${confidence}\n` +
+    `  Base=${baseNotional.toFixed(2)} | Phase×${phaseMultiplier} | Conf×${confidenceMultiplier} | Final=${notional.toFixed(2)}\n` +
+    `  Leverage=${leverage}x | Risk=${riskLevel}`
+  );
+
+  return {
+    notional: parseFloat(notional.toFixed(2)),
+    leverage,
+    risk_level: riskLevel,
+    reason: `Phase=${phase} Conf=${confidence} Streak=${lossStreak}`
+  };
 }
 
 /** Hitung liquidation price */
@@ -1405,6 +1541,7 @@ async function fetchAndUpdateBalance() {
   if (CONFIG.DRY_RUN) {
     state.currentBalance = compoundedBalance + stats.totalPnL;
     if (!state.initialBalance) state.initialBalance = compoundedBalance;
+    state.totalAccountBalance = 0; // Not needed in DRY_RUN
   } else {
     try {
       const info = await getAccountInfo();
@@ -1412,6 +1549,18 @@ async function fetchAndUpdateBalance() {
       state.available      = info.available;
       state.unrealizedPnL  = info.unrealizedPnL;
       if (!state.initialBalance) state.initialBalance = info.equity;
+      
+      // Get all account balances for auto position sizing
+      const allBalances = await getAllAccountBalances();
+      state.totalAccountBalance = allBalances.totalBalance;
+      
+      // Auto-adjust position size based on balance
+      const newPositionSize = calculateAutoPositionSize(state.totalAccountBalance);
+      if (newPositionSize !== CONFIG.POSITION_SIZE_USDT) {
+        CONFIG.POSITION_SIZE_USDT = newPositionSize;
+        CONFIG.PEPE_SPECIFIC_CONFIG.POSITION_SIZE_USDT = newPositionSize;
+        log("INFO", `💰 Auto position size: ${newPositionSize} (balance: ${state.totalAccountBalance.toFixed(2)})`);
+      }
     } catch (err) {
       log("WARN", `Gagal update saldo: ${err.message}`);
       return;
@@ -1431,6 +1580,7 @@ async function fetchAndUpdateBalance() {
   broadcastSSE({
     type: "balance", currentBalance: state.currentBalance, initialBalance: state.initialBalance,
     available: state.available || state.currentBalance, unrealizedPnL: state.unrealizedPnL || 0,
+    totalAccountBalance: state.totalAccountBalance || 0,
     changeUSDT, changePct, peakBalance: state.peakBalance, lowestBalance: state.lowestBalance,
     drawdown, history: state.balanceHistory.slice(-20),
   });
@@ -2255,19 +2405,29 @@ async function runPepeStrategy(pepeTicker, pepeKlines) {
     }
     
     if (tradeSide) {
-      const leverage = CONFIG.PEPE_SPECIFIC_CONFIG?.LEVERAGE || 20;
       const config = CONFIG.PEPE_SPECIFIC_CONFIG;
       const tpPct = config?.TAKE_PROFIT_PCT || 3;
       const slPct = config?.STOP_LOSS_PCT || 1.5;
       
+      // Adaptive Position Sizing for PEPE
+      const currentBalance = state.totalAccountBalance > 0 
+        ? state.totalAccountBalance 
+        : (CONFIG.DRY_RUN ? compoundedBalance + stats.totalPnL : CONFIG.POSITION_SIZE_USDT * 10);
+      const phase = state.phase?.phase || 'STABLE';
+      const dynamicSizing = calcDynamicPositionSize(currentBalance, phase, 60, stats.lossStreak || 0);
+      const leverage = dynamicSizing.leverage;
+      const notional = dynamicSizing.notional;
+      const CONTRACT_SIZE = 1000;
+      const orderQty = Math.floor((notional / pepePrice) / CONTRACT_SIZE) * CONTRACT_SIZE;
+      
       // Open PEPE position
-      log("TRADE", `🚀 PEPE ENTRY ${tradeSide} | Price: ${pepePrice.toFixed(8)} | Lev: ${leverage}x`);
+      log("TRADE", `🚀 PEPE ENTRY ${tradeSide} | Price: ${pepePrice.toFixed(8)} | Lev: ${leverage}x | Notional: ${notional}`);
       
       const opened = await openPosition(
         tradeSide === "LONG" ? "LONG" : "SHORT",
         leverage,
         pepePrice,
-        null,
+        orderQty,
         "PEPEUSDT",
         pepeIndicators
       );
@@ -3185,8 +3345,16 @@ async function tradingLoop() {
         const rangeTpPct = 0.6;
         const rangeSlPct = 0.4;
         
-        const leverage = CONFIG.DEFAULT_LEVERAGE;
-        const orderQty = calcOrderSize(price, leverage);
+        // Adaptive Position Sizing for RANGE mode
+        const currentBalance = state.totalAccountBalance > 0 
+          ? state.totalAccountBalance 
+          : (CONFIG.DRY_RUN ? compoundedBalance + stats.totalPnL : CONFIG.POSITION_SIZE_USDT * 10);
+        const dynamicSizing = calcDynamicPositionSize(currentBalance, 'STABLE', 60, stats.lossStreak || 0);
+        const leverage = dynamicSizing.leverage;
+        const notional = dynamicSizing.notional;
+        const CONTRACT_SIZE = 1000;
+        const orderQty = Math.floor((notional / price) / CONTRACT_SIZE) * CONTRACT_SIZE;
+        
         const tpPrice = rangeTradeSide === "BULLISH"
           ? price * (1 + rangeTpPct / 100)
           : price * (1 - rangeTpPct / 100);
@@ -3619,6 +3787,26 @@ async function tradingLoop() {
         );
         return; // skip entry
       }
+
+      // ═══════════════════════════════════════════════════════════════
+      // ADAPTIVE POSITION SIZING - Dynamic calculation before entry
+      // ═══════════════════════════════════════════════════════════════
+      const currentBalance = state.totalAccountBalance > 0 
+        ? state.totalAccountBalance 
+        : (CONFIG.DRY_RUN ? compoundedBalance + stats.totalPnL : CONFIG.POSITION_SIZE_USDT * 10);
+      const phase = state.phase?.phase || 'STABLE';
+      const confidence = claudeFilter.confidence || 60;
+      const streak = stats.lossStreak || 0;
+      
+      const dynamicSizing = calcDynamicPositionSize(currentBalance, phase, confidence, streak);
+      
+      // Override leverage and orderQty with dynamic values
+      leverage = dynamicSizing.leverage;
+      const notional = dynamicSizing.notional;
+      const qty = notional / price;
+      const CONTRACT_SIZE = 1000;
+      orderQty = Math.floor(qty / CONTRACT_SIZE) * CONTRACT_SIZE;
+      if (orderQty < CONTRACT_SIZE) orderQty = CONTRACT_SIZE;
 
       const fvg = tradeSide === "BULLISH" ? fvgData.lastBullFVG : fvgData.lastBearFVG;
       const smcSetup = {
@@ -4326,6 +4514,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         <div class="row"><span class="label">Terendah</span><span id="bal-lowest" class="red">--</span></div>
         <div class="row"><span class="label">Drawdown</span><span id="bal-drawdown" class="yellow">--</span></div>
       </div>
+      <div id="auto-pos-size" style="display:none;margin-top:14px;padding:10px;background:#3fb95022;border:1px solid #3fb95055;border-radius:6px;text-align:center">
+        <span style="color:#3fb950;font-size:12px">🤖 AUTO POSITION: </span>
+        <span id="bal-total-account" style="color:#58a6ff;font-weight:bold;font-size:14px">--</span>
+        <span style="color:#8b949e;font-size:12px"> USDT → Size: </span>
+        <span id="bal-pos-size" style="color:#e3b341;font-weight:bold;font-size:14px">--</span>
+        <span style="color:#8b949e;font-size:12px"> USDT/trade</span>
+      </div>
       <div style="margin-top:12px"><div style="font-size:10px;color:#8b949e;margin-bottom:4px">RIWAYAT SALDO</div><canvas id="balanceChart" height="50" style="width:100%"></canvas></div>
       <!-- Top Up simulasi — hanya muncul saat DRY_RUN -->
       <div id="topup-panel" style="display:none;margin-top:14px;padding-top:12px;border-top:1px solid #30363d">
@@ -4993,6 +5188,15 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       ctx.strokeStyle = isUp ? '#3fb950' : '#f85149'; ctx.lineWidth=2; ctx.stroke();
     }
 
+    // Frontend version of calculateAutoPositionSize for display
+    function calculateAutoPositionSize(balance) {
+      if (balance < 60) return 4;
+      if (balance < 80) return 5;
+      if (balance < 100) return 6;
+      if (balance < 150) return 8;
+      return Math.min(10, Math.floor(balance * 0.07));
+    }
+    
     function handleBalance(d) {
       document.getElementById('bal-current').textContent = Number(d.currentBalance).toFixed(4);
       document.getElementById('bal-initial').textContent = Number(d.initialBalance).toFixed(4) + ' USDT';
@@ -5009,6 +5213,17 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       const ddEl = document.getElementById('bal-drawdown');
       ddEl.textContent = Number(d.drawdown).toFixed(2) + '%';
       ddEl.className = d.drawdown > 10 ? 'red' : d.drawdown > 5 ? 'yellow' : 'green';
+      
+      // Auto position size display (LIVE mode only)
+      const autoPosEl = document.getElementById('auto-pos-size');
+      if (d.totalAccountBalance > 0) {
+        autoPosEl.style.display = 'block';
+        document.getElementById('bal-total-account').textContent = Number(d.totalAccountBalance).toFixed(2);
+        document.getElementById('bal-pos-size').textContent = calculateAutoPositionSize(d.totalAccountBalance).toFixed(2);
+      } else {
+        autoPosEl.style.display = 'none';
+      }
+      
       if (d.history) { balHistory = d.history; renderBalanceChart(); }
     }
 
@@ -5844,6 +6059,7 @@ function startDashboard() {
         initialBalance: state.initialBalance,
         available:      state.available || state.currentBalance,
         unrealizedPnL:  state.unrealizedPnL || 0,
+        totalAccountBalance: state.totalAccountBalance || 0,
         peakBalance:    state.peakBalance   || state.currentBalance,
         lowestBalance:  state.lowestBalance || state.currentBalance,
         changeUSDT:     state.currentBalance - state.initialBalance,

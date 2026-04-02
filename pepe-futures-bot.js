@@ -155,8 +155,8 @@ const CONFIG = {
   SL_COOLDOWN_CANDLES: 3,    // tunggu 3 candle (≈30 detik di 1m) setelah SL
 
   // ── ADAPTIVE AUTO PAIR TRADING SYSTEM ──────────────────────────
-  ADAPTIVE_PAIR_ENABLED:    true,       // Aktifkan auto pair selection
-  DUAL_TRADING_MODE:        true,       // Jika true: trading BTC + PEPE bersamaan saat PEPE trending
+  ADAPTIVE_PAIR_ENABLED:    false,      // Disabled - use fixed symbol
+  DUAL_TRADING_MODE:        false,      // Disabled - single pair only
                                          // Jika false: switching antara BTC dan PEPE
   PAIR_SELECTION_INTERVAL:  300000,     // 5 menit - interval evaluasi ulang pair
   BTC_SPECIFIC_CONFIG: {
@@ -756,13 +756,18 @@ async function setMarginMode() {
 
 /**
  * Hitung jumlah kontrak dari USDT
- * Bitget PEPE contract: 1 kontrak = 1000 PEPE, minimum order = 1000 PEPE
+ * Bitget PEPE contract: 1 kontrak = 1000 PEPE
+ * Bitget BTC contract: 1 kontrak = 1 USDT (for USDT-M)
  */
 function calcOrderSize(price, leverage) {
-  // BUG #1 FIX: CONTRACT_SIZE = 1000 (bukan 1)
-  // Bitget PEPEUSDT USDT-M: 1 kontrak = 1000 PEPE, minimum 1 kontrak
-  const CONTRACT_SIZE  = 1000;
-  const MIN_QTY        = 1000;
+  // Detect symbol and use appropriate contract size
+  const isPepe = (CONFIG.SYMBOL || "PEPEUSDT").includes("PEPE");
+  
+  // PEPE: 1 kontrak = 1000 PEPE, minimum 1 kontrak
+  // BTC: 1 kontrak = 1 USDT (for USDT-M perpetual)
+  const CONTRACT_SIZE = isPepe ? 1000 : 1;
+  const MIN_QTY = isPepe ? 1000 : 5;  // BTC minimum ~5 USDT
+  
   const phaseMultiplier2  = state.phase?.riskMultiplier ?? 1.0;
   const dryRunMultiplier2 = CONFIG.DRY_RUN ? (getAdaptiveRisk(stats.lossStreak || 0).riskMultiplier) : 1.0;
   const riskMultiplier    = phaseMultiplier2 * dryRunMultiplier2;
@@ -770,7 +775,7 @@ function calcOrderSize(price, leverage) {
   const qty       = notional / price;
   const contracts = Math.max(1, Math.floor(qty / CONTRACT_SIZE));
   const finalQty  = contracts * CONTRACT_SIZE;
-  log("INFO", `Kalkulasi order: notional=${notional.toFixed(2)} USDT | qty=${qty.toFixed(0)} PEPE | kontrak=${contracts} | final=${finalQty} PEPE`);
+  log("INFO", `Kalkulasi order: ${isPepe ? 'PEPE' : 'BTC'} | notional=${notional.toFixed(2)} USDT | qty=${qty.toFixed(4)} | contracts=${contracts} | final=${finalQty}`);
   return finalQty;
 }
 
@@ -780,7 +785,8 @@ function calcOrderSize(price, leverage) {
  * qty × price × slPct% = riskUsdt
  */
 function calcOrderSizeByRisk(price, slPct) {
-  const CONTRACT_SIZE  = 1000;
+  const isPepe = (CONFIG.SYMBOL || "PEPEUSDT").includes("PEPE");
+  const CONTRACT_SIZE = isPepe ? 1000 : 1;
   // Phase multiplier (both modes) × DRY_RUN adaptive multiplier on loss streak
   const phaseMultiplier    = state.phase?.riskMultiplier ?? 1.0;
   const dryRunMultiplier   = CONFIG.DRY_RUN ? (getAdaptiveRisk(stats.lossStreak || 0).riskMultiplier) : 1.0;
@@ -911,6 +917,9 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
   const isPepe = tradeSymbol === "PEPEUSDT";
   const config = isPepe ? CONFIG.PEPE_SPECIFIC_CONFIG : CONFIG.BTC_SPECIFIC_CONFIG;
   
+  // Log untuk debugging
+  log("INFO", `📊 Order: Symbol=${tradeSymbol} isPepe=${isPepe} Price=${price} Lev=${leverage}`);
+  
   const qty = overrideQty || calcOrderSize(price, leverage);
   const liqPrice = calcLiquidationPrice(side, price, leverage);
   const stopLoss = side === "LONG"
@@ -942,7 +951,7 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
       leverage:    leverage.toString(),
     });
     if (res.code !== "00000") {
-      log("ERROR", `Gagal buka order: ${res.msg}`);
+      log("ERROR", `Gagal buka order: ${res.msg} | Symbol: ${tradeSymbol} | Qty: ${qty} | Lev: ${leverage}x`);
       return null;
     }
     log("TRADE", `Order sukses! Order ID: ${res.data?.orderId}`);
@@ -3374,7 +3383,8 @@ async function tradingLoop() {
         const dynamicSizing = calcDynamicPositionSize(currentBalance, 'STABLE', 60, stats.lossStreak || 0);
         const leverage = dynamicSizing.leverage;
         const notional = dynamicSizing.notional;
-        const CONTRACT_SIZE = 1000;
+        const isPepe = CONFIG.SYMBOL.includes("PEPE");
+        const CONTRACT_SIZE = isPepe ? 1000 : 1;
         const orderQty = Math.floor((notional / price) / CONTRACT_SIZE) * CONTRACT_SIZE;
         
         const tpPrice = rangeTradeSide === "BULLISH"
@@ -3825,10 +3835,13 @@ async function tradingLoop() {
       // Override leverage and orderQty with dynamic values
       leverage = dynamicSizing.leverage;
       const notional = dynamicSizing.notional;
+      const isPepe = CONFIG.SYMBOL.includes("PEPE");
+      const CONTRACT_SIZE = isPepe ? 1000 : 1;
       const qty = notional / price;
-      const CONTRACT_SIZE = 1000;
       orderQty = Math.floor(qty / CONTRACT_SIZE) * CONTRACT_SIZE;
       if (orderQty < CONTRACT_SIZE) orderQty = CONTRACT_SIZE;
+      
+      log("INFO", `📊 Dynamic Position: Balance=${currentBalance.toFixed(2)} Phase=${phase} Notional=${notional.toFixed(2)} Price=${price.toFixed(8)} Qty=${orderQty}`);
 
       const fvg = tradeSide === "BULLISH" ? fvgData.lastBullFVG : fvgData.lastBearFVG;
       const smcSetup = {

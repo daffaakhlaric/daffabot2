@@ -1565,10 +1565,15 @@ async function fetchAndUpdateBalance() {
       // Get all account balances for auto position sizing
       const allBalances = await getAllAccountBalances();
       
-      // Fallback: use equity if totalAccountBalance is 0
-      state.totalAccountBalance = allBalances.totalBalance > 0 ? allBalances.totalBalance : info.equity;
+      // Use equity as primary balance (most accurate for trading)
+      // Priority: equity > available > allBalances > fallback
+      let bestBalance = info.equity;
+      if (bestBalance <= 0) bestBalance = info.available;
+      if (bestBalance <= 0 && allBalances.totalBalance > 0) bestBalance = allBalances.totalBalance;
+      if (bestBalance <= 0) bestBalance = 30; // fallback minimum
+      state.totalAccountBalance = bestBalance;
       
-      log("INFO", `💰 Balance update - Equity: ${info.equity.toFixed(4)} | Total Account: ${state.totalAccountBalance.toFixed(4)}`)
+      log("INFO", `💰 Balance - Equity: ${info.equity.toFixed(4)} | Available: ${info.available.toFixed(4)} | Total Account: ${allBalances.totalBalance.toFixed(4)} | Used: ${state.totalAccountBalance.toFixed(4)}`);
       
       // Auto-adjust position size based on balance
       const newPositionSize = calculateAutoPositionSize(state.totalAccountBalance);

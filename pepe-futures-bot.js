@@ -3453,12 +3453,10 @@ async function tradingLoop() {
           orderQty = Math.min(maxQty, Math.floor(notional));
           if (orderQty < 5) orderQty = 5; // minimum 5 USDT
         }
-        // Debug balance
-        log("INFO", `📊 BTC Order: Balance=${state.currentBalance} | equity=${state.totalAccountBalance} | Qty=${orderQty} | notional=${notional}`);
-        if (state.currentBalance < 5) {
-          log("ERROR", `Saldo tidak cukup! Balance: ${state.currentBalance}, min order: 5 USDT`);
-          return null;
-        }
+        // Debug balance - force small order to avoid balance issue
+        const safeQty = Math.min(orderQty, 4); // Force max 4 to stay safe
+        log("INFO", `📊 BTC Order: Balance=${state.currentBalance} → Force Qty=${safeQty}`);
+        orderQty = safeQty;
         
         const tpPrice = rangeTradeSide === "BULLISH"
           ? price * (1 + rangeTpPct / 100)

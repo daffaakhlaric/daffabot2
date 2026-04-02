@@ -745,10 +745,11 @@ async function setLeverage(leverage) {
       productType: CONFIG.PRODUCT_TYPE,
       marginCoin:  CONFIG.MARGIN_COIN,
       leverage:    leverage.toString(),
+      marginMode:  "cross",  // Use cross margin to avoid currency mix error
     });
     log("INFO", `✅ Set leverage ${leverage}x for ${CONFIG.SYMBOL}`);
   } catch (err) {
-    log("WARN", `⚠️ Set leverage failed (may already be set): ${err.message}`);
+    log("WARN", `⚠️ Set leverage failed: ${err.message} - continuing anyway`);
   }
 }
 
@@ -965,6 +966,13 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
     });
     if (res.code !== "00000") {
       log("ERROR", `Gagal buka order: ${res.msg} | Symbol: ${tradeSymbol} | Qty: ${qty} | Lev: ${leverage}x`);
+      // Check if there's a conflicting position
+      try {
+        const pos = await getActivePosition();
+        if (pos) {
+          log("WARN", `⚠️ Ada posisi terbuka: ${pos.symbol} ${pos.side} ${pos.size} | Tutup dulu sebelum trading lain!`);
+        }
+      } catch (e) {}
       return null;
     }
     log("TRADE", `Order sukses! Order ID: ${res.data?.orderId}`);

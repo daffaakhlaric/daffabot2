@@ -51,7 +51,7 @@ const CONFIG = {
   SYMBOL:           "PEPEUSDT",
   PRODUCT_TYPE:     "usdt-futures",
   MARGIN_COIN:      "USDT",
-  MARGIN_MODE:      "cross",  // Changed from "isolated" to avoid currency mix error
+  MARGIN_MODE:      "isolated",  // Original setting
   DEFAULT_LEVERAGE: 5,
   MAX_LEVERAGE:     7,
 
@@ -955,7 +955,7 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
     const res = await bitgetRequest("POST", "/api/v2/mix/order/place-order", {}, {
       symbol:      tradeSymbol,
       productType: CONFIG.PRODUCT_TYPE,
-      marginMode:  CONFIG.MARGIN_MODE,
+      // marginMode:  CONFIG.MARGIN_MODE,  // Remove to use account default
       marginCoin:  CONFIG.MARGIN_COIN,
       size:        qty.toString(),
       side:        orderSide,
@@ -1493,7 +1493,7 @@ async function closePartialPosition(reason, currentPrice) {
     await bitgetRequest("POST", "/api/v2/mix/order/place-order", {}, {
       symbol:      CONFIG.SYMBOL,
       productType: CONFIG.PRODUCT_TYPE,
-      marginMode:  CONFIG.MARGIN_MODE,
+      // marginMode:  CONFIG.MARGIN_MODE,  // Remove to use account default
       marginCoin:  CONFIG.MARGIN_COIN,
       size:        halfSize.toString(),
       side:        pos.side === "LONG" ? "sell" : "buy",
@@ -1707,7 +1707,7 @@ Aturan SCALPING AGRESIF PEPE:
 
 PASAR: ${priceStr} Bid/Ask:${isBTC ? p.bid.toFixed(2) : p.bid.toFixed(8)}/${isBTC ? p.ask.toFixed(2) : p.ask.toFixed(8)} Vol24h:${(p.volume24h/1e9).toFixed(2)}B Δ24h:${(p.change24h*100).toFixed(2)}%
 TEKNIKAL: RSI:${p.rsi.toFixed(1)} EMA9:${ema9Str} EMA21:${ema21Str} VolRatio:${p.volumeRatio.toFixed(2)}x
-ORDERBOOK: Bid/Ask ratio=${p.orderBook.bidAskRatio.toFixed(3)}
+ORDERBOOK: Bid/Ask ratio=${p.orderBook?.bidAskRatio?.toFixed(3) || 'N/A'}
 FUNDING: ${(p.fundingRate*100).toFixed(4)}%${Math.abs(p.fundingRate) > 0.001 ? " ⚠tinggi" : ""} SIGNAL:${p.fundingSignal}${p.fundingRate < -0.0001 ? " ⚡mayoritas short→bias LONG" : p.fundingRate > 0.0001 ? " ⚠mayoritas long→pertimbangkan SHORT" : ""}
 F&G: ${p.fearGreed.value}(${p.fearGreed.classification}) Avg7d:${p.fearGreed.avg7d} Trend:${p.fearGreed.trend}
 ${geckoStr}

@@ -51,7 +51,7 @@ const CONFIG = {
   SYMBOL:           "PEPEUSDT",
   PRODUCT_TYPE:     "usdt-futures",
   MARGIN_COIN:      "USDT",
-  MARGIN_MODE:      "isolated",  // Original setting
+  MARGIN_MODE:      "cross",  // Use cross to avoid currency mix error
   DEFAULT_LEVERAGE: 5,
   MAX_LEVERAGE:     7,
 
@@ -955,7 +955,7 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
     const res = await bitgetRequest("POST", "/api/v2/mix/order/place-order", {}, {
       symbol:      tradeSymbol,
       productType: CONFIG.PRODUCT_TYPE,
-      marginMode:  "isolated",  // Use isolated margin
+      marginMode:  "cross",  // Use cross margin to avoid currency mix error
       marginCoin:  CONFIG.MARGIN_COIN,
       size:        qty.toString(),
       side:        orderSide,

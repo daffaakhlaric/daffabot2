@@ -654,17 +654,29 @@ async function getAccountInfo() {
  */
 async function getAllAccountBalances() {
   try {
+    // Method 1: Get all futures accounts
     const res = await bitgetRequest("GET", "/api/v2/mix/account/accounts", {
       productType: "usdt-futures"
     });
     if (res.code !== "00000") throw new Error(res.msg || "Unknown error");
     
-    // Find USDT balance in futures
-    const usdtData = res.data?.find((c) => c.currency === "USDT");
-    if (!usdtData) return { totalBalance: 0, available: 0 };
+    log("DEBUG", `All accounts response: ${JSON.stringify(res.data?.slice(0, 3))}`);
     
-    const totalBalance = parseFloat(usdtData.available || "0") + parseFloat(usdtData.frozen || "0");
-    const available = parseFloat(usdtData.available || "0");
+    // Find USDT balance in futures - try different field names
+    let usdtData = res.data?.find((c) => c.currency === "USDT");
+    if (!usdtData) usdtData = res.data?.find((c) => c.coin === "USDT");
+    if (!usdtData) usdtData = res.data?.[0]; // Take first available
+    
+    if (!usdtData) {
+      log("WARN", `No USDT data found in accounts response`);
+      return { totalBalance: 0, available: 0 };
+    }
+    
+    const available = parseFloat(usdtData.available || usdtData.availableBalance || "0");
+    const frozen = parseFloat(usdtData.frozen || usdtData.frozenBalance || "0");
+    const totalBalance = available + frozen;
+    
+    log("INFO", `💰 Total futures balance: ${totalBalance.toFixed(4)} USDT (avail: ${available.toFixed(4)}, frozen: ${frozen.toFixed(4)})`);
     
     return { totalBalance, available };
   } catch (err) {
@@ -1552,7 +1564,11 @@ async function fetchAndUpdateBalance() {
       
       // Get all account balances for auto position sizing
       const allBalances = await getAllAccountBalances();
-      state.totalAccountBalance = allBalances.totalBalance;
+      
+      // Fallback: use equity if totalAccountBalance is 0
+      state.totalAccountBalance = allBalances.totalBalance > 0 ? allBalances.totalBalance : info.equity;
+      
+      log("INFO", `💰 Balance update - Equity: ${info.equity.toFixed(4)} | Total Account: ${state.totalAccountBalance.toFixed(4)}`)
       
       // Auto-adjust position size based on balance
       const newPositionSize = calculateAutoPositionSize(state.totalAccountBalance);

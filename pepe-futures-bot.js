@@ -48,7 +48,7 @@ const CONFIG = {
 
   // Symbol & mode trading
   SYMBOL:           "PEPEUSDT",
-  PRODUCT_TYPE:     "USDT-FUTURES",
+  PRODUCT_TYPE:     "usdt-futures",
   MARGIN_COIN:      "USDT",
   MARGIN_MODE:      "isolated",
   DEFAULT_LEVERAGE: 5,
@@ -757,7 +757,7 @@ function calcLiquidationPrice(side, entryPrice, leverage) {
   }
 }
 
-async function openPosition(side, leverage, price, overrideQty = null, symbol = null) {
+async function openPosition(side, leverage, price, overrideQty = null, symbol = null, indicators = null) {
   const tradeSymbol = symbol || CONFIG.SYMBOL;
   const isPepe = tradeSymbol === "PEPEUSDT";
   const config = isPepe ? CONFIG.PEPE_SPECIFIC_CONFIG : CONFIG.BTC_SPECIFIC_CONFIG;
@@ -834,6 +834,11 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
     momentumWeakCount: 0,
     openTime:     new Date().toISOString(),
     regime:       positionRegime,
+    // AI Trading Risk Manager indicators
+    rsi: indicators ? indicators.rsi : 50,
+    ema9: indicators ? indicators.ema9 : price,
+    ema21: indicators ? indicators.ema21 : price,
+    volumeRatio: indicators ? indicators.volumeRatio : 1,
   };
 
   log("INFO", `📊 Position opened in ${positionRegime} mode | Notional: ${notionalUSDT.toFixed(2)} USDT (${qty.toLocaleString()} × ${price})`);
@@ -947,18 +952,28 @@ async function closePosition(reason, currentPrice, symbol = null) {
   const newPhase = evaluatePhase(tradeLog, stats);
   const prevPhase = state.phase?.phase;
   state.phase = newPhase;
-  // Reset cooldown counter when entering MARKET_BAD; decrement when already in it
-  if (newPhase.phase === PHASES.MARKET_BAD && prevPhase !== PHASES.MARKET_BAD) {
-    state.phaseCooldownLeft = newPhase.cooldownTrades;
-    log("WARN", `[PHASE] Entered MARKET_BAD — ${newPhase.cooldownTrades} cooldown trades before new entries`);
-  } else if (newPhase.phase === PHASES.MARKET_BAD && state.phaseCooldownLeft > 0) {
-    state.phaseCooldownLeft--;
-    log("WARN", `[PHASE] MARKET_BAD cooldown: ${state.phaseCooldownLeft} trade(s) left`);
-  } else if (newPhase.phase !== PHASES.MARKET_BAD) {
+  
+  // DRY_RUN: Skip cooldown, keep phase visible but non-blocking
+  if (CONFIG.DRY_RUN) {
     state.phaseCooldownLeft = 0;
+    if (newPhase.phase === PHASES.MARKET_BAD) {
+      log("WARN", `[PHASE] MARKET_BAD detected — DRY_RUN: NO cooldown (trades continue)`);
+    }
+  } else {
+    // LIVE: Normal cooldown behavior
+    if (newPhase.phase === PHASES.MARKET_BAD && prevPhase !== PHASES.MARKET_BAD) {
+      state.phaseCooldownLeft = newPhase.cooldownTrades;
+      log("WARN", `[PHASE] Entered MARKET_BAD — ${newPhase.cooldownTrades} cooldown trades before new entries`);
+    } else if (newPhase.phase === PHASES.MARKET_BAD && state.phaseCooldownLeft > 0) {
+      state.phaseCooldownLeft--;
+      log("WARN", `[PHASE] MARKET_BAD cooldown: ${state.phaseCooldownLeft} trade(s) left`);
+    } else if (newPhase.phase !== PHASES.MARKET_BAD) {
+      state.phaseCooldownLeft = 0;
+    }
   }
+  
   log("INFO", phaseLogLine(newPhase));
-  broadcastSSE({ type: "phase", phase: newPhase });
+  broadcastSSE({ type: "phase", phase: newPhase, dryRun: CONFIG.DRY_RUN });
 
   // ── Post-SL Cooldown ─────────────────────────────────────────
   // DRY_RUN: NEVER pause — use adaptive risk scaling instead (getAdaptiveRisk).
@@ -1012,16 +1027,28 @@ async function closePosition(reason, currentPrice, symbol = null) {
         });
       }
 
-      // Emergency pause — LIVE only
-      if (lossStreak >= 5) {
+      // Emergency pause — LIVE only (no pause in DRY_RUN)
+      if (!CONFIG.DRY_RUN && lossStreak >= 5) {
         log("ERROR",
           `🛑 EMERGENCY PAUSE! Loss streak ${lossStreak}x berturut — pause 2 jam. Buka dashboard untuk review.`
         );
         broadcastSSE({
           type:      "emergency_stop",
           lossStreak,
+          dryRun:    false,
           message:   `Loss streak ${lossStreak}x — pause 2 jam otomatis`,
           resumeAt:  new Date(state.pausedUntil).toLocaleTimeString("id-ID"),
+        });
+      } else if (CONFIG.DRY_RUN && lossStreak >= 5) {
+        // DRY_RUN: Log info only, no pause
+        log("WARN",
+          `[DRY_RUN] Loss streak ${lossStreak}x — NO emergency pause (cooldown disabled)`
+        );
+        broadcastSSE({
+          type:      "emergency_stop",
+          lossStreak,
+          dryRun:    true,
+          message:   `[DRY_RUN] Loss streak ${lossStreak}x — no pause (adaptive risk active)`,
         });
       }
     }
@@ -2240,7 +2267,8 @@ async function runPepeStrategy(pepeTicker, pepeKlines) {
         leverage,
         pepePrice,
         null,
-        "PEPEUSDT"
+        "PEPEUSDT",
+        pepeIndicators
       );
       
       if (opened) {
@@ -2725,19 +2753,87 @@ async function tradingLoop() {
     // RANGE: aggressive lock at +0.4% | TREND: existing levels
     // Level lock: Regime-based lock levels
     // RANGE: aggressive fast locks | TREND: existing levels
-    const LOCK_LEVELS = positionRegime === "RANGE"
+    // ═══════════════════════════════════════════════════════════════
+    // DYNAMIC PROFIT PROTECTION SYSTEM - AI Trading Risk Manager
+    // ═══════════════════════════════════════════════════════════════
+    
+    // Detect momentum conditions
+    let momentumScore = 0;
+    const volumeRatio = pos.volumeRatio || 1;
+    const rsi = pos.rsi || 50;
+    const currentEMA9 = pos.ema9 || price;
+    const currentEMA21 = pos.ema21 || price;
+    
+    // Count bullish candles (last 5 candles)
+    let bullishCandles = 0;
+    if (klines && klines.length >= 5) {
+      for (let i = klines.length - 5; i < klines.length; i++) {
+        if (klines[i].close > klines[i].open) bullishCandles++;
+      }
+    }
+    
+    // Momentum detection: count true conditions
+    if (volumeRatio > 1.2) momentumScore++;                    // Volume increasing > 120%
+    if (price > currentEMA9 && price > currentEMA21) momentumScore++; // Price above EMA20 and EMA50
+    if (rsi >= 60 && rsi <= 75) momentumScore++;              // RSI between 60-75
+    if (bullishCandles >= 3) momentumScore++;                 // Consecutive bullish candles ≥ 3
+    
+    // Runner trade detection
+    const isRunner = rawProfitLock >= 1.5 && momentumScore >= 3;
+    
+    // Determine profit protection mode
+    let mode = "EARLY";
+    let lockPercent = 0.25; // Default 25% for EARLY mode
+    
+    if (rawProfitLock >= 1.5 && isRunner) {
+      // MODE 3: RUNNER TRADE
+      mode = "RUNNER";
+      if (rawProfitLock >= 4.0) lockPercent = 0.80;      // 4%+ → lock 80%
+      else if (rawProfitLock >= 2.5) lockPercent = 0.60; // 2.5%+ → lock 60%
+      else lockPercent = 0.40;                            // 1.5%+ → lock 40%
+    } else if (momentumScore >= 3) {
+      // MODE 2: MOMENTUM DETECTED
+      mode = "MOMENTUM";
+      lockPercent = 0.60; // Lock 60% in momentum mode
+    } else if (rawProfitLock >= 0.3 && rawProfitLock < 0.8) {
+      // MODE 1: EARLY PROFIT PROTECTION
+      mode = "EARLY";
+      lockPercent = 0.25; // Lock 25%
+    }
+    
+    // Build LOCK_LEVELS based on mode
+    const LOCK_LEVELS = mode === "RUNNER"
       ? [
-          { triggerRaw: 0.4, lockRaw: 0.15 },  // profit ≥0.4% → kunci 0.15% (fast!)
-          { triggerRaw: 0.6, lockRaw: 0.25 },  // profit ≥0.6% → kunci 0.25%
-          { triggerRaw: 0.8, lockRaw: 0.35 },  // profit ≥0.8% → kunci 0.35%
-          { triggerRaw: 1.0, lockRaw: 0.45 },  // profit ≥1.0% → kunci 0.45%
+          { triggerRaw: 1.5, lockRaw: 1.5 * lockPercent },  // 1.5% → lock 40-80%
+          { triggerRaw: 2.5, lockRaw: 2.5 * lockPercent },
+          { triggerRaw: 4.0, lockRaw: 4.0 * lockPercent },
+          { triggerRaw: 5.0, lockRaw: 5.0 * lockPercent },
+        ]
+      : mode === "MOMENTUM"
+      ? [
+          { triggerRaw: 0.8, lockRaw: 0.8 * lockPercent },  // 0.8% → lock 60%
+          { triggerRaw: 1.2, lockRaw: 1.2 * lockPercent },
+          { triggerRaw: 1.5, lockRaw: 1.5 * lockPercent },
+          { triggerRaw: 2.0, lockRaw: 2.0 * lockPercent },
+        ]
+      : positionRegime === "RANGE"
+      ? [
+          { triggerRaw: 0.4, lockRaw: 0.15 },
+          { triggerRaw: 0.6, lockRaw: 0.25 },
+          { triggerRaw: 0.8, lockRaw: 0.35 },
+          { triggerRaw: 1.0, lockRaw: 0.45 },
         ]
       : [
-          { triggerRaw: 1.0, lockRaw: 0.3 },  // profit ≥1% → kunci 0.3%
-          { triggerRaw: 1.5, lockRaw: 0.6 },  // profit ≥1.5% → kunci 0.6%
-          { triggerRaw: 2.0, lockRaw: 1.0 },  // profit ≥2% → kunci 1%
-          { triggerRaw: 3.0, lockRaw: 1.8 },  // profit ≥3% → kunci 1.8%
+          { triggerRaw: 1.0, lockRaw: 0.3 },
+          { triggerRaw: 1.5, lockRaw: 0.6 },
+          { triggerRaw: 2.0, lockRaw: 1.0 },
+          { triggerRaw: 3.0, lockRaw: 1.8 },
         ];
+    
+    // Log mode detection for debugging
+    if (state.tickCount % 3 === 0) {
+      log("INFO", `[PROFIT PROTECT] Mode: ${mode} | Profit: ${rawProfitLock.toFixed(2)}% | Momentum: ${momentumScore}/5 | Lock: ${(lockPercent*100).toFixed(0)}%`);
+    }
 
     const rawProfitLock = pos.side === "LONG"
       ? (price - pos.entryPrice) / pos.entryPrice * 100
@@ -2775,6 +2871,61 @@ async function tradingLoop() {
           saveState();
         }
         break; // Pakai level tertinggi yang applicable
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // REVERSAL PROTECTION - Tighten SL if reversal signals detected
+    // ═══════════════════════════════════════════════════════════════
+    if (rawProfitLock > 0.3 && klines && klines.length >= 5) {
+      const lastCandle = klines[klines.length - 1];
+      const prevCandle = klines[klines.length - 2];
+      const prevPrevCandle = klines[klines.length - 3];
+      
+      // Detect bearish engulfing
+      const isBearishEngulfing = lastCandle.close < lastCandle.open && 
+                                  prevCandle.close > prevCandle.open &&
+                                  lastCandle.open > prevCandle.close &&
+                                  lastCandle.close < prevCandle.open;
+      
+      // Detect RSI divergence (RSI dropping while price rising)
+      const rsiNow = indicators.rsi;
+      const priceRising = price > pos.entryPrice;
+      const rsiFalling = rsiNow < (pos.rsi || 50) - 5;
+      const rsiDivergence = priceRising && rsiFalling;
+      
+      // Detect volume spike with price rejection
+      const volumeSpike = indicators.volumeRatio > 2.0;
+      const priceRejection = (lastCandle.high - lastCandle.close) > (lastCandle.close - lastCandle.low) * 1.5;
+      const volumeRejection = volumeSpike && priceRejection;
+      
+      // If any reversal signal, tighten SL
+      if (isBearishEngulfing || rsiDivergence || volumeRejection) {
+        const reversalType = isBearishEngulfing ? "BEARISH_ENGULFING" : 
+                             rsiDivergence ? "RSI_DIVERGENCE" : "VOLUME_REJECTION";
+        
+        // Tighten SL to current price - 0.25% to 0.4%
+        const tightenedSL = pos.side === "LONG" 
+          ? price * (1 - 0.003)  // 0.3% below current price
+          : price * (1 + 0.003);
+        
+        // Only apply if it improves the SL (locks in more profit)
+        const slImproves = pos.side === "LONG" 
+          ? tightenedSL > pos.stopLoss 
+          : tightenedSL < pos.stopLoss;
+        
+        if (slImproves && rawProfitLock > 0.5) {
+          const prevSL = pos.stopLoss;
+          pos.stopLoss = tightenedSL;
+          log("WARN", `⚠️ REVERSAL DETECTED (${reversalType})! Tightening SL: ${prevSL.toFixed(8)} → ${tightenedSL.toFixed(8)}`);
+          broadcastSSE({
+            type: "reversal_protection",
+            reason: reversalType,
+            message: `Reversal signal (${reversalType}) - SL tightened`,
+            newSL: tightenedSL,
+            profitRaw: rawProfitLock.toFixed(3),
+          });
+        }
       }
     }
 
@@ -3052,7 +3203,9 @@ async function tradingLoop() {
           rangeTradeSide === "BULLISH" ? "LONG" : "SHORT",
           leverage,
           price,
-          orderQty
+          orderQty,
+          null,
+          indicators
         );
         
         if (opened && state.activePosition) {
@@ -3670,7 +3823,9 @@ async function tradingLoop() {
           tradeSide === "BULLISH" ? "LONG" : "SHORT",
           leverage,
           price,
-          orderQty
+          orderQty,
+          null,
+          indicators
         );
         if (opened && state.activePosition) {
           // Override SL/TP dengan kalkulasi SMC
@@ -4294,6 +4449,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       </div>
       <div id="phase-cooldown" style="display:none;margin-top:8px;padding:6px 10px;border-radius:4px;background:#f8514922;border:1px solid #f8514966;color:#f85149;font-size:11px;text-align:center">
         🚨 MARKET_BAD cooldown — <span id="phase-cooldown-left">0</span> trade(s) remaining
+      </div>
+      <div id="phase-dryrun" style="display:none;margin-top:8px;padding:6px 10px;border-radius:4px;background:#3fb95022;border:1px solid #3fb95066;color:#3fb950;font-size:11px;text-align:center">
+        🚨 MARKET_BAD — <span style="font-weight:700">TRAINING MODE</span> — NO COOLDOWN
       </div>
     </div>
 
@@ -4923,7 +5081,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           setBotRunning(true);
         }
         if (d.stats) { renderStats(d.stats); renderWinRate(d.stats); }
-        if (d.phase) { renderPhase(d.phase); window._phaseCooldownLeft = d.phaseCooldownLeft || 0; }
+        if (d.phase) { renderPhase(d.phase); window._phaseCooldownLeft = d.phaseCooldownLeft || 0; window._dryRunMode = d.dryRun || false; }
         if (d.balance) handleBalance(d.balance);
         if (d.externalData) handleIntelligence({ externalData: d.externalData });
         if (d.position) renderPosition(d.position, d.price || 0);
@@ -5097,7 +5255,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         return;
       }
       if (d.type === 'log') addLog(d);
-      if (d.type === 'phase') { renderPhase(d.phase); return; }
+      if (d.type === 'phase') { renderPhase(d.phase); window._dryRunMode = d.dryRun || false; return; }
       if (d.type === 'stats') {
         renderStats(d);
         renderWinRate(d);
@@ -5116,14 +5274,17 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           }
         }
 
-        // Loss streak dan cooldown display
+        // Loss streak dan cooldown display (hide in DRY_RUN)
         const streakEl   = document.getElementById('loss-streak-warning');
         const countEl    = document.getElementById('loss-streak-count');
         const msgEl      = document.getElementById('loss-streak-msg');
         const cooldownEl = document.getElementById('cooldown-info');
         const resumeEl   = document.getElementById('cooldown-resume');
 
-        if (streakEl && d.lossStreak >= 2) {
+        // Hide loss streak warning in DRY_RUN mode
+        if (d.dryRun) {
+          if (streakEl) streakEl.style.display = 'none';
+        } else if (streakEl && d.lossStreak >= 2) {
           streakEl.style.display = 'block';
           if (countEl) countEl.textContent = d.lossStreak;
           if (msgEl) {
@@ -5407,16 +5568,23 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (pfEl)    pfEl.textContent    = p.profitFactor > 0 ? p.profitFactor : '--';
       if (cntEl)   cntEl.textContent   = p.tradeCount + '/20';
 
-      // Cooldown bar (MARKET_BAD only)
+      // Cooldown bar (MARKET_BAD only) - LIVE vs DRY_RUN
+      const dryRunEl = document.getElementById('phase-dryrun');
       if (cdEl) {
-        const showCd = p.phase === 'MARKET_BAD' && (p.cooldownTrades > 0 || window._phaseCooldownLeft > 0);
+        const isDryRun = window._dryRunMode === true;
+        const showCd = p.phase === 'MARKET_BAD' && (p.cooldownTrades > 0 || window._phaseCooldownLeft > 0) && !isDryRun;
         cdEl.style.display = showCd ? 'block' : 'none';
         if (cdLeft) cdLeft.textContent = window._phaseCooldownLeft ?? p.cooldownTrades;
+      }
+      // DRY_RUN mode indicator
+      if (dryRunEl) {
+        const showDryRun = p.phase === 'MARKET_BAD' && window._dryRunMode === true;
+        dryRunEl.style.display = showDryRun ? 'block' : 'none';
       }
     }
 
     function renderStats(s) {
-      if (s.phase) { renderPhase(s.phase); window._phaseCooldownLeft = s.phaseCooldownLeft || 0; }
+      if (s.phase) { renderPhase(s.phase); window._phaseCooldownLeft = s.phaseCooldownLeft || 0; window._dryRunMode = s.dryRun || false; }
       document.getElementById('wins').textContent    = s.wins || 0;
       document.getElementById('losses').textContent  = s.losses || 0;
       const wr = s.totalTrades > 0 ? ((s.wins / s.totalTrades) * 100).toFixed(1) : '0';
@@ -5700,6 +5868,7 @@ function startDashboard() {
         klines:      state.lastKlines.slice(-150),
         phase:       state.phase,
         phaseCooldownLeft: state.phaseCooldownLeft,
+        dryRun:      CONFIG.DRY_RUN,
       })}\n\n`);
 
       req.on("close", () => {
@@ -5807,7 +5976,7 @@ function startDashboard() {
       saveState();
 
       // 7. Broadcast update ke dashboard
-      broadcastSSE({ type: "stats", ...stats, compoundBalance: compoundedBalance });
+      broadcastSSE({ type: "stats", ...stats, compoundBalance: compoundedBalance, dryRun: CONFIG.DRY_RUN });
       broadcastSSE({ type: "trade", trade: null, tradeLog: [] });
       broadcastSSE({ type: "reset", message: "Data simulasi direset — klik Start Bot untuk mulai lagi" });
       broadcastSSE({ type: "phase", phase: null });
@@ -5839,7 +6008,7 @@ function startDashboard() {
             balance: state.currentBalance,
             message: `+${topup} USDT ditambahkan ke saldo simulasi`,
           });
-          broadcastSSE({ type: "stats", ...stats, compoundBalance: compoundedBalance });
+          broadcastSSE({ type: "stats", ...stats, compoundBalance: compoundedBalance, dryRun: CONFIG.DRY_RUN });
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true, message: `Saldo +${topup} USDT → ${state.currentBalance.toFixed(2)} USDT`, balance: state.currentBalance }));
           log("INFO", `[DRY RUN] Top up +${topup} USDT → saldo simulasi: ${state.currentBalance.toFixed(2)} USDT`);
@@ -5874,7 +6043,7 @@ function startDashboard() {
         }
       })();
       broadcastSSE({ type: "started", message: "Bot dimulai — baseline saldo direset ke saldo sekarang" });
-      broadcastSSE({ type: "stats", ...stats, compoundBalance: compoundedBalance });
+      broadcastSSE({ type: "stats", ...stats, compoundBalance: compoundedBalance, dryRun: CONFIG.DRY_RUN });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, message: `Bot dimulai. Saldo baseline: ${state.currentBalance.toFixed(2)} USDT` }));
       log("INFO", "Bot di-start manual via dashboard");
@@ -5912,6 +6081,7 @@ function startDashboard() {
       // Phase Indicator
       phase:            state.phase,
       phaseCooldownLeft: state.phaseCooldownLeft,
+      dryRun:           CONFIG.DRY_RUN,
       // Trading mode label
       tradingModeLabel: CONFIG.DRY_RUN
         ? "🧪 TRAINING MODE (NO COOLDOWN)"

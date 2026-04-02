@@ -434,16 +434,24 @@ async function getFundingRate() {
 }
 
 async function getOrderBook() {
-  const res = await bitgetRequest("GET", "/api/v2/mix/market/merge-depth", {
-    symbol:      CONFIG.SYMBOL,
-    productType: CONFIG.PRODUCT_TYPE,
-  });
-  if (res.code !== "00000") throw new Error(`Order book error: ${res.msg}`);
-  const bids = res.data.bids.slice(0, 5).map((b) => ({ price: parseFloat(b[0]), qty: parseFloat(b[1]) }));
-  const asks = res.data.asks.slice(0, 5).map((a) => ({ price: parseFloat(a[0]), qty: parseFloat(a[1]) }));
-  const totalBid = bids.reduce((s, b) => s + b.qty, 0);
-  const totalAsk = asks.reduce((s, a) => s + a.qty, 0);
-  return { bids, asks, totalBid, totalAsk, bidAskRatio: totalBid / (totalAsk || 1) };
+  try {
+    const res = await bitgetRequest("GET", "/api/v2/mix/market/merge-depth", {
+      symbol:      CONFIG.SYMBOL,
+      productType: CONFIG.PRODUCT_TYPE,
+    });
+    if (res.code !== "00000") {
+      log("WARN", `Order book error: ${res.msg} - using fallback`);
+      return null;  // Return null instead of throwing
+    }
+    const bids = res.data.bids.slice(0, 5).map((b) => ({ price: parseFloat(b[0]), qty: parseFloat(b[1]) }));
+    const asks = res.data.asks.slice(0, 5).map((a) => ({ price: parseFloat(a[0]), qty: parseFloat(a[1]) }));
+    const totalBid = bids.reduce((s, b) => s + b.qty, 0);
+    const totalAsk = asks.reduce((s, a) => s + a.qty, 0);
+    return { bids, asks, totalBid, totalAsk, bidAskRatio: totalBid / (totalAsk || 1) };
+  } catch (err) {
+    log("WARN", `Order book fetch failed: ${err.message}`);
+    return null;
+  }
 }
 
 /** Fear & Greed dengan tren 7 hari */
@@ -730,12 +738,17 @@ async function setLeverage(leverage) {
     log("INFO", `[DRY] Set leverage ${leverage}x`);
     return;
   }
-  await bitgetRequest("POST", "/api/v2/mix/account/set-leverage", {}, {
-    symbol:      CONFIG.SYMBOL,
-    productType: CONFIG.PRODUCT_TYPE,
-    marginCoin:  CONFIG.MARGIN_COIN,
-    leverage:    leverage.toString(),
-  });
+  try {
+    await bitgetRequest("POST", "/api/v2/mix/account/set-leverage", {}, {
+      symbol:      CONFIG.SYMBOL,
+      productType: CONFIG.PRODUCT_TYPE,
+      marginCoin:  CONFIG.MARGIN_COIN,
+      leverage:    leverage.toString(),
+    });
+    log("INFO", `✅ Set leverage ${leverage}x for ${CONFIG.SYMBOL}`);
+  } catch (err) {
+    log("WARN", `⚠️ Set leverage failed (may already be set): ${err.message}`);
+  }
 }
 
 async function setMarginMode() {
@@ -743,12 +756,17 @@ async function setMarginMode() {
     log("INFO", `[DRY] Set margin mode: ${CONFIG.MARGIN_MODE}`);
     return;
   }
-  await bitgetRequest("POST", "/api/v2/mix/account/set-margin-mode", {}, {
-    symbol:      CONFIG.SYMBOL,
-    productType: CONFIG.PRODUCT_TYPE,
-    marginCoin:  CONFIG.MARGIN_COIN,
-    marginMode:  CONFIG.MARGIN_MODE,
-  });
+  try {
+    await bitgetRequest("POST", "/api/v2/mix/account/set-margin-mode", {}, {
+      symbol:      CONFIG.SYMBOL,
+      productType: CONFIG.PRODUCT_TYPE,
+      marginCoin:  CONFIG.MARGIN_COIN,
+      marginMode:  CONFIG.MARGIN_MODE,
+    });
+    log("INFO", `✅ Set margin mode ${CONFIG.MARGIN_MODE} for ${CONFIG.SYMBOL}`);
+  } catch (err) {
+    log("WARN", `⚠️ Set margin mode failed: ${err.message}`);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1940,19 +1958,24 @@ function isActiveSession() {
     };
   }
 
-  // LIVE: session filter normal
+  // LIVE: session filter normal (London + New York only)
+  // UTC times:
+  // London: 07:00 - 16:00 UTC (best volatility)
+  // NY: 13:00 - 22:00 UTC (best liquidity)
+  // Overlap: 13:00 - 16:00 UTC (both sessions active - BEST)
+  // Asia: outside these times (skip - low volatility)
   const now   = new Date();
   const hour  = now.getUTCHours();
   const min   = now.getUTCMinutes();
   const t     = hour + min / 60;
-  const inLondon  = t >= 7  && t < 16;
-  const inNY      = t >= 13 && t < 22;
-  const inOverlap = t >= 13 && t < 16;
+  const inLondon  = t >= 7  && t < 16;   // London: 7am-4pm UTC
+  const inNY      = t >= 13 && t < 22;   // NY: 1pm-10pm UTC
+  const inOverlap = t >= 13 && t < 16;   // Overlap: 1pm-4pm UTC (BEST)
   return {
     active:     inLondon || inNY,
     session:    inOverlap ? "OVERLAP(TERBAIK)" : inNY ? "NEW_YORK" : inLondon ? "LONDON" : "ASIA(SKIP)",
     inLondon, inNY, inOverlap,
-    wibHour:    (hour + 7) % 24,
+    wibHour:    (hour + 7) % 24,  // Convert to WITA (UTC+7)
   };
 }
 

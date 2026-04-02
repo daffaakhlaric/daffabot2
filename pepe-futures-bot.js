@@ -51,7 +51,7 @@ const CONFIG = {
   SYMBOL:           "PEPEUSDT",
   PRODUCT_TYPE:     "usdt-futures",
   MARGIN_COIN:      "USDT",
-  MARGIN_MODE:      "cross",  // Use cross to avoid currency mix error
+  MARGIN_MODE:      "isolated",
   DEFAULT_LEVERAGE: 5,
   MAX_LEVERAGE:     7,
 
@@ -745,7 +745,6 @@ async function setLeverage(leverage) {
       productType: CONFIG.PRODUCT_TYPE,
       marginCoin:  CONFIG.MARGIN_COIN,
       leverage:    leverage.toString(),
-      marginMode:  "cross",  // Use cross margin to avoid currency mix error
     });
     log("INFO", `✅ Set leverage ${leverage}x for ${CONFIG.SYMBOL}`);
   } catch (err) {
@@ -758,10 +757,17 @@ async function setMarginMode() {
     log("INFO", `[DRY] Set margin mode: ${CONFIG.MARGIN_MODE}`);
     return;
   }
-  // Skip margin mode setting - let it use existing account settings
-  // Setting margin mode can cause errors if positions exist
-  log("INFO", `⏭️ Skip margin mode setting (using account default)`);
-  return;
+  try {
+    await bitgetRequest("POST", "/api/v2/mix/account/set-margin-mode", {}, {
+      symbol:      CONFIG.SYMBOL,
+      productType: CONFIG.PRODUCT_TYPE,
+      marginCoin:  CONFIG.MARGIN_COIN,
+      marginMode:  CONFIG.MARGIN_MODE,
+    });
+    log("INFO", `✅ Set margin mode ${CONFIG.MARGIN_MODE} for ${CONFIG.SYMBOL}`);
+  } catch (err) {
+    log("WARN", `⚠️ Set margin mode failed: ${err.message} - continuing anyway`);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -956,7 +962,7 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
     const res = await bitgetRequest("POST", "/api/v2/mix/order/place-order", {}, {
       symbol:      tradeSymbol,
       productType: CONFIG.PRODUCT_TYPE,
-      marginMode:  "cross",  // Use cross margin to avoid currency mix error
+      marginMode:  CONFIG.MARGIN_MODE,
       marginCoin:  CONFIG.MARGIN_COIN,
       size:        qty.toString(),
       side:        orderSide,

@@ -3448,9 +3448,12 @@ async function tradingLoop() {
           if (orderQty < CONTRACT_SIZE) orderQty = CONTRACT_SIZE;
         } else {
           // BTC: qty = notional (in USDT), since 1 contract = 1 USDT
-          orderQty = Math.max(5, Math.floor(notional)); // min 5 USDT
+          // Use smaller qty to stay within balance
+          const maxQty = Math.floor(state.currentBalance * 0.8); // 80% of balance
+          orderQty = Math.min(maxQty, Math.floor(notional));
+          if (orderQty < 5) orderQty = 5; // minimum 5 USDT
         }
-        log("INFO", `📊 BTC Order: Notional=${notional} USDT → Qty=${orderQty} (price=${price})`);
+        log("INFO", `📊 BTC Order: Balance=${state.currentBalance} Notional=${notional} USDT → Qty=${orderQty} (price=${price})`);
         
         const tpPrice = rangeTradeSide === "BULLISH"
           ? price * (1 + rangeTpPct / 100)

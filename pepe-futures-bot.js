@@ -94,9 +94,10 @@ const CONFIG = {
   CLAUDE_SMART_FILTER: false,   // SMC: Claude hanya dipanggil saat setup lengkap
   CLAUDE_RSI_DEAD_ZONE: 5,     // skip kalau RSI dalam range 50±5 (45-55) = netral
 
-  // Dry run (WAJIB true saat testing SMC minimal 5 hari!)
-  DRY_RUN: true,
-  DRY_RUN_ALL_SESSIONS: true,  // Aktifkan semua sesi saat dry run untuk观测 lebih cepat
+  // Dry run - ambil dari environment variable
+  // Set DRY_RUN=false di .env untuk live trading
+  DRY_RUN: process.env.DRY_RUN !== 'false',
+  DRY_RUN_ALL_SESSIONS: process.env.DRY_RUN_ALL_SESSIONS !== 'false',
 
   // Dashboard
   DASHBOARD_PORT: process.env.MONITOR_PORT ? parseInt(process.env.MONITOR_PORT) : 4000,

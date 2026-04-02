@@ -3447,13 +3447,11 @@ async function tradingLoop() {
           orderQty = Math.floor((notional / price) / CONTRACT_SIZE) * CONTRACT_SIZE;
           if (orderQty < CONTRACT_SIZE) orderQty = CONTRACT_SIZE;
         } else {
-          // BTC: qty = notional / price (convert USDT to BTC)
-          // Example: 5 USDT / 82000 BTC/USD = 0.000061 BTC
-          let qty = notional / price;
-          // Round to 6 decimal places
-          qty = Math.round(qty * 1000000) / 1000000;
-          // Minimum qty ~0.00001 BTC (~0.8 USDT at 80k)
-          if (qty < 0.00001) qty = 0.00001;
+          // BTC USDT-M: size = USDT contracts (1 contract = 1 USDT face value)
+          // Minimum Bitget BTCUSDT: 5 USDT contracts
+          let qty = Math.round(notional);
+          const MIN_BTC_QTY = 5;
+          if (qty < MIN_BTC_QTY) qty = MIN_BTC_QTY;
           orderQty = qty;
         }
         log("INFO", `📊 BTC Order: Notional=${notional} USDT → Qty=${orderQty} BTC (price=${price})`);
@@ -3907,10 +3905,16 @@ async function tradingLoop() {
       leverage = dynamicSizing.leverage;
       const notional = dynamicSizing.notional;
       const isPepe = CONFIG.SYMBOL.includes("PEPE");
-      const CONTRACT_SIZE = isPepe ? 1000 : 1;
-      const qty = notional / price;
-      orderQty = Math.floor(qty / CONTRACT_SIZE) * CONTRACT_SIZE;
-      if (orderQty < CONTRACT_SIZE) orderQty = CONTRACT_SIZE;
+      if (isPepe) {
+        // PEPE: 1 contract = 1000 PEPE, size in PEPE
+        const CONTRACT_SIZE = 1000;
+        const qty = notional / price;
+        orderQty = Math.floor(qty / CONTRACT_SIZE) * CONTRACT_SIZE;
+        if (orderQty < CONTRACT_SIZE) orderQty = CONTRACT_SIZE;
+      } else {
+        // BTC USDT-M: size = USDT contracts (1 contract = 1 USDT), minimum 5
+        orderQty = Math.max(5, Math.round(notional));
+      }
       
       log("INFO", `📊 Dynamic Position: Balance=${currentBalance.toFixed(2)} Phase=${phase} Notional=${notional.toFixed(2)} Price=${price.toFixed(8)} Qty=${orderQty}`);
 

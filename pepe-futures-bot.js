@@ -51,7 +51,7 @@ const CONFIG = {
   SYMBOL:           "PEPEUSDT",
   PRODUCT_TYPE:     "usdt-futures",
   MARGIN_COIN:      "USDT",
-  MARGIN_MODE:      "isolated",
+  MARGIN_MODE:      "cross",  // Changed from "isolated" to avoid currency mix error
   DEFAULT_LEVERAGE: 5,
   MAX_LEVERAGE:     7,
 
@@ -156,8 +156,9 @@ const CONFIG = {
   SL_COOLDOWN_CANDLES: 3,    // tunggu 3 candle (≈30 detik di 1m) setelah SL
 
   // ── ADAPTIVE AUTO PAIR TRADING SYSTEM ──────────────────────────
-  ADAPTIVE_PAIR_ENABLED:    true,       // Enabled - auto pair selection
+  ADAPTIVE_PAIR_ENABLED:    false,      // Disabled - force single pair
   DUAL_TRADING_MODE:        false,      // Disabled - single pair only
+  DEFAULT_SYMBOL:           "BTCUSDT",  // Force BTC only for now
                                          // Jika false: switching antara BTC dan PEPE
   PAIR_SELECTION_INTERVAL:  300000,     // 5 menit - interval evaluasi ulang pair
   BTC_SPECIFIC_CONFIG: {
@@ -2553,7 +2554,29 @@ async function tradingLoop() {
   }
 
   // ── ADAPTIVE PAIR SELECTION ─────────────────────────────────
-  if (CONFIG.ADAPTIVE_PAIR_ENABLED) {
+  if (!CONFIG.ADAPTIVE_PAIR_ENABLED) {
+    // Fixed pair mode - use DEFAULT_SYMBOL
+    const fixedSymbol = CONFIG.DEFAULT_SYMBOL || "PEPEUSDT";
+    if (state.currentPair !== fixedSymbol) {
+      log("INFO", `🔄 Using fixed pair: ${fixedSymbol}`);
+      state.currentPair = fixedSymbol;
+      state.currentPairMode = fixedSymbol.includes("BTC") ? "BTC" : "PEPE";
+      CONFIG.SYMBOL = fixedSymbol;
+      
+      // Apply symbol-specific config
+      if (fixedSymbol.includes("BTC")) {
+        CONFIG.STOP_LOSS_PCT = CONFIG.BTC_SPECIFIC_CONFIG.STOP_LOSS_PCT;
+        CONFIG.TAKE_PROFIT_PCT = CONFIG.BTC_SPECIFIC_CONFIG.TAKE_PROFIT_PCT;
+        CONFIG.TRAILING_OFFSET = CONFIG.BTC_SPECIFIC_CONFIG.TRAILING_OFFSET;
+        CONFIG.POSITION_SIZE_USDT = CONFIG.BTC_SPECIFIC_CONFIG.POSITION_SIZE_USDT;
+      } else {
+        CONFIG.STOP_LOSS_PCT = CONFIG.PEPE_SPECIFIC_CONFIG.STOP_LOSS_PCT;
+        CONFIG.TAKE_PROFIT_PCT = CONFIG.PEPE_SPECIFIC_CONFIG.TAKE_PROFIT_PCT;
+        CONFIG.TRAILING_OFFSET = CONFIG.PEPE_SPECIFIC_CONFIG.TRAILING_OFFSET;
+        CONFIG.POSITION_SIZE_USDT = CONFIG.PEPE_SPECIFIC_CONFIG.POSITION_SIZE_USDT;
+      }
+    }
+  } else if (CONFIG.ADAPTIVE_PAIR_ENABLED) {
     const timeSinceLastSelection = Date.now() - state.lastPairSelection;
     
     // First run or interval elapsed

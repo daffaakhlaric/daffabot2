@@ -3439,24 +3439,24 @@ async function tradingLoop() {
         const leverage = dynamicSizing.leverage;
         const notional = dynamicSizing.notional;
         const isPepe = CONFIG.SYMBOL.includes("PEPE");
-        // BTC: 1 contract = 1 USDT notional (NOT 1 BTC!)
-        // Minimum order is ~5 USDT, so calculate qty correctly
+        // BTC: Convert notional (USDT) to quantity (BTC contracts)
+        // QTY = notional / price (e.g., 5 USDT / 82000 = 0.000061 BTC)
         let orderQty;
         if (isPepe) {
           const CONTRACT_SIZE = 1000;
           orderQty = Math.floor((notional / price) / CONTRACT_SIZE) * CONTRACT_SIZE;
           if (orderQty < CONTRACT_SIZE) orderQty = CONTRACT_SIZE;
         } else {
-          // BTC: qty = notional (in USDT), since 1 contract = 1 USDT
-          // Use smaller qty to stay within balance
-          const maxQty = Math.floor(state.currentBalance * 0.8); // 80% of balance
-          orderQty = Math.min(maxQty, Math.floor(notional));
-          if (orderQty < 5) orderQty = 5; // minimum 5 USDT
+          // BTC: qty = notional / price (convert USDT to BTC)
+          // Example: 5 USDT / 82000 BTC/USD = 0.000061 BTC
+          let qty = notional / price;
+          // Round to 6 decimal places
+          qty = Math.round(qty * 1000000) / 1000000;
+          // Minimum qty ~0.00001 BTC (~0.8 USDT at 80k)
+          if (qty < 0.00001) qty = 0.00001;
+          orderQty = qty;
         }
-        // Debug balance - force small order to avoid balance issue
-        const safeQty = Math.min(orderQty, 4); // Force max 4 to stay safe
-        log("INFO", `📊 BTC Order: Balance=${state.currentBalance} → Force Qty=${safeQty}`);
-        orderQty = safeQty;
+        log("INFO", `📊 BTC Order: Notional=${notional} USDT → Qty=${orderQty} BTC (price=${price})`);
         
         const tpPrice = rangeTradeSide === "BULLISH"
           ? price * (1 + rangeTpPct / 100)

@@ -955,7 +955,7 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
     const res = await bitgetRequest("POST", "/api/v2/mix/order/place-order", {}, {
       symbol:      tradeSymbol,
       productType: CONFIG.PRODUCT_TYPE,
-      // marginMode:  CONFIG.MARGIN_MODE,  // Remove to use account default
+      marginMode:  "isolated",  // Use isolated margin
       marginCoin:  CONFIG.MARGIN_COIN,
       size:        qty.toString(),
       side:        orderSide,

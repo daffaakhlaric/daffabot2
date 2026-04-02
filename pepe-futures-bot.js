@@ -264,11 +264,91 @@ let compoundedBalance = CONFIG.POSITION_SIZE_USDT;
  * @returns {{ riskMultiplier: number, confidenceBoost: number, label: string }}
  */
 function getAdaptiveRisk(streak) {
-  if (streak >= 5) return { riskMultiplier: 0.40, confidenceBoost: 20, label: "⚠️ STREAK≥5 — ultra-defensive" };
-  if (streak >= 4) return { riskMultiplier: 0.50, confidenceBoost: 15, label: "🔴 STREAK≥4 — defensive" };
-  if (streak >= 3) return { riskMultiplier: 0.60, confidenceBoost: 10, label: "🟠 STREAK≥3 — cautious" };
-  if (streak >= 2) return { riskMultiplier: 0.80, confidenceBoost:  5, label: "🟡 STREAK≥2 — selective" };
-  return               { riskMultiplier: 1.00, confidenceBoost:  0, label: "🟢 NORMAL" };
+  // RULE 1: After 2 consecutive losses - reduce by 50%, require higher confidence
+  if (streak >= 5) return { 
+    riskMultiplier: 0.30, 
+    confidenceBoost: 25, 
+    minConfidence: 75,  // NEW: Minimum confidence required
+    minOrderbookScore: 3,  // NEW: Orderbook must be strong
+    testTrade: true,  // NEW: Only allow test trade
+    label: "⚠️ STREAK≥5 — ultra-defensive + TEST TRADE ONLY" 
+  };
+  if (streak >= 4) return { 
+    riskMultiplier: 0.40, 
+    confidenceBoost: 20, 
+    minConfidence: 70,
+    minOrderbookScore: 3,
+    testTrade: true,
+    label: "🔴 STREAK≥4 — defensive + TEST TRADE ONLY" 
+  };
+  // RULE 2: After 3 consecutive losses - STOP for 1 hour + MARKET_BAD phase
+  if (streak >= 3) return { 
+    riskMultiplier: 0.50, 
+    confidenceBoost: 15, 
+    minConfidence: 68,
+    minOrderbookScore: 2,
+    forceCooldown: true,  // NEW: Force cooldown
+    label: "🟠 STREAK≥3 — COOLDOWN 1H + MARKET_BAD" 
+  };
+  // RULE 1: After 2 consecutive losses
+  if (streak >= 2) return { 
+    riskMultiplier: 0.50,  // 50% size reduction
+    confidenceBoost: 10, 
+    minConfidence: 65,  // Higher than normal
+    minOrderbookScore: 2,
+    label: "🟡 STREAK≥2 — 50% size + conf≥65" 
+  };
+  return { 
+    riskMultiplier: 1.00, 
+    confidenceBoost: 0, 
+    minConfidence: 55,
+    minOrderbookScore: 0,
+    label: "🟢 NORMAL" 
+  };
+}
+
+/** Anti-Loss Streak SMART FILTER */
+function checkLossStreakFilters(stats, orderBook, choch, volumeRatio) {
+  const streak = stats.lossStreak || 0;
+  const adaptive = getAdaptiveRisk(streak);
+  
+  // If no loss streak, allow all
+  if (streak < 2) {
+    return { allowed: true, reason: "Normal trading" };
+  }
+  
+  // Check orderbook score (require ≥ 2 during loss streak)
+  let orderbookScore = 0;
+  if (orderBook) {
+    if (orderBook.bidAskRatio > 1.5) orderbookScore += 1;
+    if (orderBook.spread < 0.02) orderbookScore += 1;
+    if (orderBook.totalBid > orderBook.totalAsk * 2) orderbookScore += 1;
+  }
+  
+  // Check SMC confirmation
+  const smcConfirmed = choch?.detected || false;
+  
+  // Check volume spike
+  const volumeSpike = volumeRatio > 1.5;
+  
+  const reasons = [];
+  if (orderbookScore < adaptive.minOrderbookScore) {
+    reasons.push(`OB=${orderbookScore}<${adaptive.minOrderbookScore}`);
+  }
+  if (!smcConfirmed) {
+    reasons.push("SMC=❌");
+  }
+  if (!volumeSpike) {
+    reasons.push(`VOL=${volumeRatio.toFixed(1)}<1.5`);
+  }
+  
+  if (reasons.length > 0) {
+    log("LOSS PROTECTION", `[LOSS PROTECTION] Streak=${streak} → SKIP: ${reasons.join(", ")}`);
+    return { allowed: false, reason: reasons.join(", "), orderbookScore, smcConfirmed, volumeSpike };
+  }
+  
+  log("LOSS PROTECTION", `[LOSS PROTECTION] Streak=${streak} → PASS (OB=${orderbookScore} SMC=✅ VOL=${volumeSpike})`);
+  return { allowed: true, reason: "All filters passed", orderbookScore, smcConfirmed, volumeSpike };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1336,20 +1416,26 @@ async function closePosition(reason, currentPrice, symbol = null) {
         adaptive,
       });
     } else {
+      // RULE 2: After 3 consecutive losses - STOP for 1 hour + MARKET_BAD phase
       // LIVE: tiered cooldown
       const cooldownMs =
-        lossStreak >= 4 ? 120 * 60 * 1000 :  // 2 jam kalau loss 4+
-        lossStreak >= 3 ? 45  * 60 * 1000 :  // 45 menit kalau loss 3
-        lossStreak >= 2 ? 15  * 60 * 1000 :  // 15 menit kalau loss 2
+        lossStreak >= 5 ? 180 * 60 * 1000 :  // 3 jam kalau loss 5+
+        lossStreak >= 4 ? 120 * 60 * 1000 :  // 2 jam kalau loss 4
+        lossStreak >= 3 ? 60  * 60 * 1000 :  // 1 jam kalau loss 3 (RULE 2)
                           0;
 
       if (cooldownMs > 0) {
+        // Switch to MARKET_BAD phase during cooldown
+        if (lossStreak >= 3) {
+          state.phase = { phase: "MARKET_BAD", reason: `Loss streak ${lossStreak}x` };
+          log("LOSS PROTECTION", `[LOSS PROTECTION] LossStreak=${lossStreak} → COOLDOWN ${cooldownMs/60000}H + MARKET_BAD phase`);
+        }
+        
         state.pausedUntil = Date.now() + cooldownMs;
         state.pauseReason =
-          `SL cooldown — loss streak ${lossStreak}x ` +
-          `(${Math.round(cooldownMs / 60000)} menit)`;
+          `Loss streak ${lossStreak}x — cooldown ${Math.round(cooldownMs / 60000)} menit`;
         log("WARN",
-          `⏸ Cooldown ${Math.round(cooldownMs / 60000)} menit setelah SL ke-${lossStreak} — cegah revenge trading`
+          `⏸ [LOSS PROTECTION] Cooldown ${Math.round(cooldownMs / 60000)} menit setelah loss ke-${lossStreak} — cegah revenge trading`
         );
         broadcastSSE({
           type:      "sl_cooldown",
@@ -1357,6 +1443,7 @@ async function closePosition(reason, currentPrice, symbol = null) {
           cooldownMs,
           resumeAt:  state.pausedUntil,
           message:   state.pauseReason,
+          marketBad: lossStreak >= 3,
         });
       }
 
@@ -4534,11 +4621,30 @@ async function tradingLoop() {
         : (sdReady || (bosDirectEntry && !smcFull)) ? 65 : CONFIG.OPEN_CONFIDENCE;
       const confThreshold = baseConfThreshold + (adaptive?.confidenceBoost ?? 0);
       
-      // ── LOW QUALITY TRADE FILTER: Skip if confidence < 55 ───────
-      const MIN_CONFIDENCE = 55;
+      // ── ANTI-LOSS STREAK: Get adaptive minimum confidence ───────────
+      const adaptiveRisk = getAdaptiveRisk(stats.lossStreak || 0);
+      const MIN_CONFIDENCE = adaptiveRisk.minConfidence || 55;
+      
+      // ── SMART FILTER: Check loss streak filters ──────────────────────
+      const lossStreakFilter = checkLossStreakFilters(
+        stats, 
+        orderBook, 
+        choch, 
+        indicators.volumeRatio
+      );
+      
+      // ── LOW QUALITY TRADE FILTER: Skip if confidence < MIN ───────
       if (claudeFilter.confidence < MIN_CONFIDENCE) {
         if (state.tickCount % 6 === 0) {
           log("FILTER", `[FILTER] Low confidence ${claudeFilter.confidence}% < ${MIN_CONFIDENCE}% → SKIP (reduce low-quality trades)`);
+        }
+        return;
+      }
+      
+      // ── LOSS STREAK SMART FILTER ─────────────────────────────────
+      if (!lossStreakFilter.allowed) {
+        if (state.tickCount % 6 === 0) {
+          log("LOSS PROTECTION", `[LOSS PROTECTION] Loss streak filters blocked entry: ${lossStreakFilter.reason}`);
         }
         return;
       }

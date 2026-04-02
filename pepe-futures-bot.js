@@ -729,10 +729,9 @@ async function getActivePosition() {
   const liqPrice    = parseFloat(p.liquidationPrice || "0");
   const unrealPnL   = parseFloat(p.unrealizedPL || "0");
   const marginSize  = parseFloat(p.marginSize || "0");
-  const markPrice   = parseFloat(p.markPrice || "0");
   const pnlPct      = marginSize > 0 ? (unrealPnL / marginSize) * 100 : 0;
 
-  return { side, entryPrice, size, leverage, liqPrice, unrealPnL, pnlPct, marginSize, markPrice };
+  return { side, entryPrice, size, leverage, liqPrice, unrealPnL, pnlPct, marginSize };
 }
 
 async function setLeverage(leverage) {
@@ -5429,22 +5428,6 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       window.currentPosition = d.position !== undefined ? d.position : window.currentPosition;
       window.currentPairMode = d.currentPairMode || 'PEPE';  // Default to PEPE
 
-      // ── REAL-TIME POSITION UPDATE FROM BITGET ─────────────────────
-      // Bitget is single source of truth - update immediately when received
-      if (d.type === 'realtime_position') {
-        if (d.position) {
-          // Update position from Bitget API directly
-          window.currentPosition = d.position;
-          // Render with markPrice (real-time price from Bitget)
-          renderPosition(d.position, d.position.markPrice || d.position.entryPrice);
-        } else {
-          // No position - clear display
-          window.currentPosition = null;
-          document.getElementById('position-content').innerHTML = '<div style="color:#8b949e;text-align:center;padding:20px">Tidak ada posisi aktif</div>';
-        }
-        return;
-      }
-
       // Handle error messages from server
       if (d.type === 'error') {
         const errEl = document.getElementById('smc-status-bar');
@@ -5887,23 +5870,17 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       const notionalStr = pos.notionalUSDT
         ? pos.notionalUSDT.toFixed(2) + ' USDT'
         : (pos.size && pos.entryPrice ? (pos.size * pos.entryPrice).toFixed(2) + ' USDT' : '--');
-      
-      // Real-time data from Bitget
-      const pnlValue = pos.unrealPnL !== undefined ? pos.unrealPnL : 0;
-      const marginStr = pos.marginSize ? pos.marginSize.toFixed(2) + ' USDT' : '--';
-      const markPriceStr = pos.markPrice ? formatPepePrice(pos.markPrice) : (price ? formatPepePrice(price) : '--');
-      
       document.getElementById('position-content').innerHTML = \`
         <div class="row"><span class="label">Side</span><span class="val \${pos.side === 'LONG' ? 'green' : 'red'}">\${pos.side}</span></div>
         <div class="row"><span class="label">Entry</span><span class="val">\${formatPepePrice(pos.entryPrice)}</span></div>
-        <div class="row"><span class="label">Mark Price</span><span class="val blue">\${markPriceStr}</span></div>
-        <div class="row"><span class="label">Size</span><span class="val">\${pos.size} \${window.currentPairMode === 'BTC' ? 'BTC' : 'PEPE'}</span></div>
         <div class="row"><span class="label">Leverage</span><span class="val">\${pos.leverage}x</span></div>
-        <div class="row"><span class="label">Margin</span><span class="val yellow">\${marginStr}</span></div>
         <div class="row"><span class="label">Notional</span><span class="val blue" title="Nilai posisi: qty x harga entry">\${notionalStr}</span></div>
-        <div class="row"><span class="label">PnL</span><span class="val \${pnlClass}">\${fmtPct(pnlPct)} (\${pnlValue >= 0 ? '+' : ''}\${pnlValue.toFixed(4)} USDT)</span></div>
-        \${pos.stopLoss ? '<div class="row"><span class="label">Stop Loss</span><span class="val yellow">' + formatPepePrice(pos.stopLoss) + '</span></div>' : ''}
-        \${pos.takeProfit ? '<div class="row"><span class="label">Take Profit</span><span class="val green">' + formatPepePrice(pos.takeProfit) + '</span></div>' : ''}
+        <div class="row"><span class="label">Stop Loss</span><span class="val yellow">\${formatPepePrice(pos.stopLoss)}</span></div>
+        <div class="row"><span class="label">Take Profit</span><span class="val green">\${formatPepePrice(pos.takeProfit)}</span></div>
+        <div class="row"><span class="label">PnL</span><span class="val \${pnlClass}">\${fmtPct(pnlPct)}</span></div>
+        <div class="row"><span class="label">Breakeven</span>\${breakevenStatus}</div>
+        <div class="row"><span class="label">Lock Profit</span>\${lockProfitStatus}</div>
+        <div class="row"><span class="label">Trailing TP</span><span class="val blue">\${trailingTPVal}</span></div>
         <div class="liq-warning">⚠ LIQUIDATION: \${formatPepePrice(pos.liqPrice)} — jangan biarkan harga mencapai ini!</div>
       \`;
     }
@@ -6454,52 +6431,6 @@ function startDashboard() {
   server.listen(CONFIG.DASHBOARD_PORT, () => {
     log("INFO", `Dashboard aktif di http://localhost:${CONFIG.DASHBOARD_PORT}`);
   });
-
-  // ── REAL-TIME POSITION SYNC (every 3 seconds) ──────────────────────────────
-  // Bitget is the single source of truth - fetch position directly from API
-  setInterval(async () => {
-    if (CONFIG.DRY_RUN || !CONFIG.API_KEY) return;
-    
-    try {
-      const livePos = await getActivePosition();
-      
-      if (livePos) {
-        // Override local state with Bitget data (single source of truth)
-        state.activePosition = {
-          side: livePos.side,
-          entryPrice: livePos.entryPrice,
-          size: livePos.size,
-          leverage: livePos.leverage,
-          liqPrice: livePos.liqPrice,
-          unrealPnL: livePos.unrealPnL,
-          pnlPct: livePos.pnlPct,
-          marginSize: livePos.marginSize,
-          markPrice: livePos.markPrice,
-          openTime: state.activePosition?.openTime || Date.now(),
-          symbol: CONFIG.SYMBOL,
-        };
-        
-        // Broadcast to dashboard in real-time
-        broadcastSSE({
-          type: "realtime_position",
-          position: state.activePosition,
-          source: "bitget",
-        });
-      } else {
-        // No position on exchange
-        if (state.activePosition) {
-          state.activePosition = null;
-          broadcastSSE({
-            type: "realtime_position",
-            position: null,
-            source: "bitget",
-          });
-        }
-      }
-    } catch (err) {
-      // Silent fail for real-time sync - don't spam logs
-    }
-  }, 3000);
 
   // Kirim stats + win rate setiap 30 detik
   setInterval(() => {

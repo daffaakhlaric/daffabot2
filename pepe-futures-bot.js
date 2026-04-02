@@ -448,7 +448,17 @@ async function getOrderBook() {
     const asks = res.data.asks.slice(0, 5).map((a) => ({ price: parseFloat(a[0]), qty: parseFloat(a[1]) }));
     const totalBid = bids.reduce((s, b) => s + b.qty, 0);
     const totalAsk = asks.reduce((s, a) => s + a.qty, 0);
-    return { bids, asks, totalBid, totalAsk, bidAskRatio: totalBid / (totalAsk || 1) };
+    
+    // STEP 1: Get best bid/ask for spread calculation
+    const bestBid = bids.length > 0 ? bids[0].price : 0;
+    const bestAsk = asks.length > 0 ? asks[0].price : 0;
+    const spread = bestBid > 0 ? ((bestAsk - bestBid) / bestBid) * 100 : 0;
+    
+    return { 
+      bids, asks, totalBid, totalAsk, 
+      bidAskRatio: totalBid / (totalAsk || 1),
+      bestBid, bestAsk, spread  // Added for maker order optimization
+    };
   } catch (err) {
     log("WARN", `Order book fetch failed: ${err.message}`);
     return null;
@@ -932,24 +942,73 @@ function calcLiquidationPrice(side, entryPrice, leverage) {
   }
 }
 
-async function openPosition(side, leverage, price, overrideQty = null, symbol = null, indicators = null) {
+async function openPosition(side, leverage, price, overrideQty = null, symbol = null, indicators = null, orderBook = null) {
   const tradeSymbol = symbol || CONFIG.SYMBOL;
   const isPepe = tradeSymbol === "PEPEUSDT";
   const config = isPepe ? CONFIG.PEPE_SPECIFIC_CONFIG : CONFIG.BTC_SPECIFIC_CONFIG;
+  
+  // ═══════════════════════════════════════════════════════════════
+  // STEP 2: SPREAD FILTER
+  // ═══════════════════════════════════════════════════════════════
+  const MAX_SPREAD = 0.03;  // 0.03% max spread for BTC
+  if (orderBook && orderBook.spread !== undefined) {
+    log("SPREAD", `[SPREAD] ${orderBook.spread.toFixed(4)}% | Bid=${orderBook.bestBid?.toFixed(2)} Ask=${orderBook.bestAsk?.toFixed(2)}`);
+    if (orderBook.spread > MAX_SPREAD) {
+      log("FILTER", `[SPREAD FILTER] Spread ${orderBook.spread.toFixed(4)}% > MAX ${MAX_SPREAD}% → SKIP TRADE`);
+      return null;
+    }
+  }
+  
+  // ═══════════════════════════════════════════════════════════════
+  // STEP 7: PRICE VALIDATION & MAKER ORDER PRICING
+  // ═══════════════════════════════════════════════════════════════
+  let orderPrice = price;
+  let useLimitOrder = false;
+  let orderType = "market";
+  
+  if (orderBook && orderBook.bestBid && orderBook.bestAsk) {
+    // STEP 3: Use maker pricing for better fees
+    if (side === "LONG") {
+      // For LONG: place at bestBid (maker) to get better price
+      orderPrice = orderBook.bestBid;
+      // STEP 7: Ensure entry not above bestAsk
+      if (price > orderBook.bestAsk) {
+        orderPrice = orderBook.bestAsk * 0.9999;  // Slightly below ask
+      }
+    } else {
+      // For SHORT: place at bestAsk (maker) to get better price
+      orderPrice = orderBook.bestAsk;
+      // STEP 7: Ensure entry not below bestBid
+      if (price < orderBook.bestBid) {
+        orderPrice = orderBook.bestBid * 1.0001;  // Slightly above bid
+      }
+    }
+    useLimitOrder = true;
+    orderType = "limit";
+    
+    // STEP 6: Slippage control
+    const priceDeviation = Math.abs(price - orderPrice) / price * 100;
+    const MAX_SLIPPAGE = 0.05;  // 0.05% max slippage
+    if (priceDeviation > MAX_SLIPPAGE) {
+      log("FILTER", `[SLIPPAGE] Price deviation ${priceDeviation.toFixed(4)}% > MAX ${MAX_SLIPPAGE}% → SKIP`);
+      return null;
+    }
+    log("SLIPPAGE", `[SLIPPAGE] ${priceDeviation.toFixed(4)}% OK`);
+  }
   
   // Log untuk debugging
   log("INFO", `📊 Order: Symbol=${tradeSymbol} isPepe=${isPepe} Price=${price} Lev=${leverage}`);
   
   const qty = overrideQty || calcOrderSize(price, leverage);
-  const liqPrice = calcLiquidationPrice(side, price, leverage);
+  const liqPrice = calcLiquidationPrice(side, orderPrice, leverage);
   const stopLoss = side === "LONG"
-    ? price * (1 - config.STOP_LOSS_PCT / 100)
-    : price * (1 + config.STOP_LOSS_PCT / 100);
+    ? orderPrice * (1 - config.STOP_LOSS_PCT / 100)
+    : orderPrice * (1 + config.STOP_LOSS_PCT / 100);
   const takeProfit = side === "LONG"
-    ? price * (1 + config.TAKE_PROFIT_PCT / 100)
-    : price * (1 - config.TAKE_PROFIT_PCT / 100);
+    ? orderPrice * (1 + config.TAKE_PROFIT_PCT / 100)
+    : orderPrice * (1 - config.TAKE_PROFIT_PCT / 100);
 
-  log("TRADE", `${C.bold}BUKA ${side} ${tradeSymbol}${C.reset} | Harga: ${price.toFixed(8)} | Qty: ${qty} | Leverage: ${leverage}x`);
+  log("TRADE", `${C.bold}BUKA ${side} ${tradeSymbol}${C.reset} | Harga: ${orderPrice.toFixed(8)} | Qty: ${qty} | Leverage: ${leverage}x`);
   log("TRADE", `  Stop Loss  : ${stopLoss.toFixed(8)} (${config.STOP_LOSS_PCT}%)`);
   log("TRADE", `  Take Profit: ${takeProfit.toFixed(8)} (${config.TAKE_PROFIT_PCT}%)`);
   log("TRADE", `  ${C.red}Liquidation: ${liqPrice.toFixed(8)}${C.reset} ← JANGAN BIARKAN SAMPAI SINI!`);
@@ -959,19 +1018,105 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
   } else {
     await setLeverage(leverage, tradeSymbol);
     const orderSide = side === "LONG" ? "buy" : "sell";
-    // marginMode WAJIB diset sesuai config
-    const orderParams = {
-      symbol:      tradeSymbol,
-      productType: CONFIG.PRODUCT_TYPE,
-      marginMode:  CONFIG.MARGIN_MODE,
-      marginCoin:  CONFIG.MARGIN_COIN,
-      size:        qty.toString(),
-      side:        orderSide,
-      tradeSide:   "open",
-      orderType:   "market",
-      leverage:    leverage.toString(),
-    };
-    const res = await bitgetRequest("POST", "/api/v2/mix/order/place-order", {}, orderParams);
+    
+    // ═══════════════════════════════════════════════════════════════
+    // STEP 4: POST-ONLY MODE & STEP 5: FALLBACK TO MARKET
+    // ═══════════════════════════════════════════════════════════════
+    let res = null;
+    let orderMode = "MARKET";
+    
+    if (useLimitOrder) {
+      // STEP 4: Try limit order with postOnly
+      const limitOrderParams = {
+        symbol:      tradeSymbol,
+        productType: CONFIG.PRODUCT_TYPE,
+        marginMode:  CONFIG.MARGIN_MODE,
+        marginCoin:  CONFIG.MARGIN_COIN,
+        size:        qty.toString(),
+        side:        orderSide,
+        tradeSide:   "open",
+        orderType:   "limit",
+        price:       orderPrice.toString(),
+        // postOnly: true  // Bitget doesn't have explicit postOnly, use timeInForce
+        timeInForce: "postOnly",  // GTC by default, try IOC for immediate
+      };
+      
+      log("ORDER", `[ORDER MODE] Maker LIMIT placed at ${orderPrice.toFixed(2)}`);
+      
+      // Try limit order first
+      try {
+        res = await bitgetRequest("POST", "/api/v2/mix/order/place-order", {}, limitOrderParams);
+        
+        if (res.code === "00000") {
+          orderMode = "LIMIT";
+          // Wait for fill with timeout
+          const maxWait = 8000;  // 8 seconds
+          const checkInterval = 1000;
+          let waited = 0;
+          let filled = false;
+          
+          while (waited < maxWait) {
+            await new Promise(r => setTimeout(r, checkInterval));
+            waited += checkInterval;
+            
+            // Check order status
+            try {
+              const orderRes = await bitgetRequest("GET", "/api/v2/mix/order/detail", { orderId: res.data?.orderId });
+              if (orderRes.data?.status === "filled" || orderRes.data?.status === "partial_fill") {
+                filled = true;
+                log("ORDER", `✅ LIMIT order filled! OrderId: ${res.data.orderId}`);
+                break;
+              } else if (orderRes.data?.status === "canceled" || orderRes.data?.status === "expired") {
+                log("ORDER", `⚠️ LIMIT order not filled, status: ${orderRes.data?.status}`);
+                break;
+              }
+            } catch (e) {
+              // Continue waiting
+            }
+          }
+          
+          // STEP 5: Fallback to market if not filled and confidence > 70
+          if (!filled) {
+            const conf = indicators?.confidence || 60;
+            if (conf > 70) {
+              log("ORDER", `⚠️ LIMIT not filled, confidence ${conf}% > 70 → Falling back to MARKET`);
+              // Cancel limit order and place market
+              try {
+                await bitgetRequest("POST", "/api/v2/mix/order/cancel-order", {}, { 
+                  symbol: tradeSymbol, orderId: res.data?.orderId 
+                });
+              } catch (e) {}
+              
+              orderType = "market";
+              orderMode = "MARKET_FALLBACK";
+            } else {
+              log("FILTER", `[ORDER] Confidence ${conf}% <= 70 → Skip (no fallback)`);
+              return null;
+            }
+          }
+        }
+      } catch (limitErr) {
+        log("WARN", `LIMIT order failed: ${limitErr.message} → Using market`);
+        orderType = "market";
+      }
+    }
+    
+    // Place final order (market or fallback)
+    if (orderType === "market" || orderMode === "MARKET_FALLBACK") {
+      const orderParams = {
+        symbol:      tradeSymbol,
+        productType: CONFIG.PRODUCT_TYPE,
+        marginMode:  CONFIG.MARGIN_MODE,
+        marginCoin:  CONFIG.MARGIN_COIN,
+        size:        qty.toString(),
+        side:        orderSide,
+        tradeSide:   "open",
+        orderType:   "market",
+        leverage:    leverage.toString(),
+      };
+      res = await bitgetRequest("POST", "/api/v2/mix/order/place-order", {}, orderParams);
+    }
+    
     if (res.code !== "00000") {
       log("ERROR", `Gagal buka order: ${res.msg} | Symbol: ${tradeSymbol} | Qty: ${qty} | Lev: ${leverage}x`);
       // Check if there's a conflicting position
@@ -1017,6 +1162,7 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
     trailingTP:   takeProfit,
     tpTrailPct:   config.TAKE_PROFIT_PCT * 0.5,
     breakevenSet: false,
+    runnerActivated: false,  // Fee-aware: disable runner until profit > 0.4%
     lockLevel:    undefined,
     momentumWeakCount: 0,
     openTime:     new Date().toISOString(),
@@ -1892,6 +2038,43 @@ function detectLiquidityGrab(klines, swings, side) {
   }
 }
 
+/** 1D-2 — Equal Highs/Lows Liquidity Zone Detection (SMC Enhancement) */
+function detectEqualHighsLows(klines, tolerance = 0.001) {
+  if (klines.length < 10) return { equalHighs: [], equalLows: [] };
+  
+  const highs = klines.slice(-50).map(k => k.high);
+  const lows = klines.slice(-50).map(k => k.low);
+  
+  // Find equal highs (resistance liquidity)
+  const equalHighs = [];
+  for (let i = 0; i < highs.length; i++) {
+    const h = highs[i];
+    const matches = highs.filter(hi => Math.abs(hi - h) / h < tolerance);
+    if (matches.length >= 2) {
+      equalHighs.push({ price: h, count: matches.length, index: i });
+    }
+  }
+  
+  // Find equal lows (support liquidity)
+  const equalLows = [];
+  for (let i = 0; i < lows.length; i++) {
+    const l = lows[i];
+    const matches = lows.filter(li => Math.abs(li - l) / l < tolerance);
+    if (matches.length >= 2) {
+      equalLows.push({ price: l, count: matches.length, index: i });
+    }
+  }
+  
+  // Sort by count and return top
+  equalHighs.sort((a, b) => b.count - a.count);
+  equalLows.sort((a, b) => b.count - a.count);
+  
+  return {
+    equalHighs: equalHighs.slice(0, 3),
+    equalLows: equalLows.slice(0, 3),
+  };
+}
+
 /** 1E — CHoCH Detection (close + volume wajib) */
 function detectCHoCH(klines, swings, side, avgVol) {
   if (klines.length < 3) return { detected: false };
@@ -2222,6 +2405,96 @@ function detectBreakOfStructure(klines, swings, side) {
   }
 }
 
+/** STEP 5 — Fake Breakout Filter (SMC Enhancement) */
+function detectFakeBreakout(klines, swings, side) {
+  if (klines.length < 5) return { detected: false };
+  
+  const last = klines[klines.length - 1];
+  const prev2 = klines[klines.length - 2];
+  const prev3 = klines[klines.length - 3];
+  
+  if (side === "BULLISH") {
+    // Fake breakout down: price breaks below support but closes back above
+    const swingLow = swings.lastLow?.price;
+    if (!swingLow) return { detected: false };
+    
+    // Check if price broke below swing low recently
+    const brokeBelow = prev2.low < swingLow || prev3.low < swingLow;
+    // Check if now returning above
+    const returnedAbove = last.close > swingLow && last.close > prev2.close;
+    // Check for rejection candle (long lower wick)
+    const rejection = (last.low - Math.min(last.open, last.close)) > (Math.abs(last.close - last.open)) * 2;
+    
+    return {
+      detected: brokeBelow && returnedAbove,
+      type: "FAKE_BREAKDOWN",
+      level: swingLow,
+      rejection,
+      reason: "Price broke below liquidity then returned - stop hunt confirmed"
+    };
+  } else {
+    // Fake breakout up: price breaks above resistance but closes back below
+    const swingHigh = swings.lastHigh?.price;
+    if (!swingHigh) return { detected: false };
+    
+    const brokeAbove = prev2.high > swingHigh || prev3.high > swingHigh;
+    const returnedBelow = last.close < swingHigh && last.close < prev2.close;
+    const rejection = (Math.max(last.open, last.close) - last.high) > (Math.abs(last.close - last.open)) * 2;
+    
+    return {
+      detected: brokeAbove && returnedBelow,
+      type: "FAKE_BREAKOUT",
+      level: swingHigh,
+      rejection,
+      reason: "Price broke above liquidity then returned - stop hunt confirmed"
+    };
+  }
+}
+
+/** STEP 6 — Confluence System (SMC Enhancement) */
+function calculateConfluence(indicators, orderBook, choch, fvg, liqGrab, emaTrend) {
+  let confluenceCount = 0;
+  const factors = [];
+  
+  // Factor 1: SMC Signal (CHoCH + FVG + Liquidity Grab)
+  const smcSignal = choch?.detected && fvg?.inFVG;
+  if (smcSignal) {
+    confluenceCount++;
+    factors.push("SMC");
+  }
+  
+  // Factor 2: EMA Trend Alignment
+  if (emaTrend) {
+    confluenceCount++;
+    factors.push("EMA");
+  }
+  
+  // Factor 3: Orderbook Imbalance
+  if (orderBook && orderBook.bidAskRatio > 1.5) {
+    confluenceCount++;
+    factors.push("OB");
+  }
+  
+  // Factor 4: Volume Spike
+  if (indicators.volumeRatio > 1.5) {
+    confluenceCount++;
+    factors.push("VOL");
+  }
+  
+  // Factor 5: RSI in sweet spot
+  if (indicators.rsi >= 40 && indicators.rsi <= 65) {
+    confluenceCount++;
+    factors.push("RSI");
+  }
+  
+  return {
+    count: confluenceCount,
+    factors,
+    sufficient: confluenceCount >= 2,  // Require at least 2 factors
+    label: factors.join("+")
+  };
+}
+
 /**
  * D. Reversal Score 0–100.
  * Skor komposit dari sinyal reversal kelas institusional.
@@ -2499,7 +2772,8 @@ async function runPepeStrategy(pepeTicker, pepeKlines) {
         pepePrice,
         orderQty,
         "PEPEUSDT",
-        pepeIndicators
+        pepeIndicators,
+        orderBook
       );
       
       if (opened) {
@@ -2811,6 +3085,7 @@ async function tradingLoop() {
             pnlPct: livePosition.pnlPct,
             openTime: Date.now(),
             symbol: CONFIG.SYMBOL,
+            runnerActivated: false,  // Fee-aware: fresh position
           };
         } else {
           // Both have position - sync live data
@@ -2970,21 +3245,58 @@ async function tradingLoop() {
     } else {
     
     // ═══════════════════════════════════════════════════════════════
-    // TIMEOUT EXIT - Close if trade held too long with low profit
-    // IF trade_duration > 120 minutes AND profit < 0.2% → EXIT
+    // STEP 1: DEFINE FEE MODEL
     // ═══════════════════════════════════════════════════════════════
-    const TIMEOUT_MINUTES = 120;
-    const TIMEOUT_PROFIT_PCT = 0.2;
+    const TAKER_FEE = 0.0006;    // 0.06%
+    const MAKER_FEE = 0.0002;    // 0.02%
+    const ROUND_TRIP_FEE = TAKER_FEE * 2;  // assume taker worst case = 0.12%
+    const FEE_PERCENT = ROUND_TRIP_FEE * 100;  // ≈ 0.12%
+    
+    // STEP 2: MINIMUM PROFIT THRESHOLD = 2x fee
+    const MIN_PROFIT_PCT = FEE_PERCENT * 2;  // ≈ 0.24%
+    
+    // STEP 4: SMART TIMEOUT SYSTEM
+    const TIMEOUT_DEAD_TRADE = 60;  // minutes - close if profit still < min after 60min
+    
     const holdDurationMs = pos.openTime ? Date.now() - new Date(pos.openTime).getTime() : 0;
     const holdMinutes = holdDurationMs / (60 * 1000);
     const rawProfitPct = pos.side === "LONG"
       ? (price - pos.entryPrice) / pos.entryPrice * 100
       : (pos.entryPrice - price) / pos.entryPrice * 100;
     
-    if (holdMinutes >= TIMEOUT_MINUTES && rawProfitPct < TIMEOUT_PROFIT_PCT) {
-      log("TRADE", `⏰ TIMEOUT EXIT: Held ${holdMinutes.toFixed(0)}min with only ${rawProfitPct.toFixed(2)}% profit → Closing position`);
-      await closePosition("TIMEOUT_EXIT", price);
+    // ═══════════════════════════════════════════════════════════════
+    // STEP 3: FEE-AWARE EXIT LOGIC
+    // ═══════════════════════════════════════════════════════════════
+    // [FEE CHECK] Log
+    if (rawProfitPct > 0 && rawProfitPct < MIN_PROFIT_PCT) {
+      log("FEE", `[FEE CHECK] Profit=${rawProfitPct.toFixed(2)}% | MinRequired=${MIN_PROFIT_PCT.toFixed(2)}% → HOLD`);
+    } else if (rawProfitPct >= MIN_PROFIT_PCT) {
+      log("FEE", `[FEE CHECK] Profit=${rawProfitPct.toFixed(2)}% → ALLOW CLOSE`);
+    }
+    
+    // STEP 4: SMART TIMEOUT - Close dead trades after 60min if profit still < min
+    if (holdMinutes >= TIMEOUT_DEAD_TRADE && rawProfitPct < MIN_PROFIT_PCT && rawProfitPct > -CONFIG.STOP_LOSS_PCT) {
+      log("TRADE", `⏰ DEAD TRADE EXIT: Held ${holdMinutes.toFixed(0)}min with only ${rawProfitPct.toFixed(2)}% profit (< min ${MIN_PROFIT_PCT}%) → Closing anyway to free capital`);
+      await closePosition("DEAD_TRADE_TIMEOUT", price);
       return;
+    }
+    
+    // STEP 6: RUNNER PROTECTION - Activate trailing if profit > 0.4%
+    const RUNNER_THRESHOLD = 0.4;  // Activate trailing at 0.4%
+    if (rawProfitPct >= RUNNER_THRESHOLD && !pos.runnerActivated) {
+      pos.runnerActivated = true;
+      log("TRADE", `🏃 RUNNER ACTIVATED: Profit ${rawProfitPct.toFixed(2)}% > ${RUNNER_THRESHOLD}% → Trailing enabled, timeout disabled`);
+    }
+    
+    // Skip normal timeout if runner is activated
+    if (!pos.runnerActivated) {
+      // Normal timeout exit - only if profit >= MIN_PROFIT_PCT
+      const TIMEOUT_NORMAL = 45;  // minutes
+      if (holdMinutes >= TIMEOUT_NORMAL && rawProfitPct >= MIN_PROFIT_PCT) {
+        log("TRADE", `⏰ TIMEOUT EXIT: Held ${holdMinutes.toFixed(0)}min with ${rawProfitPct.toFixed(2)}% profit → Closing position`);
+        await closePosition("TIMEOUT_EXIT", price);
+        return;
+      }
     }
 
     // ── FITUR #1: AUTO BREAKEVEN (Regime-based) ───────────────────────
@@ -3229,6 +3541,13 @@ async function tradingLoop() {
       // Use regime-based trailing distance
       pos.tpTrailPct = positionRegime === "RANGE" ? 0.35 : CONFIG.TAKE_PROFIT_PCT * 0.5;
     }
+    
+    // STEP 6: RUNNER PROTECTION - More aggressive trailing when runner activated
+    if (pos.runnerActivated) {
+      // Tighter trailing for runner - let winner run!
+      pos.tpTrailPct = 0.15;  // Very tight 0.15% trailing
+      log("TRADE", `🏃 RUNNER MODE: Tighter trailing ${pos.tpTrailPct}% → Let winner run!`);
+    }
 
     if (pos.side === "LONG") {
       // Update trailing TP ke atas saat harga naik melewati TP lama
@@ -3248,9 +3567,14 @@ async function tradingLoop() {
       const tpTriggered = price >= pos.takeProfit  // TP awal tercapai
         && price <= pos.trailingTP * (1 - pos.tpTrailPct / 100 / pos.leverage / 2);
       if (tpTriggered || price >= pos.trailingTP) {
-        log("TRADE", `${C.green}TAKE PROFIT (trailing TP=${pos.trailingTP.toFixed(8)})${C.reset}`);
-        await closePosition("TAKE_PROFIT_TRAILING", price);
-        return;
+        // STEP 3: FEE GATE - Don't close if profit < minProfitPercent
+        if (rawProfitPct > 0 && rawProfitPct < MIN_PROFIT_PCT) {
+          log("FEE", `[FEE GATE] Trailing TP hit but profit ${rawProfitPct.toFixed(2)}% < min ${MIN_PROFIT_PCT}% → HOLD`);
+        } else {
+          log("TRADE", `${C.green}TAKE PROFIT (trailing TP=${pos.trailingTP.toFixed(8)})${C.reset}`);
+          await closePosition("TAKE_PROFIT_TRAILING", price);
+          return;
+        }
       }
     } else { // SHORT
       if (price < pos.trailingTP) {
@@ -3266,9 +3590,14 @@ async function tradingLoop() {
       const tpTriggered = price <= pos.takeProfit
         && price >= pos.trailingTP * (1 + pos.tpTrailPct / 100 / pos.leverage / 2);
       if (tpTriggered || price <= pos.trailingTP) {
-        log("TRADE", `${C.green}TAKE PROFIT (trailing TP=${pos.trailingTP.toFixed(8)})${C.reset}`);
-        await closePosition("TAKE_PROFIT_TRAILING", price);
-        return;
+        // STEP 3: FEE GATE - Don't close if profit < minProfitPercent
+        if (rawProfitPct > 0 && rawProfitPct < MIN_PROFIT_PCT) {
+          log("FEE", `[FEE GATE] Trailing TP hit but profit ${rawProfitPct.toFixed(2)}% < min ${MIN_PROFIT_PCT}% → HOLD`);
+        } else {
+          log("TRADE", `${C.green}TAKE PROFIT (trailing TP=${pos.trailingTP.toFixed(8)})${C.reset}`);
+          await closePosition("TAKE_PROFIT_TRAILING", price);
+          return;
+        }
       }
     }
 
@@ -3346,12 +3675,17 @@ async function tradingLoop() {
         pos.momentumWeakCount = (pos.momentumWeakCount || 0) + 1;
 
         if (pos.momentumWeakCount >= 2) {
-          log("TRADE",
-            `⚡ EARLY EXIT — Momentum melemah [${reasons.join(", ")}] ` +
-            `| Profit ${rawProfit.toFixed(3)}% raw | Amankan sekarang`
-          );
-          await closePosition("EARLY_EXIT_WEAK_MOMENTUM", price);
-          return;
+          // STEP 3: FEE GATE - Don't close if profit < minProfitPercent
+          if (rawProfitPct > 0 && rawProfitPct < MIN_PROFIT_PCT) {
+            log("FEE", `[FEE GATE] Early exit blocked - profit ${rawProfitPct.toFixed(2)}% < min ${MIN_PROFIT_PCT}% → HOLD`);
+          } else {
+            log("TRADE",
+              `⚡ EARLY EXIT — Momentum melemah [${reasons.join(", ")}] ` +
+              `| Profit ${rawProfit.toFixed(3)}% raw | Amankan sekarang`
+            );
+            await closePosition("EARLY_EXIT_WEAK_MOMENTUM", price);
+            return;
+          }
         } else {
           log("INFO",
             `⚠ Momentum mulai lemah (${pos.momentumWeakCount}/2) [${reasons.join(", ")}] ` +
@@ -3513,7 +3847,8 @@ async function tradingLoop() {
           price,
           orderQty,
           null,
-          indicators
+          indicators,
+          orderBook
         );
         
         if (opened && state.activePosition) {
@@ -3707,11 +4042,39 @@ async function tradingLoop() {
     const fvgData  = detectFVG(klines5m, tradeSide);
     const inFVG    = isPriceInFVG(price, fvgData, tradeSide);
     const candleOK = confirmEntryCandle(klines5m, tradeSide);
+    
+    // ── STEP 5: FAKE BREAKOUT FILTER ───────────────────────────
+    const fakeBreakout = detectFakeBreakout(klines5m, swings, tradeSide);
+    if (fakeBreakout.detected) {
+      log("SMC", `[SMC] Fake Breakout detected: ${fakeBreakout.type} at ${fakeBreakout.level?.toFixed(2)} → ${fakeBreakout.reason}`);
+    }
+    
+    // ── STEP 1: LIQUIDITY ZONES (Equal Highs/Lows) ───────────────
+    const liqZones = detectEqualHighsLows(klines5m);
+    if (liqZones.equalHighs.length > 0 || liqZones.equalLows.length > 0) {
+      const liqLabel = tradeSide === "BULLISH" 
+        ? `Lows: ${liqZones.equalLows[0]?.price?.toFixed(2)} (${liqZones.equalLows[0]?.count}x)`
+        : `Highs: ${liqZones.equalHighs[0]?.price?.toFixed(2)} (${liqZones.equalHighs[0]?.count}x)`;
+      log("SMC", `[SMC] Liquidity Zone: ${liqLabel}`);
+    }
 
     // ── E2. S/D Zone Touch + Reversal Detection ────────────
     const sdZone  = detectSDZoneTouch(klines5m, swings, tradeSide);
     const sweep   = detectLiquiditySweep(klines5m, swings, tradeSide);
     const bos     = detectBreakOfStructure(klines5m, swings, tradeSide);
+    
+    // ── STEP 6: CONFLUENCE SYSTEM ───────────────────────────────
+    const emaTrend = tradeSide === "BULLISH" 
+      ? (indicators.ema9 > indicators.ema21) 
+      : (indicators.ema9 < indicators.ema21);
+    const confluence = calculateConfluence(
+      indicators, orderBook, choch, inFVG, liqGrab, emaTrend
+    );
+    
+    if (!confluence.sufficient) {
+      log("SMC", `[SMC] Confluence insufficient: ${confluence.count}/2 factors (${confluence.label}) → SKIP`);
+    }
+    
     const revScore = calculateReversalScore({
       sweep,
       bos,
@@ -3791,6 +4154,20 @@ async function tradingLoop() {
           (btcA.action === "SHORT" && tradeSide === "BEARISH"));
 
     const smcReady = sdReady || smcFull || revReady || bosDirectEntry || btcPullbackReady;
+    
+    // ── STEP 5: FAKE BREAKOUT FILTER - Skip if breakout without return ─
+    // Only enter if fake breakout detected (stop hunt) OR no breakout
+    const validEntry = fakeBreakout.detected || !bos.detected;
+    if (!validEntry && smcReady) {
+      log("SMC", `[SMC] Fake Breakout Filter: Breakout without return → SKIP (wait for confirmation)`);
+      return;
+    }
+    
+    // ── STEP 6: CONFLUENCE REQUIREMENT ─────────────────────────────
+    if (!confluence.sufficient && smcReady) {
+      log("SMC", `[SMC] Insufficient confluence: ${confluence.count}/2 → SKIP`);
+      return;
+    }
 
     // ── [3] Entry delay — pending signal & candle confirmation ────
     if (smcReady) {
@@ -4081,6 +4458,16 @@ async function tradingLoop() {
       // ATR valid
       const atrValid = atrPct >= CONFIG.ATR_MIN_PERCENT;
       
+      // ═══════════════════════════════════════════════════════════════
+      // STEP 5: ENTRY FILTER - Skip if expected move < 0.3%
+      // ═══════════════════════════════════════════════════════════════
+      const expectedMove = atrPct * 1.5;  // Expected move = ATR * 1.5
+      const MIN_EXPECTED_MOVE = 0.3;  // Minimum 0.3% expected move
+      if (expectedMove < MIN_EXPECTED_MOVE) {
+        log("FILTER", `[FILTER] Expected move ${expectedMove.toFixed(2)}% < MIN ${MIN_EXPECTED_MOVE}% (ATR=${atrPct.toFixed(2)}%) → SKIP`);
+        return;
+      }
+      
       // AI agrees
       const aiAgrees = claudeFilter.approve;
       
@@ -4146,6 +4533,15 @@ async function tradingLoop() {
         ? 58
         : (sdReady || (bosDirectEntry && !smcFull)) ? 65 : CONFIG.OPEN_CONFIDENCE;
       const confThreshold = baseConfThreshold + (adaptive?.confidenceBoost ?? 0);
+      
+      // ── LOW QUALITY TRADE FILTER: Skip if confidence < 55 ───────
+      const MIN_CONFIDENCE = 55;
+      if (claudeFilter.confidence < MIN_CONFIDENCE) {
+        if (state.tickCount % 6 === 0) {
+          log("FILTER", `[FILTER] Low confidence ${claudeFilter.confidence}% < ${MIN_CONFIDENCE}% → SKIP (reduce low-quality trades)`);
+        }
+        return;
+      }
 
       // ── I. Entry ────────────────────────────────────────
       // Allow entry if: score >= 70 AND confidence >= threshold AND squeeze is safe
@@ -4172,7 +4568,8 @@ async function tradingLoop() {
           price,
           orderQty,
           null,
-          indicators
+          indicators,
+          orderBook
         );
         if (opened && state.activePosition) {
           // Override SL/TP dengan kalkulasi SMC

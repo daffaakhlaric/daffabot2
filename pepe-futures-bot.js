@@ -2925,6 +2925,11 @@ async function tradingLoop() {
     const currentEMA9 = pos.ema9 || price;
     const currentEMA21 = pos.ema21 || price;
     
+    // Calculate raw profit/loss FIRST
+    const rawProfitLock = pos.side === "LONG"
+      ? (price - pos.entryPrice) / pos.entryPrice * 100
+      : (pos.entryPrice - price) / pos.entryPrice * 100;
+    
     // Count bullish candles (last 5 candles)
     let bullishCandles = 0;
     if (klines && klines.length >= 5) {
@@ -2995,10 +3000,6 @@ async function tradingLoop() {
     if (state.tickCount % 3 === 0) {
       log("INFO", `[PROFIT PROTECT] Mode: ${mode} | Profit: ${rawProfitLock.toFixed(2)}% | Momentum: ${momentumScore}/5 | Lock: ${(lockPercent*100).toFixed(0)}%`);
     }
-
-    const rawProfitLock = pos.side === "LONG"
-      ? (price - pos.entryPrice) / pos.entryPrice * 100
-      : (pos.entryPrice - price) / pos.entryPrice * 100;
 
     for (let i = LOCK_LEVELS.length - 1; i >= 0; i--) {
       const level = LOCK_LEVELS[i];

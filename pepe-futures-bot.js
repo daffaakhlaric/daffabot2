@@ -757,17 +757,10 @@ async function setMarginMode() {
     log("INFO", `[DRY] Set margin mode: ${CONFIG.MARGIN_MODE}`);
     return;
   }
-  try {
-    await bitgetRequest("POST", "/api/v2/mix/account/set-margin-mode", {}, {
-      symbol:      CONFIG.SYMBOL,
-      productType: CONFIG.PRODUCT_TYPE,
-      marginCoin:  CONFIG.MARGIN_COIN,
-      marginMode:  CONFIG.MARGIN_MODE,
-    });
-    log("INFO", `✅ Set margin mode ${CONFIG.MARGIN_MODE} for ${CONFIG.SYMBOL}`);
-  } catch (err) {
-    log("WARN", `⚠️ Set margin mode failed: ${err.message}`);
-  }
+  // Skip margin mode setting - let it use existing account settings
+  // Setting margin mode can cause errors if positions exist
+  log("INFO", `⏭️ Skip margin mode setting (using account default)`);
+  return;
 }
 
 // ─────────────────────────────────────────────────────────────

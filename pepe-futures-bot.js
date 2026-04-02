@@ -165,7 +165,7 @@ const CONFIG = {
     STOP_LOSS_PCT:    1.5,    // Lebih konservatif untuk BTC
     TAKE_PROFIT_PCT:  3.0,
     TRAILING_OFFSET:  0.5,
-    POSITION_SIZE_USDT: 5,   // Lebih besar untuk BTC
+    POSITION_SIZE_USDT: 15,  // Min 15 USDT: 0.001 BTC × 68k = 68 USDT notional, butuh ≥14 USDT margin @ 5x
     MIN_SL_PCT:       0.3,
     MAX_SL_PCT:       2.0,
   },
@@ -3447,11 +3447,12 @@ async function tradingLoop() {
           orderQty = Math.floor((notional / price) / CONTRACT_SIZE) * CONTRACT_SIZE;
           if (orderQty < CONTRACT_SIZE) orderQty = CONTRACT_SIZE;
         } else {
-          // BTC USDT-M: size = USDT contracts (1 contract = 1 USDT face value)
-          // Minimum Bitget BTCUSDT: 5 USDT contracts
-          let qty = Math.round(notional);
-          const MIN_BTC_QTY = 5;
-          if (qty < MIN_BTC_QTY) qty = MIN_BTC_QTY;
+          // BTC USDT-M: size dalam BTC (bukan USDT contracts)
+          // qty = (margin × leverage) / price → satuan BTC
+          // Minimum Bitget BTCUSDT: 0.001 BTC
+          let qty = (notional * leverage) / price;
+          qty = Math.round(qty * 1000) / 1000; // round ke 3 desimal
+          if (qty < 0.001) qty = 0.001;
           orderQty = qty;
         }
         log("INFO", `📊 BTC Order: Notional=${notional} USDT → Qty=${orderQty} BTC (price=${price})`);
@@ -3912,8 +3913,11 @@ async function tradingLoop() {
         orderQty = Math.floor(qty / CONTRACT_SIZE) * CONTRACT_SIZE;
         if (orderQty < CONTRACT_SIZE) orderQty = CONTRACT_SIZE;
       } else {
-        // BTC USDT-M: size = USDT contracts (1 contract = 1 USDT), minimum 5
-        orderQty = Math.max(5, Math.round(notional));
+        // BTC USDT-M: size dalam BTC, qty = (margin × leverage) / price, minimum 0.001 BTC
+        let qty = (notional * leverage) / price;
+        qty = Math.round(qty * 1000) / 1000;
+        if (qty < 0.001) qty = 0.001;
+        orderQty = qty;
       }
       
       log("INFO", `📊 Dynamic Position: Balance=${currentBalance.toFixed(2)} Phase=${phase} Notional=${notional.toFixed(2)} Price=${price.toFixed(8)} Qty=${orderQty}`);

@@ -3356,11 +3356,28 @@ async function tradingLoop() {
     // ═══════════════════════════════════════════════════════════════
     // STEP 3: FEE-AWARE EXIT LOGIC
     // ═══════════════════════════════════════════════════════════════
-    // [FEE CHECK] Log
+    // [FEE CHECK] — jika profit kecil, cek momentum dulu
     if (rawProfitPct > 0 && rawProfitPct < MIN_PROFIT_PCT) {
-      log("FEE", `[FEE CHECK] Profit=${rawProfitPct.toFixed(2)}% | MinRequired=${MIN_PROFIT_PCT.toFixed(2)}% → HOLD`);
+      // Cek momentum 3 candle terakhir
+      const last3 = klines.slice(-3);
+      const momentumWeak = last3.length >= 2 && (
+        pos.side === "LONG"
+          ? last3[last3.length - 1].close < last3[0].close  // harga turun
+          : last3[last3.length - 1].close > last3[0].close  // harga naik (melawan SHORT)
+      );
+      const rsiWeak = pos.side === "LONG"
+        ? (indicators.rsi || 50) < 40
+        : (indicators.rsi || 50) > 60;
+
+      if (momentumWeak && rsiWeak && rawProfitPct > 0) {
+        log("FEE", `[FEE CHECK] Profit=${rawProfitPct.toFixed(3)}% | Momentum LEMAH + RSI=${(indicators.rsi||50).toFixed(1)} → CLOSE untuk lindungi profit`);
+        await closePosition("PROFIT_PROTECT_MOMENTUM", price);
+        return;
+      } else {
+        log("FEE", `[FEE CHECK] Profit=${rawProfitPct.toFixed(3)}% < min ${MIN_PROFIT_PCT.toFixed(2)}% | Momentum OK → HOLD`);
+      }
     } else if (rawProfitPct >= MIN_PROFIT_PCT) {
-      log("FEE", `[FEE CHECK] Profit=${rawProfitPct.toFixed(2)}% → ALLOW CLOSE`);
+      log("FEE", `[FEE CHECK] Profit=${rawProfitPct.toFixed(3)}% → ALLOW CLOSE`);
     }
     
     // STEP 4: SMART TIMEOUT - Close dead trades after 60min if profit still < min
@@ -3377,22 +3394,21 @@ async function tradingLoop() {
       log("TRADE", `🏃 RUNNER ACTIVATED: Profit ${rawProfitPct.toFixed(2)}% > ${RUNNER_THRESHOLD}% → Trailing enabled, timeout disabled`);
     }
     
-    // Skip normal timeout if runner is activated
-    if (!pos.runnerActivated) {
-      // Normal timeout exit - only if profit >= MIN_PROFIT_PCT
+    // Skip timeout jika runner aktif atau Lock V2 disable timeout (profit ≥0.6%)
+    if (!pos.runnerActivated && !pos._timeoutDisabled) {
       const TIMEOUT_NORMAL = 45;  // minutes
       if (holdMinutes >= TIMEOUT_NORMAL && rawProfitPct >= MIN_PROFIT_PCT) {
-        log("TRADE", `⏰ TIMEOUT EXIT: Held ${holdMinutes.toFixed(0)}min with ${rawProfitPct.toFixed(2)}% profit → Closing position`);
+        log("TRADE", `⏰ TIMEOUT EXIT: Held ${holdMinutes.toFixed(0)}min dengan ${rawProfitPct.toFixed(2)}% profit → Closing`);
         await closePosition("TIMEOUT_EXIT", price);
         return;
       }
     }
 
     // ── FITUR #1: AUTO BREAKEVEN (Regime-based) ───────────────────────
-    // RANGE: breakeven at +0.25% | TREND: breakeven at +0.5%
+    // RANGE: breakeven at +0.15% | TREND: breakeven at +0.15%
     const positionRegime = pos.regime || "TREND";
-    const BREAKEVEN_TRIGGER_PCT = positionRegime === "RANGE" ? 0.25 : 0.5;
-    const BREAKEVEN_BUFFER_PCT  = 0.15; // buffer di atas entry untuk nutup fee
+    const BREAKEVEN_TRIGGER_PCT = 0.15;
+    const BREAKEVEN_BUFFER_PCT  = 0.08; // buffer kecil di atas entry untuk nutup fee
 
     if (!pos.breakevenSet) {
       // Gunakan rawProfitPct dari scope luar (sudah dihitung line 3352)
@@ -3412,8 +3428,8 @@ async function tradingLoop() {
           pos.stopLoss    = newSL;
           pos.breakevenSet = true;
           log("TRADE",
-            `🔒 BREAKEVEN SET (${positionRegime} MODE)! SL digeser ke entry+buffer: ` +
-            `${newSL.toFixed(8)} (profit raw ${rawProfitPct.toFixed(3)}%)`
+            `[PROFIT PROTECT] Profit=${rawProfitPct.toFixed(3)}% → SL digeser ke breakeven: ` +
+            `${newSL.toFixed(8)} (entry+${BREAKEVEN_BUFFER_PCT}% buffer)`
           );
           broadcastSSE({
             type:    "breakeven",
@@ -3426,129 +3442,129 @@ async function tradingLoop() {
       }
     }
 
-    // ── FITUR #4: LOCK PROFIT (Regime-based) ──────────────────────────
-    // RANGE: aggressive lock at +0.4% | TREND: existing levels
-    // Level lock: Regime-based lock levels
-    // RANGE: aggressive fast locks | TREND: existing levels
-    // ═══════════════════════════════════════════════════════════════
-    // DYNAMIC PROFIT PROTECTION SYSTEM - AI Trading Risk Manager
-    // ═══════════════════════════════════════════════════════════════
-    
-    // Detect momentum conditions
-    let momentumScore = 0;
-    const volumeRatio = pos.volumeRatio || 1;
-    const rsi = pos.rsi || 50;
-    const currentEMA9 = pos.ema9 || price;
-    const currentEMA21 = pos.ema21 || price;
-    
-    // Calculate raw profit/loss FIRST
-    const rawProfitLock = pos.side === "LONG"
-      ? (price - pos.entryPrice) / pos.entryPrice * 100
-      : (pos.entryPrice - price) / pos.entryPrice * 100;
-    
-    // Count bullish candles (last 5 candles)
-    let bullishCandles = 0;
-    if (klines && klines.length >= 5) {
-      for (let i = klines.length - 5; i < klines.length; i++) {
-        if (klines[i].close > klines[i].open) bullishCandles++;
+    // ── DYNAMIC PROFIT LOCK V2 ────────────────────────────────────────
+    // Level 1: ≥0.15% → BE secured
+    // Level 2: ≥0.30% → lock 30%
+    // Level 3: ≥0.60% → lock 55%, trailing aktif
+    // Level 4: ≥1.20% → lock 75%, runner mode
+    // ─────────────────────────────────────────────────────────────────
+
+    // rawProfitLock = rawProfitPct (sama, dari scope luar)
+    const rawProfitLock = rawProfitPct;
+
+    // ── MOMENTUM CHECK ────────────────────────────────────────────────
+    const rsiNowLock     = indicators.rsi || 50;
+    const ema9NowLock    = indicators.ema9 || price;
+    const volRatioLock   = indicators.volumeRatio || 1;
+    const momentumStrong = volRatioLock > 1.3
+      && rsiNowLock > 55
+      && (pos.side === "LONG" ? price > ema9NowLock : price < ema9NowLock);
+    const momentumWeak   = !momentumStrong && (
+      volRatioLock < 0.8 || rsiNowLock < 40 || rsiNowLock > 75
+    );
+
+    if (state.tickCount % 5 === 0 && rawProfitLock > 0.1) {
+      log("INFO",
+        `[LOCK V2] Profit=${rawProfitLock.toFixed(3)}% | ` +
+        `Vol=${volRatioLock.toFixed(2)}x RSI=${rsiNowLock.toFixed(1)} | ` +
+        `Momentum=${momentumStrong ? "STRONG" : momentumWeak ? "WEAK" : "NEUTRAL"}`
+      );
+    }
+
+    // ── ANTI-LOSS RULE ────────────────────────────────────────────────
+    // Jika trade pernah profit >0.15% tapi harga balik dekat entry → exit
+    if (!pos._wasProfit && rawProfitLock >= 0.15) pos._wasProfit = true;
+    if (pos._wasProfit) {
+      const distFromEntry = pos.side === "LONG"
+        ? (price - pos.entryPrice) / pos.entryPrice * 100
+        : (pos.entryPrice - price) / pos.entryPrice * 100;
+      if (distFromEntry <= 0.03) {  // harga kembali ke entry ±0.03%
+        log("TRADE", `[LOCK V2] ANTI-LOSS: Trade pernah profit tapi harga kembali ke entry → exit paksa`);
+        await closePosition("ANTI_LOSS_PROTECT", price);
+        return;
       }
     }
-    
-    // Momentum detection: count true conditions
-    if (volumeRatio > 1.2) momentumScore++;                    // Volume increasing > 120%
-    if (price > currentEMA9 && price > currentEMA21) momentumScore++; // Price above EMA20 and EMA50
-    if (rsi >= 60 && rsi <= 75) momentumScore++;              // RSI between 60-75
-    if (bullishCandles >= 3) momentumScore++;                 // Consecutive bullish candles ≥ 3
-    
-    // Runner trade detection
-    const isRunner = rawProfitLock >= 1.5 && momentumScore >= 3;
-    
-    // Determine profit protection mode
-    let mode = "EARLY";
-    let lockPercent = 0.25; // Default 25% for EARLY mode
-    
-    if (rawProfitLock >= 1.5 && isRunner) {
-      // MODE 3: RUNNER TRADE
-      mode = "RUNNER";
-      if (rawProfitLock >= 4.0) lockPercent = 0.80;      // 4%+ → lock 80%
-      else if (rawProfitLock >= 2.5) lockPercent = 0.60; // 2.5%+ → lock 60%
-      else lockPercent = 0.40;                            // 1.5%+ → lock 40%
-    } else if (momentumScore >= 3) {
-      // MODE 2: MOMENTUM DETECTED
-      mode = "MOMENTUM";
-      lockPercent = 0.60; // Lock 60% in momentum mode
-    } else if (rawProfitLock >= 0.3 && rawProfitLock < 0.8) {
-      // MODE 1: EARLY PROFIT PROTECTION
-      mode = "EARLY";
-      lockPercent = 0.25; // Lock 25%
-    }
-    
-    // Build LOCK_LEVELS based on mode
-    const LOCK_LEVELS = mode === "RUNNER"
-      ? [
-          { triggerRaw: 1.5, lockRaw: 1.5 * lockPercent },  // 1.5% → lock 40-80%
-          { triggerRaw: 2.5, lockRaw: 2.5 * lockPercent },
-          { triggerRaw: 4.0, lockRaw: 4.0 * lockPercent },
-          { triggerRaw: 5.0, lockRaw: 5.0 * lockPercent },
-        ]
-      : mode === "MOMENTUM"
-      ? [
-          { triggerRaw: 0.8, lockRaw: 0.8 * lockPercent },  // 0.8% → lock 60%
-          { triggerRaw: 1.2, lockRaw: 1.2 * lockPercent },
-          { triggerRaw: 1.5, lockRaw: 1.5 * lockPercent },
-          { triggerRaw: 2.0, lockRaw: 2.0 * lockPercent },
-        ]
-      : positionRegime === "RANGE"
-      ? [
-          { triggerRaw: 0.4, lockRaw: 0.15 },
-          { triggerRaw: 0.6, lockRaw: 0.25 },
-          { triggerRaw: 0.8, lockRaw: 0.35 },
-          { triggerRaw: 1.0, lockRaw: 0.45 },
-        ]
-      : [
-          { triggerRaw: 1.0, lockRaw: 0.3 },
-          { triggerRaw: 1.5, lockRaw: 0.6 },
-          { triggerRaw: 2.0, lockRaw: 1.0 },
-          { triggerRaw: 3.0, lockRaw: 1.8 },
-        ];
-    
-    // Log mode detection for debugging
-    if (state.tickCount % 3 === 0) {
-      log("INFO", `[PROFIT PROTECT] Mode: ${mode} | Profit: ${rawProfitLock.toFixed(2)}% | Momentum: ${momentumScore}/5 | Lock: ${(lockPercent*100).toFixed(0)}%`);
+
+    // ── SMART EXIT: profit >0.15% + momentum lemah → boleh exit ──────
+    if (rawProfitLock >= 0.15 && momentumWeak) {
+      const last3 = klines.slice(-3);
+      const reversing = last3.length >= 2 && (
+        pos.side === "LONG"
+          ? last3[last3.length-1].close < last3[last3.length-2].close
+          : last3[last3.length-1].close > last3[last3.length-2].close
+      );
+      if (reversing && rawProfitLock >= MIN_PROFIT_PCT) {
+        log("TRADE", `[LOCK V2] Smart exit: profit=${rawProfitLock.toFixed(3)}% + momentum lemah + reversal candle → close`);
+        await closePosition("SMART_EXIT_WEAK_MOM", price);
+        return;
+      }
     }
 
-    for (let i = LOCK_LEVELS.length - 1; i >= 0; i--) {
-      const level = LOCK_LEVELS[i];
-      if (rawProfitLock >= level.triggerRaw) {
-        // Hitung SL yang mengunci profit lock%
+    // ── LEVEL LOCK TABLE ──────────────────────────────────────────────
+    // Kalau momentum kuat, delay tighten (buffer lebih longgar)
+    const lockBuffer = momentumStrong ? 1.15 : momentumWeak ? 0.85 : 1.0;
+
+    const V2_LEVELS = [
+      { id: 1, trigger: 0.15, lockPct: 0.05,  label: "BE secured"        },
+      { id: 2, trigger: 0.30, lockPct: 0.30,  label: "30% locked"        },
+      { id: 3, trigger: 0.60, lockPct: 0.55,  label: "55% locked"        },
+      { id: 4, trigger: 1.20, lockPct: 0.75,  label: "runner mode"       },
+    ];
+
+    // Disable timeout saat profit ≥ 0.6% (biarkan trade jalan)
+    if (rawProfitLock >= 0.6 && !pos._timeoutDisabled) {
+      pos._timeoutDisabled = true;
+      log("INFO", `[LOCK V2] Profit ≥0.6% → timeout exit DINONAKTIFKAN, biarkan trade jalan`);
+    }
+
+    for (let i = V2_LEVELS.length - 1; i >= 0; i--) {
+      const lv = V2_LEVELS[i];
+      if (rawProfitLock >= lv.trigger) {
+        // SL = entry + lockPct% dari profit saat ini × buffer momentum
+        const lockAmt  = rawProfitLock * lv.lockPct * lockBuffer;
         const lockedSL = pos.side === "LONG"
-          ? pos.entryPrice * (1 + level.lockRaw / 100)
-          : pos.entryPrice * (1 - level.lockRaw / 100);
+          ? pos.entryPrice * (1 + lockAmt / 100)
+          : pos.entryPrice * (1 - lockAmt / 100);
 
-        // Hanya update SL kalau lebih baik dari SL sekarang
-        const improved = pos.side === "LONG"
-          ? lockedSL > pos.stopLoss
-          : lockedSL < pos.stopLoss;
+        const improved = pos.stopLoss == null
+          ? true
+          : pos.side === "LONG"
+            ? lockedSL > pos.stopLoss
+            : lockedSL < pos.stopLoss;
 
         if (improved) {
-          const prevSL      = pos.stopLoss;
-          pos.stopLoss      = lockedSL;
-          pos.lockLevel     = i; // simpan level yang aktif
+          const prevSL  = pos.stopLoss;
+          pos.stopLoss  = lockedSL;
+          pos.lockLevel = i;
+
+          // Level 4: aktifkan runner trailing
+          if (lv.id === 4 && !pos.runnerActivated) {
+            pos.runnerActivated = true;
+            pos.tpTrailPct      = 0.25; // trailing lebih longgar untuk biarkan jalan
+            log("TRADE", `[RUNNER] Level 4 → letting trade run | trailing=0.25%`);
+          }
+
+          const lockLabel = lv.id === 1 ? "BE secured"
+            : lv.id === 2 ? "30% locked"
+            : lv.id === 3 ? "trailing active"
+            : "runner mode";
+
           log("TRADE",
-            `🔐 LOCK PROFIT Level ${i+1}: ` +
-            `SL ${prevSL.toFixed(8)} → ${lockedSL.toFixed(8)} ` +
-            `(kunci ${level.lockRaw}% profit, trigger ${level.triggerRaw}%)`
+            `[LOCK] Level ${lv.id} → ${lockLabel} | ` +
+            `SL ${prevSL?.toFixed(8) ?? '--'} → ${lockedSL.toFixed(8)} ` +
+            `(profit=${rawProfitLock.toFixed(3)}% lock=${(lv.lockPct*100).toFixed(0)}% buf=${lockBuffer.toFixed(2)})`
           );
           broadcastSSE({
             type:      "lock_profit",
-            level:     i + 1,
-            lockPct:   level.lockRaw,
+            level:     lv.id,
+            label:     lockLabel,
+            lockPct:   lv.lockPct,
             newSL:     lockedSL,
             profitRaw: rawProfitLock.toFixed(3),
           });
           saveState();
         }
-        break; // Pakai level tertinggi yang applicable
+        break;
       }
     }
 
@@ -6581,7 +6597,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       // Fitur baru: Breakeven status
       const breakevenStatus = pos.breakevenSet 
         ? '<span class="val green">✅ Aktif</span>' 
-        : '<span class="val yellow">⏳ Belum (profit &lt;0.4%)</span>';
+        : '<span class="val yellow">⏳ Belum (profit &lt;0.15%)</span>';
       
       // Fitur baru: Lock Profit status
       const lockProfitStatus = pos.lockLevel !== undefined 

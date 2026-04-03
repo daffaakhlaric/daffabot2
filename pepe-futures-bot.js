@@ -7190,19 +7190,24 @@ function startDashboard() {
           productType: CONFIG.PRODUCT_TYPE,
           limit: "20",
         });
-        const rows = (histRes.data?.list || histRes.data || []).map(p => ({
+        // Log raw field names dari 1 record pertama untuk debug
+        const rawList = histRes.data?.list || histRes.data || [];
+        if (rawList.length > 0) {
+          log("INFO", `[HISTORY DEBUG] Raw fields: ${Object.keys(rawList[0]).join(", ")}`);
+          log("INFO", `[HISTORY DEBUG] Sample: ${JSON.stringify(rawList[0]).substring(0, 300)}`);
+        }
+        const rows = rawList.map(p => ({
           symbol:      p.symbol,
-          side:        p.holdSide === "long" ? "Long" : "Short",
-          leverage:    p.leverage,
-          marginMode:  p.marginMode === "isolated" ? "Isolated" : "Cross",
-          openTime:    p.openTime ? new Date(Number(p.openTime)).toLocaleString("id-ID") : "--",
+          side:        (p.holdSide || p.side || "") === "long" ? "Long" : "Short",
+          leverage:    p.leverage || p.lever || "--",
+          marginMode:  (p.marginMode || p.marginCoin) === "isolated" ? "Isolated" : "Cross",
+          openTime:    p.openTime  ? new Date(Number(p.openTime)).toLocaleString("id-ID")  : "--",
           closeTime:   p.closeTime ? new Date(Number(p.closeTime)).toLocaleString("id-ID") : "--",
-          entryPrice:  parseFloat(p.openPriceAvg || 0),
-          exitPrice:   parseFloat(p.closePriceAvg || 0),
-          size:        parseFloat(p.closeTotalPos || 0),
-          maxSize:     parseFloat(p.maxOpenInterest || 0),
-          pnl:         parseFloat(p.pnl || 0),
-          roi:         parseFloat(p.pnlRate || 0) * 100,
+          entryPrice:  parseFloat(p.openPriceAvg  || p.entryPrice  || p.openPrice || 0),
+          exitPrice:   parseFloat(p.closePriceAvg || p.exitPrice   || p.closePrice || 0),
+          size:        parseFloat(p.closeTotalPos  || p.closeSize   || p.total      || p.size || 0),
+          pnl:         parseFloat(p.pnl || p.realizedPL || 0),
+          roi:         parseFloat(p.pnlRate || p.roi || 0) * 100,
         }));
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true, data: rows }));

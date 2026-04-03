@@ -3395,19 +3395,18 @@ async function tradingLoop() {
     const BREAKEVEN_BUFFER_PCT  = 0.15; // buffer di atas entry untuk nutup fee
 
     if (!pos.breakevenSet) {
-      const rawProfitPct = pos.side === "LONG"
-        ? (price - pos.entryPrice) / pos.entryPrice * 100
-        : (pos.entryPrice - price) / pos.entryPrice * 100;
-
+      // Gunakan rawProfitPct dari scope luar (sudah dihitung line 3352)
       if (rawProfitPct >= BREAKEVEN_TRIGGER_PCT) {
         const newSL = pos.side === "LONG"
           ? pos.entryPrice * (1 + BREAKEVEN_BUFFER_PCT / 100)
           : pos.entryPrice * (1 - BREAKEVEN_BUFFER_PCT / 100);
 
-        // Hanya geser SL kalau lebih baik dari SL sekarang
-        const slImproved = pos.side === "LONG"
-          ? newSL > pos.stopLoss
-          : newSL < pos.stopLoss;
+        // Geser SL kalau lebih baik dari SL sekarang, atau SL belum ada (sync dari exchange)
+        const slImproved = pos.stopLoss == null
+          ? true
+          : pos.side === "LONG"
+            ? newSL > pos.stopLoss
+            : newSL < pos.stopLoss;
 
         if (slImproved) {
           pos.stopLoss    = newSL;

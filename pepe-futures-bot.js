@@ -5442,6 +5442,56 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Order Book & Market Trades (Live Only) -->
+  <div id="market-data-section" style="display:none">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+
+      <!-- Order Book -->
+      <div class="card ai-card">
+        <h3 style="display:flex;align-items:center;justify-content:space-between">
+          Order Book
+          <span id="ob-symbol" style="font-size:11px;color:#8b949e;font-weight:normal"></span>
+        </h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div>
+            <div style="color:#f85149;font-size:11px;font-weight:bold;margin-bottom:4px">ASKS (Jual)</div>
+            <div id="ob-asks" style="font-size:11px;font-family:monospace"></div>
+          </div>
+          <div>
+            <div style="color:#3fb950;font-size:11px;font-weight:bold;margin-bottom:4px">BIDS (Beli)</div>
+            <div id="ob-bids" style="font-size:11px;font-family:monospace"></div>
+          </div>
+        </div>
+        <div style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d;display:flex;gap:16px;font-size:11px">
+          <span style="color:#8b949e">Bid/Ask Ratio: <span id="ob-ratio" style="color:#c9d1d9;font-weight:bold">--</span></span>
+          <span style="color:#8b949e">Total Bid: <span id="ob-total-bid" style="color:#3fb950">--</span></span>
+          <span style="color:#8b949e">Total Ask: <span id="ob-total-ask" style="color:#f85149">--</span></span>
+        </div>
+      </div>
+
+      <!-- Market Trades -->
+      <div class="card ai-card">
+        <h3 style="display:flex;align-items:center;justify-content:space-between">
+          Perdagangan Pasar
+          <span style="font-size:11px;color:#8b949e;font-weight:normal" id="mt-symbol"></span>
+        </h3>
+        <div style="overflow-y:auto;max-height:220px">
+          <table style="width:100%;border-collapse:collapse;font-size:11px">
+            <thead><tr style="color:#8b949e;position:sticky;top:0;background:#161b22">
+              <th style="text-align:left;padding:2px 6px">Waktu</th>
+              <th style="text-align:right;padding:2px 6px">Harga</th>
+              <th style="text-align:right;padding:2px 6px">Size</th>
+              <th style="text-align:center;padding:2px 6px">Side</th>
+            </tr></thead>
+            <tbody id="mt-tbody">
+              <tr><td colspan="4" style="text-align:center;color:#8b949e;padding:8px">Memuat...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Riwayat Posisi Bitget (Live Only) -->
   <div class="card ai-card" id="bitget-history-card" style="display:none">
     <h3 style="display:flex;align-items:center;justify-content:space-between">
@@ -5524,6 +5574,86 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
     // Auto-load saat halaman dibuka (hanya live mode — kalau DRY_RUN card disembunyikan)
     loadBitgetHistory();
+
+    // ── Order Book & Market Trades ─────────────────────────────
+    let _obSymbol = null;
+    let _obInterval = null;
+
+    async function loadOrderBook(symbol) {
+      const section = document.getElementById('market-data-section');
+      if (!symbol) return;
+      try {
+        const r = await fetch('/api/orderbook?symbol=' + symbol);
+        const d = await r.json();
+        if (!d.ok) return;
+        section.style.display = 'block';
+        document.getElementById('ob-symbol').textContent = d.symbol;
+
+        const isPepe = d.symbol.includes('PEPE');
+        const fmtPrice = p => isPepe ? Number(p).toFixed(8) : Number(p).toFixed(1);
+        const fmtQty   = q => isPepe ? (Number(q)/1000000).toFixed(2)+'M' : Number(q).toFixed(4);
+
+        // Max qty for bar width
+        const maxBid = Math.max(...d.bids.map(b => b.qty), 1);
+        const maxAsk = Math.max(...d.asks.map(a => a.qty), 1);
+
+        document.getElementById('ob-asks').innerHTML = [...d.asks].reverse().map(a => {
+          const w = Math.round((a.qty / maxAsk) * 100);
+          return \`<div style="display:flex;justify-content:space-between;padding:1px 0;background:linear-gradient(to left,#f8514922 \${w}%,transparent \${w}%)">
+            <span style="color:#f85149">\${fmtPrice(a.price)}</span>
+            <span style="color:#8b949e">\${fmtQty(a.qty)}</span>
+          </div>\`;
+        }).join('');
+
+        document.getElementById('ob-bids').innerHTML = d.bids.map(b => {
+          const w = Math.round((b.qty / maxBid) * 100);
+          return \`<div style="display:flex;justify-content:space-between;padding:1px 0;background:linear-gradient(to right,#3fb95022 \${w}%,transparent \${w}%)">
+            <span style="color:#3fb950">\${fmtPrice(b.price)}</span>
+            <span style="color:#8b949e">\${fmtQty(b.qty)}</span>
+          </div>\`;
+        }).join('');
+
+        const ratio = d.bidAskRatio;
+        const ratioEl = document.getElementById('ob-ratio');
+        ratioEl.textContent = ratio.toFixed(2) + 'x';
+        ratioEl.style.color = ratio >= 1.3 ? '#3fb950' : ratio <= 0.7 ? '#f85149' : '#d29922';
+        document.getElementById('ob-total-bid').textContent = fmtQty(d.totalBid);
+        document.getElementById('ob-total-ask').textContent = fmtQty(d.totalAsk);
+      } catch(e) { /* silent */ }
+    }
+
+    async function loadMarketTrades(symbol) {
+      const tbody = document.getElementById('mt-tbody');
+      if (!symbol || !tbody) return;
+      try {
+        const r = await fetch('/api/market-trades?symbol=' + symbol);
+        const d = await r.json();
+        if (!d.ok || !d.trades.length) return;
+        document.getElementById('mt-symbol').textContent = d.symbol;
+        const isPepe = d.symbol.includes('PEPE');
+        const fmtP = p => isPepe ? Number(p).toFixed(8) : Number(p).toFixed(1);
+        tbody.innerHTML = d.trades.map(t => {
+          const color = t.side === 'BUY' ? '#3fb950' : '#f85149';
+          return \`<tr style="border-bottom:1px solid #21262d11">
+            <td style="padding:2px 6px;color:#8b949e">\${t.time}</td>
+            <td style="padding:2px 6px;text-align:right;color:\${color}">\${fmtP(t.price)}</td>
+            <td style="padding:2px 6px;text-align:right;color:#c9d1d9">\${t.size}</td>
+            <td style="padding:2px 6px;text-align:center;color:\${color};font-weight:bold">\${t.side}</td>
+          </tr>\`;
+        }).join('');
+      } catch(e) { /* silent */ }
+    }
+
+    function startMarketDataPolling(symbol) {
+      if (_obInterval) clearInterval(_obInterval);
+      _obSymbol = symbol;
+      loadOrderBook(symbol);
+      loadMarketTrades(symbol);
+      _obInterval = setInterval(() => {
+        loadOrderBook(_obSymbol);
+        loadMarketTrades(_obSymbol);
+      }, 3000); // refresh setiap 3 detik
+    }
 
     function fmt(n, dec = 10) {
       if (!n || n === 0) return '--';
@@ -6047,6 +6177,12 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           // Langsung switch ke 5m setelah init
           setTimeout(() => switchTF('5m'), 500);
         }
+        // Start market data polling hanya di live mode
+        if (!d.dryRun && d.symbol) {
+          startMarketDataPolling(d.symbol);
+        } else {
+          document.getElementById('market-data-section').style.display = 'none';
+        }
       }
       if (d.type === 'trade') { renderTradeLog(d.tradeLog); return; }
       // Fast price update (tiap 3 detik)
@@ -6108,6 +6244,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           const chartSymbol = document.getElementById('chart-symbol');
           if (chartSymbol && d.currentPair) {
             chartSymbol.textContent = d.currentPair.replace('USDT', '/USDT');
+          }
+          // Update order book & market trades symbol saat pair switch
+          if (!window._dryRunMode && d.currentPair && d.currentPair !== _obSymbol) {
+            startMarketDataPolling(d.currentPair);
           }
         }
         return;
@@ -6833,7 +6973,7 @@ function startDashboard() {
         klines:      state.lastKlines.slice(-150),
         phase:       state.phase,
         phaseCooldownLeft: state.phaseCooldownLeft,
-        dryRun:      CONFIG.DRY_RUN,
+        symbol:      CONFIG.SYMBOL,
       })}\n\n`);
 
       req.on("close", () => {
@@ -6983,6 +7123,40 @@ function startDashboard() {
         }
       });
       return;
+    } else if (req.url?.startsWith("/api/orderbook") && req.method === "GET") {
+      const symbol = new URL(req.url, "http://localhost").searchParams.get("symbol") || CONFIG.SYMBOL;
+      try {
+        const r = await bitgetRequest("GET", "/api/v2/mix/market/merge-depth", {
+          symbol, productType: CONFIG.PRODUCT_TYPE, limit: "15",
+        });
+        const bids = (r.data?.bids || []).slice(0, 15).map(b => ({ price: parseFloat(b[0]), qty: parseFloat(b[1]) }));
+        const asks = (r.data?.asks || []).slice(0, 15).map(a => ({ price: parseFloat(a[0]), qty: parseFloat(a[1]) }));
+        const totalBid = bids.reduce((s, b) => s + b.qty, 0);
+        const totalAsk = asks.reduce((s, a) => s + a.qty, 0);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, symbol, bids, asks, totalBid, totalAsk, bidAskRatio: totalBid / (totalAsk || 1) }));
+      } catch (err) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: err.message, bids: [], asks: [] }));
+      }
+    } else if (req.url?.startsWith("/api/market-trades") && req.method === "GET") {
+      const symbol = new URL(req.url, "http://localhost").searchParams.get("symbol") || CONFIG.SYMBOL;
+      try {
+        const r = await bitgetRequest("GET", "/api/v2/mix/market/fills", {
+          symbol, productType: CONFIG.PRODUCT_TYPE, limit: "30",
+        });
+        const trades = (r.data || []).map(t => ({
+          price:  parseFloat(t.price),
+          size:   parseFloat(t.size),
+          side:   t.side === "buy" ? "BUY" : "SELL",
+          time:   t.ts ? new Date(Number(t.ts)).toLocaleTimeString("id-ID") : "--",
+        }));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, symbol, trades }));
+      } catch (err) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: err.message, trades: [] }));
+      }
     } else if (req.url === "/api/position-history" && req.method === "GET") {
       if (CONFIG.DRY_RUN) {
         res.writeHead(200, { "Content-Type": "application/json" });

@@ -3901,15 +3901,17 @@ async function tradingLoop() {
           orderQty = Math.floor((notional / price) / CONTRACT_SIZE) * CONTRACT_SIZE;
           if (orderQty < CONTRACT_SIZE) orderQty = CONTRACT_SIZE;
         } else {
-          // BTC USDT-M: size dalam BTC (bukan USDT contracts)
-          // qty = (margin × leverage) / price → satuan BTC
-          // Minimum Bitget BTCUSDT: 0.001 BTC
-          let qty = (notional * leverage) / price;
-          qty = Math.round(qty * 1000) / 1000; // round ke 3 desimal
-          if (qty < 0.001) qty = 0.001;
+          // BTC USDT-M: minimum order 0.001 BTC
+          // Pastikan leverage cukup agar margin = POSITION_SIZE_USDT bisa cover 0.001 BTC
+          const minQty = 0.001;
+          const minLevNeeded = Math.ceil((minQty * price) / CONFIG.POSITION_SIZE_USDT);
+          leverage = Math.min(Math.max(leverage, minLevNeeded, 3), CONFIG.MAX_LEVERAGE);
+          let qty = (CONFIG.POSITION_SIZE_USDT * leverage) / price;
+          qty = Math.round(qty * 1000) / 1000;
+          if (qty < minQty) qty = minQty;
           orderQty = qty;
         }
-        log("INFO", `📊 BTC Order: Notional=${notional} USDT → Qty=${orderQty} BTC (price=${price})`);
+        log("INFO", `📊 BTC Range Order: Qty=${orderQty} BTC | Lev=${leverage}x | Margin≈${(orderQty * price / leverage).toFixed(2)} USDT`);
         
         const tpPrice = rangeTradeSide === "BULLISH"
           ? price * (1 + rangeTpPct / 100)
@@ -4416,14 +4418,18 @@ async function tradingLoop() {
         orderQty = Math.floor(qty / CONTRACT_SIZE) * CONTRACT_SIZE;
         if (orderQty < CONTRACT_SIZE) orderQty = CONTRACT_SIZE;
       } else {
-        // BTC USDT-M: size dalam BTC, qty = (margin × leverage) / price, minimum 0.001 BTC
-        let qty = (notional * leverage) / price;
+        // BTC USDT-M: minimum order 0.001 BTC
+        // Auto-adjust leverage agar margin = POSITION_SIZE_USDT bisa cover minimum order
+        const minQty = 0.001;
+        const minLevNeeded = Math.ceil((minQty * price) / CONFIG.POSITION_SIZE_USDT);
+        leverage = Math.min(Math.max(leverage, minLevNeeded, 3), CONFIG.MAX_LEVERAGE);
+        let qty = (CONFIG.POSITION_SIZE_USDT * leverage) / price;
         qty = Math.round(qty * 1000) / 1000;
-        if (qty < 0.001) qty = 0.001;
+        if (qty < minQty) qty = minQty;
         orderQty = qty;
       }
-      
-      log("INFO", `📊 Dynamic Position: Balance=${currentBalance.toFixed(2)} Phase=${phase} Notional=${notional.toFixed(2)} Price=${price.toFixed(8)} Qty=${orderQty}`);
+
+      log("INFO", `📊 BTC Trend Order: Qty=${orderQty} BTC | Lev=${leverage}x | Margin≈${(orderQty * price / leverage).toFixed(2)} USDT`);
 
       const fvg = tradeSide === "BULLISH" ? fvgData.lastBullFVG : fvgData.lastBearFVG;
       const smcSetup = {

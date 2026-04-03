@@ -5442,6 +5442,33 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Riwayat Posisi Bitget (Live Only) -->
+  <div class="card ai-card" id="bitget-history-card" style="display:none">
+    <h3 style="display:flex;align-items:center;justify-content:space-between">
+      Riwayat Posisi Bitget
+      <button onclick="loadBitgetHistory()" style="background:#21262d;border:1px solid #30363d;color:#c9d1d9;padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px">&#8635; Refresh</button>
+    </h3>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead>
+          <tr style="color:#8b949e;border-bottom:1px solid #30363d">
+            <th style="text-align:left;padding:4px 8px">Futures</th>
+            <th style="text-align:left;padding:4px 8px">Waktu Buka</th>
+            <th style="text-align:right;padding:4px 8px">Harga Entry</th>
+            <th style="text-align:right;padding:4px 8px">Harga Keluar</th>
+            <th style="text-align:right;padding:4px 8px">Size</th>
+            <th style="text-align:right;padding:4px 8px">PnL (USDT)</th>
+            <th style="text-align:right;padding:4px 8px">ROI</th>
+            <th style="text-align:left;padding:4px 8px">Waktu Tutup</th>
+          </tr>
+        </thead>
+        <tbody id="bitget-history-tbody">
+          <tr><td colspan="8" style="text-align:center;color:#8b949e;padding:16px">Memuat data...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- Log -->
   <div id="log-box"></div>
 
@@ -5450,6 +5477,53 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     sse.onmessage = (e) => {
       try { handle(JSON.parse(e.data)); } catch (err) { console.error('SSE error:', err); }
     };
+
+    async function loadBitgetHistory() {
+      const tbody = document.getElementById('bitget-history-tbody');
+      const card  = document.getElementById('bitget-history-card');
+      if (!tbody) return;
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#8b949e;padding:12px">Memuat...</td></tr>';
+      try {
+        const r = await fetch('/api/position-history');
+        const d = await r.json();
+        if (d.dryRun) {
+          card.style.display = 'none';
+          return;
+        }
+        card.style.display = 'block';
+        if (!d.ok || !d.data || d.data.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#8b949e;padding:12px">Tidak ada riwayat posisi</td></tr>';
+          return;
+        }
+        tbody.innerHTML = d.data.map(p => {
+          const pnlClass = p.pnl >= 0 ? 'color:#3fb950' : 'color:#f85149';
+          const roiClass = p.roi >= 0 ? 'color:#3fb950' : 'color:#f85149';
+          const sideColor = p.side === 'Long' ? 'color:#3fb950' : 'color:#f85149';
+          const isPepe = p.symbol.includes('PEPE');
+          const entryFmt = isPepe ? p.entryPrice.toFixed(10) : p.entryPrice.toFixed(1);
+          const exitFmt  = isPepe ? p.exitPrice.toFixed(10)  : p.exitPrice.toFixed(1);
+          const sizeFmt  = isPepe ? p.size.toLocaleString() + ' PEPE' : p.size.toFixed(4) + ' BTC';
+          return \`<tr style="border-bottom:1px solid #21262d">
+            <td style="padding:5px 8px">
+              <span style="font-weight:bold">\${p.symbol}</span><br>
+              <span style="\${sideColor}">\${p.side}</span>
+              <span style="color:#8b949e"> · \${p.leverage}x · \${p.marginMode}</span>
+            </td>
+            <td style="padding:5px 8px;color:#8b949e;white-space:nowrap">\${p.openTime}</td>
+            <td style="padding:5px 8px;text-align:right">\${entryFmt}</td>
+            <td style="padding:5px 8px;text-align:right">\${exitFmt}</td>
+            <td style="padding:5px 8px;text-align:right;color:#8b949e">\${sizeFmt}</td>
+            <td style="padding:5px 8px;text-align:right;\${pnlClass};font-weight:bold">\${p.pnl >= 0 ? '+' : ''}\${p.pnl.toFixed(4)} USDT</td>
+            <td style="padding:5px 8px;text-align:right;\${roiClass}">\${p.roi >= 0 ? '+' : ''}\${p.roi.toFixed(2)}%</td>
+            <td style="padding:5px 8px;color:#8b949e;white-space:nowrap">\${p.closeTime}</td>
+          </tr>\`;
+        }).join('');
+      } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#f85149;padding:12px">Gagal memuat: ' + e.message + '</td></tr>';
+      }
+    }
+    // Auto-load saat halaman dibuka (hanya live mode — kalau DRY_RUN card disembunyikan)
+    loadBitgetHistory();
 
     function fmt(n, dec = 10) {
       if (!n || n === 0) return '--';
@@ -6160,10 +6234,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         const cooldownEl = document.getElementById('cooldown-info');
         const resumeEl   = document.getElementById('cooldown-resume');
 
-        // Hide loss streak warning in DRY_RUN mode
+        // Tampilkan loss streak warning HANYA saat cooldown masih aktif
         if (d.dryRun) {
           if (streakEl) streakEl.style.display = 'none';
-        } else if (streakEl && d.lossStreak >= 2) {
+        } else if (streakEl && d.lossStreak >= 2 && d.cooldownActive) {
           streakEl.style.display = 'block';
           if (countEl) countEl.textContent = d.lossStreak;
           if (msgEl) {
@@ -6909,6 +6983,37 @@ function startDashboard() {
         }
       });
       return;
+    } else if (req.url === "/api/position-history" && req.method === "GET") {
+      if (CONFIG.DRY_RUN) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, dryRun: true, data: [] }));
+        return;
+      }
+      try {
+        const histRes = await bitgetRequest("GET", "/api/v2/mix/position/history-position", {
+          productType: CONFIG.PRODUCT_TYPE,
+          limit: "20",
+        });
+        const rows = (histRes.data?.list || histRes.data || []).map(p => ({
+          symbol:      p.symbol,
+          side:        p.holdSide === "long" ? "Long" : "Short",
+          leverage:    p.leverage,
+          marginMode:  p.marginMode === "isolated" ? "Isolated" : "Cross",
+          openTime:    p.openTime ? new Date(Number(p.openTime)).toLocaleString("id-ID") : "--",
+          closeTime:   p.closeTime ? new Date(Number(p.closeTime)).toLocaleString("id-ID") : "--",
+          entryPrice:  parseFloat(p.openPriceAvg || 0),
+          exitPrice:   parseFloat(p.closePriceAvg || 0),
+          size:        parseFloat(p.closeTotalPos || 0),
+          maxSize:     parseFloat(p.maxOpenInterest || 0),
+          pnl:         parseFloat(p.pnl || 0),
+          roi:         parseFloat(p.pnlRate || 0) * 100,
+        }));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, data: rows }));
+      } catch (err) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: err.message, data: [] }));
+      }
     } else if (req.url === "/api/start" && req.method === "POST") {
       // Start / restart trading loop secara manual dari dashboard
       if (state.running) {

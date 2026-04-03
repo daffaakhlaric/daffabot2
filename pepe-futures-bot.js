@@ -3890,7 +3890,7 @@ async function tradingLoop() {
           ? state.totalAccountBalance 
           : (CONFIG.DRY_RUN ? compoundedBalance + stats.totalPnL : CONFIG.POSITION_SIZE_USDT * 10);
         const dynamicSizing = calcDynamicPositionSize(currentBalance, 'STABLE', 60, stats.lossStreak || 0);
-        const leverage = dynamicSizing.leverage;
+        let leverage = dynamicSizing.leverage;
         const notional = dynamicSizing.notional;
         const isPepe = CONFIG.SYMBOL.includes("PEPE");
         // BTC: Convert notional (USDT) to quantity (BTC contracts)

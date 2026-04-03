@@ -3170,15 +3170,17 @@ async function tradingLoop() {
             liqPrice: livePosition.liqPrice,
             unrealPnL: livePosition.unrealPnL,
             pnlPct: livePosition.pnlPct,
+            marginSize: livePosition.marginSize,
             openTime: Date.now(),
             symbol: CONFIG.SYMBOL,
-            runnerActivated: false,  // Fee-aware: fresh position
+            runnerActivated: false,
           };
         } else {
           // Both have position - sync live data
-          state.activePosition.liqPrice  = livePosition.liqPrice;
-          state.activePosition.unrealPnL = livePosition.unrealPnL;
-          state.activePosition.pnlPct    = livePosition.pnlPct;
+          state.activePosition.liqPrice   = livePosition.liqPrice;
+          state.activePosition.unrealPnL  = livePosition.unrealPnL;
+          state.activePosition.pnlPct     = livePosition.pnlPct;
+          state.activePosition.marginSize = livePosition.marginSize;
         }
       } else {
         // No position on exchange
@@ -6373,14 +6375,25 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       const notionalStr = pos.notionalUSDT
         ? pos.notionalUSDT.toFixed(2) + ' USDT'
         : (pos.size && pos.entryPrice ? (pos.size * pos.entryPrice).toFixed(2) + ' USDT' : '--');
+      const marginStr = pos.marginSize != null
+        ? pos.marginSize.toFixed(4) + ' USDT'
+        : '--';
+      const unrealPnL = pos.unrealPnL ?? null;
+      const unrealStr = unrealPnL != null
+        ? (unrealPnL >= 0 ? '+' : '') + unrealPnL.toFixed(4) + ' USDT'
+        : '--';
+      const unrealClass = unrealPnL == null ? 'val' : unrealPnL >= 0 ? 'green' : 'red';
       document.getElementById('position-content').innerHTML = \`
         <div class="row"><span class="label">Side</span><span class="val \${pos.side === 'LONG' ? 'green' : 'red'}">\${pos.side}</span></div>
         <div class="row"><span class="label">Entry</span><span class="val">\${formatPepePrice(pos.entryPrice)}</span></div>
+        <div class="row"><span class="label">Size</span><span class="val">\${pos.size}</span></div>
         <div class="row"><span class="label">Leverage</span><span class="val">\${pos.leverage}x</span></div>
-        <div class="row"><span class="label">Notional</span><span class="val blue" title="Nilai posisi: qty x harga entry">\${notionalStr}</span></div>
+        <div class="row"><span class="label">Modal (Margin)</span><span class="val blue" title="Margin yang dikunci dari balance">\${marginStr}</span></div>
+        <div class="row"><span class="label">Notional</span><span class="val" title="Modal per trade (POSITION_SIZE_USDT)">\${notionalStr}</span></div>
         <div class="row"><span class="label">Stop Loss</span><span class="val yellow">\${formatPepePrice(pos.stopLoss)}</span></div>
         <div class="row"><span class="label">Take Profit</span><span class="val green">\${formatPepePrice(pos.takeProfit)}</span></div>
-        <div class="row"><span class="label">PnL</span><span class="val \${pnlClass}">\${fmtPct(pnlPct)}</span></div>
+        <div class="row"><span class="label">PnL (USDT)</span><span class="val \${unrealClass}" title="Unrealized PnL dari Bitget live">\${unrealStr}</span></div>
+        <div class="row"><span class="label">PnL (%)</span><span class="val \${pnlClass}">\${fmtPct(pnlPct)}</span></div>
         <div class="row"><span class="label">Breakeven</span>\${breakevenStatus}</div>
         <div class="row"><span class="label">Lock Profit</span>\${lockProfitStatus}</div>
         <div class="row"><span class="label">Trailing TP</span><span class="val blue">\${trailingTPVal}</span></div>

@@ -3410,6 +3410,7 @@ async function tradingLoop() {
     const BREAKEVEN_TRIGGER_PCT = 0.15;
     const BREAKEVEN_BUFFER_PCT  = 0.08; // buffer kecil di atas entry untuk nutup fee
 
+    log("INFO", `[DEBUG BE] breakevenSet=${pos.breakevenSet} rawProfitPct=${rawProfitPct.toFixed(4)}% trigger=${BREAKEVEN_TRIGGER_PCT}% stopLoss=${pos.stopLoss?.toFixed(4) ?? 'null'}`);
     if (!pos.breakevenSet) {
       // Gunakan rawProfitPct dari scope luar (sudah dihitung line 3352)
       if (rawProfitPct >= BREAKEVEN_TRIGGER_PCT) {

@@ -3302,7 +3302,7 @@ async function tradingLoop() {
         : ((pos.entryPrice - price) / pos.entryPrice) * 100 * pos.leverage;
       const pnlColor = pnlPct >= 0 ? C.green : C.red;
       log("INFO", `Posisi: ${pos.side} | Entry: ${pos.entryPrice.toFixed(8)} | PnL: ${pnlColor}${pnlPct.toFixed(2)}%${C.reset}`);
-      log("INFO", `  ${C.red}LIQUIDATION: ${pos.liqPrice.toFixed(8)}${C.reset} | SL: ${pos.stopLoss.toFixed(8)} | TP: ${pos.takeProfit.toFixed(8)}`);
+      log("INFO", `  ${C.red}LIQUIDATION: ${pos.liqPrice?.toFixed(8) ?? '--'}${C.reset} | SL: ${pos.stopLoss?.toFixed(8) ?? '--'} | TP: ${pos.takeProfit?.toFixed(8) ?? '--'}`);
     }
   }
 

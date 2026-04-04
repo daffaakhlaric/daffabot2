@@ -6,9 +6,15 @@
   "scripts": {
     "start": "node pepe-futures-bot.js",
     "dry": "node pepe-futures-bot.js",
-    "live": "node -e \"process.env.FORCE_LIVE=1\" pepe-futures-bot.js"
+    "live": "node -e \"process.env.FORCE_LIVE=1\" pepe-futures-bot.js",
+    "migrate": "node migrate.js",
+    "migrate:dry": "node migrate.js --dry",
+    "migrate:trades": "node migrate.js --trades",
+    "migrate:stats": "node migrate.js --stats",
+    "migrate:equity": "node migrate.js --equity"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.44.0",
     "dotenv": "^16.4.5"
   },
   "engines": {

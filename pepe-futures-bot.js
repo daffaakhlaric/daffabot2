@@ -26,6 +26,9 @@ const btcStrategy     = require("./btcStrategy");
 const { resetHypeState } = require("./hypeDetector");
 const { evaluatePhase, phaseLogLine, PHASES } = require("./phaseIndicator");
 
+// ── SUPABASE DATA LAYER ──────────────────────────────────────────
+const db = require("./supabaseClient");
+
 // ── Bypass DNS hijacking ISP (Indosat/IOH memblokir api.bitget.com) ──────────
 // ISP Indonesia sering redirect DNS ke server mereka sendiri.
 // Paksa Node.js pakai DNS publik Google + Cloudflare agar resolve ke IP asli.
@@ -1252,6 +1255,20 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
     ema9: indicators ? indicators.ema9 : price,
     ema21: indicators ? indicators.ema21 : price,
     volumeRatio: indicators ? indicators.volumeRatio : 1,
+    // ── Supabase entry snapshot (prefixed _) ─────────────────────
+    _entryAtrPct:       indicators?._atrPct        ?? null,
+    _entryBbPctB:       indicators?.bb?.pctB        ?? null,
+    _entryBbBandwidth:  indicators?.bb?.bandwidth   ?? null,
+    _entryBbPosition:   indicators?.bb?.position    ?? null,
+    _entryVwapPct:      indicators?._vwapPct        ?? null,
+    _entrySqueeze:      indicators?._squeeze        ?? null,
+    _entrySession:      indicators?._session        ?? null,
+    _entryFundingRate:  indicators?._fundingRate    ?? null,
+    _entryFearGreed:    indicators?._fearGreed      ?? null,
+    _entryObBidAsk:     orderBook?.bidAskRatio      ?? null,
+    _entryObSpread:     orderBook?.spread           ?? null,
+    _smcData:           null,   // set after openPosition returns
+    _claudeFilter:      null,   // set after openPosition returns
   };
 
   log("INFO", `📊 Position opened in ${positionRegime} mode | Notional: ${notionalUSDT.toFixed(2)} USDT (${qty.toLocaleString()} × ${price})`);
@@ -1360,6 +1377,72 @@ async function closePosition(reason, currentPrice, symbol = null) {
   autoAdjustStrategy();
 
   recordTrade("CLOSE", pos.side, currentPrice, pos.size, pos.leverage, pos.liqPrice, reason, pnlUSDT, pos.notionalUSDT ?? null);
+
+  // ── SUPABASE: save closed trade (non-blocking) ───────────────
+  const _closeTime = new Date().toISOString();
+  db.saveTrade({
+    symbol:          tradeSymbol,
+    side:            pos.side,
+    pairMode:        state.currentPairMode,
+    regime:          pos.regime,
+    entryPrice:      pos.entryPrice,
+    exitPrice:       currentPrice,
+    size:            pos.size,
+    leverage:        pos.leverage,
+    notionalUSDT:    pos.notionalUSDT,
+    openTime:        pos.openTime,
+    closeTime:       _closeTime,
+    pnlPct:          pnlPct,
+    pnlUSDT:         pnlUSDT,
+    reason:          reason,
+    breakevenSet:    pos.breakevenSet,
+    runnerActivated: pos.runnerActivated,
+    partialClosed:   pos.partialClosed,
+    lockLevel:       pos.lockLevel,
+    wasProfit:       pos._wasProfit,
+    entryScore:      pos._entryScore,
+    entryMode:       pos._entryMode,
+    session:         pos._entrySession,
+    entryIndicators: {
+      rsi:           pos.rsi,
+      ema9:          pos.ema9,
+      ema21:         pos.ema21,
+      volumeRatio:   pos.volumeRatio,
+      atrPct:        pos._entryAtrPct,
+      bbPctB:        pos._entryBbPctB,
+      bbBandwidth:   pos._entryBbBandwidth,
+      bbPosition:    pos._entryBbPosition,
+      vwapPct:       pos._entryVwapPct,
+      squeeze:       pos._entrySqueeze,
+      session:       pos._entrySession,
+      fundingRate:   pos._entryFundingRate,
+      fearGreed:     pos._entryFearGreed,
+      orderbookBidAskRatio: pos._entryObBidAsk,
+      orderbookSpread:      pos._entryObSpread,
+    },
+    exitIndicators: {
+      rsi:         state.lastRSI,
+      ema9:        state.lastEMA9,
+      ema21:       state.lastEMA21,
+      volumeRatio: state.lastVolumeRatio,
+      momentum:    pos.runnerActivated ? "STRONG" : undefined,
+    },
+    smcData:       pos._smcData,
+    claudeFilter:  pos._claudeFilter,
+    phase:         state.phase,
+    stats:         stats,
+    dryRun:        CONFIG.DRY_RUN,
+  }).catch(() => {});
+
+  // ── SUPABASE: update rolling stats (non-blocking) ────────────
+  db.updateStats({
+    stats,
+    state,
+    tradeLog,
+    dryRun:        CONFIG.DRY_RUN,
+    lastTradeTime: _closeTime,
+    uptimeSec:     Math.round((Date.now() - new Date(stats.startTime).getTime()) / 1000),
+  }).catch(() => {});
 
   // ── PHASE INDICATOR — re-evaluate after every close ──────────
   const newPhase = evaluatePhase(tradeLog, stats);
@@ -3108,9 +3191,10 @@ async function tradingLoop() {
   state.lastKlines      = klines; // simpan untuk chart dashboard
 
   const indicators = calcIndicators(klines);
-  state.lastRSI   = indicators.rsi;
-  state.lastEMA9  = indicators.ema9;
-  state.lastEMA21 = indicators.ema21;
+  state.lastRSI          = indicators.rsi;
+  state.lastEMA9         = indicators.ema9;
+  state.lastEMA21        = indicators.ema21;
+  state.lastVolumeRatio  = indicators.volumeRatio;
 
   // ── Fitur #2: Bollinger Bands & Squeeze ───────────────────
   const squeezeData = detectSqueeze(klines);
@@ -3284,6 +3368,28 @@ async function tradingLoop() {
     }
   }
 
+  // ── Supabase: equity snapshot every 30 ticks (~5 menit) ─────
+  if (state.tickCount % 30 === 0) {
+    const _posPnlPct = pos ? (pos.side === "LONG"
+      ? (price - pos.entryPrice) / pos.entryPrice * 100 * pos.leverage
+      : (pos.entryPrice - price) / pos.entryPrice * 100 * pos.leverage) : null;
+    db.saveEquity({
+      symbol:         state.currentPair || CONFIG.SYMBOL,
+      balance:        state.currentBalance || state.initialBalance,
+      initialBalance: state.initialBalance,
+      peakBalance:    state.peakBalance,
+      totalPnL:       stats.totalPnL,
+      unrealizedPnL:  pos ? (CONFIG.POSITION_SIZE_USDT * (_posPnlPct || 0) / 100) : 0,
+      hasPosition:    !!pos,
+      positionSide:   pos?.side || null,
+      positionPnlPct: _posPnlPct,
+      phase:          state.phase?.phase || null,
+      lossStreak:     stats.lossStreak   || 0,
+      tickCount:      state.tickCount,
+      dryRun:         CONFIG.DRY_RUN,
+    }).catch(() => {});
+  }
+
   // ── 3. Tampilkan status di log ────────────────────────────
   if (state.tickCount % 3 === 0) { // setiap 30 detik
     log("INFO", `Harga: ${C.bold}${price.toFixed(8)}${C.reset} USDT | RSI: ${indicators.rsi.toFixed(1)} | EMA9: ${indicators.ema9.toFixed(8)} | EMA21: ${indicators.ema21.toFixed(8)}`);
@@ -3346,6 +3452,12 @@ async function tradingLoop() {
     const marginUsdt   = CONFIG.POSITION_SIZE_USDT;
     const profitUsdt   = marginUsdt * pos.leverage * rawProfitPct / 100;
     const lossUsdt     = -profitUsdt; // positif kalau rugi
+
+    // ── Supabase: track max profit / max drawdown per trade ──────
+    db.updateTradeTracker(
+      db.makeTradeId(pos.symbol || CONFIG.SYMBOL, pos.openTime),
+      rawProfitPct
+    );
 
     const MIN_PROFIT_PCT  = 0.25;  // minimum profit sebelum boleh close
     const MIN_PROFIT_USDT = 0.05;  // minimum profit USDT
@@ -4593,12 +4705,77 @@ async function tradingLoop() {
             `SL: ${state.activePosition.stopLoss.toFixed(8)} | ` +
             `TP: ${state.activePosition.takeProfit.toFixed(8)}`
           );
+          // ── Supabase: store SMC + AI context on position for closePosition ──
+          state.activePosition._smcData      = smcData;
+          state.activePosition._claudeFilter = claudeFilter;
+          state.activePosition._entryScore   = entryScore;
+          state.activePosition._entryMode    = entryMode;
+          state.activePosition._entryAtrPct  = atrPct;
+          state.activePosition._entrySession = session.session;
+          state.activePosition._entryBbPctB  = bbData?.pctB        ?? null;
+          state.activePosition._entryBbBandwidth = bbData?.bandwidth ?? null;
+          state.activePosition._entryBbPosition  = squeezeData?.pricePosition ?? null;
+          state.activePosition._entryVwapPct = vwapPct ?? null;
+          state.activePosition._entrySqueeze = squeezeData?.squeeze ?? null;
+          state.activePosition._entryFundingRate = fundingRate ?? null;
+          state.activePosition._entryFearGreed   = externalDataCache?.fearGreed ?? null;
+          state.activePosition._entryObBidAsk    = orderBook?.bidAskRatio ?? null;
+          state.activePosition._entryObSpread    = orderBook?.spread ?? null;
+
+          // ── Supabase: save signal (approved) ────────────────────────────
+          db.saveSignal({
+            symbol:       state.currentPair || CONFIG.SYMBOL,
+            pairMode:     state.currentPairMode,
+            session:      session.session,
+            action:       tradeSide === "BULLISH" ? "LONG" : "SHORT",
+            approved:     true,
+            price,
+            indicators:   { ...indicators, atrPct, bbPctB: bbData?.pctB, bbBandwidth: bbData?.bandwidth,
+                            vwapPct, squeeze: squeezeData?.squeeze, fundingRate,
+                            fearGreed: externalDataCache?.fearGreed,
+                            orderbookBidAskRatio: orderBook?.bidAskRatio,
+                            orderbookSpread: orderBook?.spread },
+            smcData:      { ...smcData, smcScore },
+            claudeFilter,
+            entryScore,
+            entryMode,
+            confThreshold,
+            regime:       currentRegime,
+            phase:        state.phase,
+            stats:        { lossStreak: stats.lossStreak },
+            openedTradeId: db.makeTradeId(state.currentPair || CONFIG.SYMBOL, state.activePosition.openTime),
+            dryRun:       CONFIG.DRY_RUN,
+          }).catch(() => {});
         }
       } else {
         log("AI",
           `Claude REJECT — ${claudeFilter.reason} ` +
           `(conf:${claudeFilter.confidence}%) — tunggu setup berikutnya`
         );
+        // ── Supabase: save rejected signal ──────────────────────────────
+        db.saveSignal({
+          symbol:       state.currentPair || CONFIG.SYMBOL,
+          pairMode:     state.currentPairMode,
+          session:      session.session,
+          action:       tradeSide === "BULLISH" ? "LONG" : "SHORT",
+          approved:     false,
+          rejectReason: `conf:${claudeFilter.confidence}%<${confThreshold} — ${claudeFilter.reason}`,
+          price,
+          indicators:   { ...indicators, atrPct, bbPctB: bbData?.pctB, bbBandwidth: bbData?.bandwidth,
+                          vwapPct, squeeze: squeezeData?.squeeze, fundingRate,
+                          fearGreed: externalDataCache?.fearGreed,
+                          orderbookBidAskRatio: orderBook?.bidAskRatio,
+                          orderbookSpread: orderBook?.spread },
+          smcData:      { ...smcData, smcScore },
+          claudeFilter,
+          entryScore,
+          entryMode,
+          confThreshold,
+          regime:       currentRegime,
+          phase:        state.phase,
+          stats:        { lossStreak: stats.lossStreak },
+          dryRun:       CONFIG.DRY_RUN,
+        }).catch(() => {});
       }
 
       broadcastSSE({
@@ -5393,30 +5570,85 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Riwayat Posisi Bitget (Live Only) -->
-  <div class="card ai-card" id="bitget-history-card" style="display:none">
-    <h3 style="display:flex;align-items:center;justify-content:space-between">
-      Riwayat Posisi Bitget
-      <button onclick="loadBitgetHistory()" style="background:#21262d;border:1px solid #30363d;color:#c9d1d9;padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px">&#8635; Refresh</button>
-    </h3>
-    <div style="overflow-x:auto">
-      <table style="width:100%;border-collapse:collapse;font-size:12px">
-        <thead>
-          <tr style="color:#8b949e;border-bottom:1px solid #30363d">
-            <th style="text-align:left;padding:4px 8px">Futures</th>
-            <th style="text-align:left;padding:4px 8px">Waktu Buka</th>
-            <th style="text-align:right;padding:4px 8px">Harga Entry</th>
-            <th style="text-align:right;padding:4px 8px">Harga Keluar</th>
-            <th style="text-align:right;padding:4px 8px">Size</th>
-            <th style="text-align:right;padding:4px 8px">PnL (USDT)</th>
-            <th style="text-align:right;padding:4px 8px">ROI</th>
-            <th style="text-align:left;padding:4px 8px">Waktu Tutup</th>
-          </tr>
-        </thead>
-        <tbody id="bitget-history-tbody">
-          <tr><td colspan="8" style="text-align:center;color:#8b949e;padding:16px">Memuat data...</td></tr>
-        </tbody>
-      </table>
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <!-- RIWAYAT TRADE — Supabase (DRY RUN + LIVE)                  -->
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <div style="padding:0 12px 12px">
+    <div class="card" id="supabase-history-card" style="grid-column:1/-1">
+      <!-- Header + controls -->
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+        <h3 style="margin:0">
+          📊 Riwayat Trade
+          <span id="sb-mode-badge" style="font-size:10px;padding:2px 8px;border-radius:3px;margin-left:6px;background:#3fb95022;color:#3fb950;border:1px solid #3fb95044">Supabase</span>
+          <span id="sb-count-badge" style="font-size:10px;color:#8b949e;margin-left:6px"></span>
+        </h3>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <!-- Filter: result -->
+          <select id="sb-filter-result" onchange="loadSupabaseTrades()" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 8px;border-radius:4px;font-size:11px">
+            <option value="">Semua</option>
+            <option value="WIN">WIN</option>
+            <option value="LOSS">LOSS</option>
+            <option value="BE">BE</option>
+          </select>
+          <!-- Filter: symbol -->
+          <select id="sb-filter-symbol" onchange="loadSupabaseTrades()" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 8px;border-radius:4px;font-size:11px">
+            <option value="">Semua Pair</option>
+            <option value="BTCUSDT">BTC</option>
+            <option value="PEPEUSDT">PEPE</option>
+          </select>
+          <!-- Limit -->
+          <select id="sb-filter-limit" onchange="loadSupabaseTrades()" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 8px;border-radius:4px;font-size:11px">
+            <option value="20">20</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select>
+          <button onclick="loadSupabaseTrades()" style="background:#21262d;border:1px solid #30363d;color:#c9d1d9;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px">&#8635; Refresh</button>
+        </div>
+      </div>
+
+      <!-- Summary row -->
+      <div id="sb-summary" style="display:none;background:#0d1117;border-radius:6px;padding:10px 14px;margin-bottom:12px;display:flex;gap:24px;flex-wrap:wrap">
+        <div style="text-align:center"><div style="font-size:10px;color:#8b949e">TOTAL TRADE</div><div id="sb-sum-total" style="font-size:18px;font-weight:700;color:#58a6ff">--</div></div>
+        <div style="text-align:center"><div style="font-size:10px;color:#8b949e">WIN RATE</div><div id="sb-sum-wr" style="font-size:18px;font-weight:700;color:#3fb950">--%</div></div>
+        <div style="text-align:center"><div style="font-size:10px;color:#8b949e">NET PnL</div><div id="sb-sum-pnl" style="font-size:18px;font-weight:700">--</div></div>
+        <div style="text-align:center"><div style="font-size:10px;color:#8b949e">AVG DURATION</div><div id="sb-sum-dur" style="font-size:18px;font-weight:700;color:#c9d1d9">--</div></div>
+        <div style="text-align:center"><div style="font-size:10px;color:#8b949e">PROFIT FACTOR</div><div id="sb-sum-pf" style="font-size:18px;font-weight:700;color:#d29922">--</div></div>
+        <div style="text-align:center"><div style="font-size:10px;color:#8b949e">BEST TRADE</div><div id="sb-sum-best" style="font-size:18px;font-weight:700;color:#3fb950">--</div></div>
+        <div style="text-align:center"><div style="font-size:10px;color:#8b949e">WORST TRADE</div><div id="sb-sum-worst" style="font-size:18px;font-weight:700;color:#f85149">--</div></div>
+      </div>
+
+      <!-- Table -->
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px" id="sb-trade-table">
+          <thead>
+            <tr style="color:#8b949e;border-bottom:1px solid #30363d;font-size:10px;letter-spacing:.04em">
+              <th style="text-align:left;padding:6px 8px;white-space:nowrap">PAIR / SIDE</th>
+              <th style="text-align:center;padding:6px 6px">RESULT</th>
+              <th style="text-align:right;padding:6px 8px">ENTRY</th>
+              <th style="text-align:right;padding:6px 8px">EXIT</th>
+              <th style="text-align:right;padding:6px 6px">SIZE</th>
+              <th style="text-align:right;padding:6px 6px">LEV</th>
+              <th style="text-align:right;padding:6px 8px">PnL USDT</th>
+              <th style="text-align:right;padding:6px 6px">NET</th>
+              <th style="text-align:right;padding:6px 6px">MAX+%</th>
+              <th style="text-align:left;padding:6px 8px">ALASAN</th>
+              <th style="text-align:left;padding:6px 6px">SMC / AI</th>
+              <th style="text-align:left;padding:6px 6px">SESI</th>
+              <th style="text-align:left;padding:6px 6px">DURASI</th>
+              <th style="text-align:left;padding:6px 8px;white-space:nowrap">WAKTU TUTUP</th>
+            </tr>
+          </thead>
+          <tbody id="sb-trade-tbody">
+            <tr><td colspan="14" style="text-align:center;color:#8b949e;padding:20px">Menghubungkan ke Supabase...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- No-Supabase fallback -->
+      <div id="sb-no-supabase" style="display:none;padding:20px;text-align:center;color:#8b949e">
+        <div style="font-size:14px;margin-bottom:6px">⚠️ Supabase belum dikonfigurasi</div>
+        <div style="font-size:11px">Set <code style="color:#f0883e">SUPABASE_URL</code> dan <code style="color:#f0883e">SUPABASE_SERVICE_KEY</code> di <code style="color:#f0883e">.env</code></div>
+      </div>
     </div>
   </div>
 
@@ -5429,52 +5661,173 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       try { handle(JSON.parse(e.data)); } catch (err) { console.error('SSE error:', err); }
     };
 
-    async function loadBitgetHistory() {
-      const tbody = document.getElementById('bitget-history-tbody');
-      const card  = document.getElementById('bitget-history-card');
+    // ── Supabase Trade History ─────────────────────────────────
+    async function loadSupabaseTrades() {
+      const tbody   = document.getElementById('sb-trade-tbody');
+      const noSb    = document.getElementById('sb-no-supabase');
+      const summary = document.getElementById('sb-summary');
+      const countBadge = document.getElementById('sb-count-badge');
       if (!tbody) return;
-      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#8b949e;padding:12px">Memuat...</td></tr>';
+
+      const result = document.getElementById('sb-filter-result')?.value || '';
+      const symbol = document.getElementById('sb-filter-symbol')?.value || '';
+      const limit  = document.getElementById('sb-filter-limit')?.value  || '50';
+
+      tbody.innerHTML = '<tr><td colspan="14" style="text-align:center;color:#8b949e;padding:20px">Memuat dari Supabase...</td></tr>';
+
       try {
-        const r = await fetch('/api/position-history');
+        let url = '/api/supabase/trades?limit=' + limit;
+        if (result) url += '&result=' + result;
+        if (symbol) url += '&symbol=' + symbol;
+
+        const r = await fetch(url);
         const d = await r.json();
-        if (d.dryRun) {
-          card.style.display = 'none';
+
+        if (!d.ok) {
+          if (d.error && d.error.includes('tidak aktif')) {
+            noSb.style.display = 'block';
+            tbody.innerHTML = '';
+            summary.style.display = 'none';
+            return;
+          }
+          tbody.innerHTML = \`<tr><td colspan="14" style="text-align:center;color:#f85149;padding:20px">\${d.error || 'Gagal memuat'}</td></tr>\`;
           return;
         }
-        card.style.display = 'block';
-        if (!d.ok || !d.data || d.data.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#8b949e;padding:12px">Tidak ada riwayat posisi</td></tr>';
+
+        noSb.style.display = 'none';
+        const trades = d.data || [];
+        countBadge.textContent = trades.length + ' trade';
+
+        if (trades.length === 0) {
+          summary.style.display = 'none';
+          tbody.innerHTML = '<tr><td colspan="14" style="text-align:center;color:#8b949e;padding:20px">Belum ada trade di Supabase</td></tr>';
           return;
         }
-        tbody.innerHTML = d.data.map(p => {
-          const pnlClass = p.pnl >= 0 ? 'color:#3fb950' : 'color:#f85149';
-          const roiClass = p.roi >= 0 ? 'color:#3fb950' : 'color:#f85149';
-          const sideColor = p.side === 'Long' ? 'color:#3fb950' : 'color:#f85149';
-          const isPepe = p.symbol.includes('PEPE');
-          const entryFmt = isPepe ? p.entryPrice.toFixed(10) : p.entryPrice.toFixed(1);
-          const exitFmt  = isPepe ? p.exitPrice.toFixed(10)  : p.exitPrice.toFixed(1);
-          const sizeFmt  = isPepe ? p.size.toLocaleString() + ' PEPE' : p.size.toFixed(4) + ' BTC';
-          return \`<tr style="border-bottom:1px solid #21262d">
-            <td style="padding:5px 8px">
-              <span style="font-weight:bold">\${p.symbol}</span><br>
-              <span style="\${sideColor}">\${p.side}</span>
-              <span style="color:#8b949e"> · \${p.leverage}x · \${p.marginMode}</span>
+
+        // ── Compute summary ───────────────────────────────────
+        let wins = 0, losses = 0, totalPnl = 0, totalNet = 0;
+        let sumDur = 0, cntDur = 0, grossWin = 0, grossLoss = 0;
+        let best = -Infinity, worst = Infinity;
+        for (const t of trades) {
+          if (t.result === 'WIN')  { wins++; grossWin  += t.pnl_usdt || 0; }
+          if (t.result === 'LOSS') { losses++; grossLoss += Math.abs(t.pnl_usdt || 0); }
+          totalPnl += t.pnl_usdt || 0;
+          totalNet += t.net_profit_usdt || 0;
+          if (t.duration_sec) { sumDur += t.duration_sec; cntDur++; }
+          if ((t.pnl_usdt || 0) > best)  best  = t.pnl_usdt || 0;
+          if ((t.pnl_usdt || 0) < worst) worst = t.pnl_usdt || 0;
+        }
+        const wr = trades.length > 0 ? (wins / trades.length * 100).toFixed(1) : 0;
+        const pf = grossLoss > 0 ? (grossWin / grossLoss).toFixed(2) : (grossWin > 0 ? '∞' : '--');
+        const avgDur = cntDur > 0 ? Math.round(sumDur / cntDur) : 0;
+        const fmtDur = avgDur >= 3600 ? (avgDur/3600).toFixed(1)+'h' : avgDur >= 60 ? (avgDur/60).toFixed(0)+'m' : avgDur+'s';
+
+        summary.style.display = 'flex';
+        document.getElementById('sb-sum-total').textContent = trades.length;
+        document.getElementById('sb-sum-wr').textContent   = wr + '%';
+        document.getElementById('sb-sum-wr').style.color   = parseFloat(wr) >= 50 ? '#3fb950' : '#f85149';
+        const pnlEl = document.getElementById('sb-sum-pnl');
+        pnlEl.textContent = (totalNet >= 0 ? '+' : '') + totalNet.toFixed(4) + ' USDT';
+        pnlEl.style.color = totalNet >= 0 ? '#3fb950' : '#f85149';
+        document.getElementById('sb-sum-dur').textContent  = fmtDur;
+        document.getElementById('sb-sum-pf').textContent   = pf;
+        document.getElementById('sb-sum-best').textContent  = best !== -Infinity ? '+' + best.toFixed(4) : '--';
+        document.getElementById('sb-sum-worst').textContent = worst !== Infinity ? worst.toFixed(4) : '--';
+
+        // ── Render rows ───────────────────────────────────────
+        tbody.innerHTML = trades.map(t => {
+          const isPepe     = (t.symbol || '').includes('PEPE');
+          const entryFmt   = isPepe ? Number(t.entry_price).toFixed(8) : Number(t.entry_price).toFixed(2);
+          const exitFmt    = isPepe ? Number(t.exit_price).toFixed(8)  : Number(t.exit_price).toFixed(2);
+          const sizeFmt    = isPepe
+            ? Number(t.size).toLocaleString() + ' PEPE'
+            : Number(t.size).toFixed(4) + ' BTC';
+          const pnlVal  = t.pnl_usdt    || 0;
+          const netVal  = t.net_profit_usdt || 0;
+          const maxP    = t.max_profit_pct  != null ? Number(t.max_profit_pct).toFixed(3) + '%' : '--';
+          const pnlCls  = pnlVal >= 0 ? 'color:#3fb950' : 'color:#f85149';
+          const netCls  = netVal >= 0 ? 'color:#3fb950' : 'color:#f85149';
+          const sideCls = t.side === 'LONG' ? 'color:#3fb950' : 'color:#f85149';
+
+          let resultBadge = '';
+          if (t.result === 'WIN')  resultBadge = '<span style="background:#3fb95033;color:#3fb950;border:1px solid #3fb95066;padding:1px 7px;border-radius:4px;font-size:10px;font-weight:700">WIN</span>';
+          if (t.result === 'LOSS') resultBadge = '<span style="background:#f8514933;color:#f85149;border:1px solid #f8514966;padding:1px 7px;border-radius:4px;font-size:10px;font-weight:700">LOSS</span>';
+          if (t.result === 'BE')   resultBadge = '<span style="background:#d2992233;color:#d29922;border:1px solid #d2992266;padding:1px 7px;border-radius:4px;font-size:10px;font-weight:700">BE</span>';
+
+          // Reason label — shorten
+          const reason = (t.close_reason || t.exit_type || '--')
+            .replace('TAKE_PROFIT_TRAILING', 'TP Trailing')
+            .replace('TAKE_PROFIT', 'Take Profit')
+            .replace('STOP_LOSS', 'Stop Loss')
+            .replace('HARD_STOP_LOSS', 'Hard SL ⚠')
+            .replace('DEAD_TRADE_TIMEOUT', 'Dead Trade')
+            .replace('TIMEOUT_EXIT', 'Timeout')
+            .replace('EARLY_EXIT_WEAK_MOMENTUM', 'Weak Mom')
+            .replace('PROFIT_RETURN_PROTECT', 'Profit Ret.')
+            .replace('MICRO_PROFIT_REVERSAL', 'Micro Rev.')
+            .replace('FORCE_CLOSE_MAX_LOSS', 'Force Close ⚠')
+            .replace(/_/g, ' ');
+
+          // SMC / AI info
+          const smcInfo = [
+            t.entry_smc_mode ? t.entry_smc_mode.replace(/_/g,' ') : null,
+            t.entry_smc_score != null ? 'SMC:' + t.entry_smc_score + '/5' : null,
+            t.ai_confidence   != null ? 'AI:' + t.ai_confidence + '%' : null,
+          ].filter(Boolean).join(' ');
+
+          // Duration
+          const dur = t.duration_sec
+            ? (t.duration_sec >= 3600 ? (t.duration_sec/3600).toFixed(1)+'h'
+               : t.duration_sec >= 60 ? (t.duration_sec/60).toFixed(0)+'m'
+               : t.duration_sec + 's')
+            : '--';
+
+          // Close time
+          const ct = t.close_time ? new Date(t.close_time).toLocaleString('id-ID',{dateStyle:'short',timeStyle:'short'}) : '--';
+
+          // Session color
+          const sessCls = t.entry_session === 'LONDON' ? 'color:#58a6ff' :
+                          t.entry_session === 'NEW_YORK' ? 'color:#d29922' :
+                          t.entry_session === 'ASIA' ? 'color:#8b949e' : 'color:#8b949e';
+
+          // Flags
+          const flags = [
+            t.breakeven_set ? '🎯' : '',
+            t.runner_activated ? '🏃' : '',
+            t.lock_level ? 'L'+t.lock_level : '',
+          ].filter(Boolean).join(' ');
+
+          return \`<tr style="border-bottom:1px solid #21262d;transition:background .1s" onmouseover="this.style.background='#21262d'" onmouseout="this.style.background=''">
+            <td style="padding:5px 8px;white-space:nowrap">
+              <span style="font-weight:700;color:#c9d1d9">\${t.symbol || '--'}</span>
+              <span style="\${sideCls};margin-left:6px;font-size:11px">\${t.side}</span>
+              \${t.regime === 'RANGE' ? '<span style="font-size:9px;color:#8b949e;margin-left:4px">RANGE</span>' : ''}
+              \${flags ? '<span style="font-size:11px;margin-left:4px">' + flags + '</span>' : ''}
             </td>
-            <td style="padding:5px 8px;color:#8b949e;white-space:nowrap">\${p.openTime}</td>
-            <td style="padding:5px 8px;text-align:right">\${entryFmt}</td>
-            <td style="padding:5px 8px;text-align:right">\${exitFmt}</td>
-            <td style="padding:5px 8px;text-align:right;color:#8b949e">\${sizeFmt}</td>
-            <td style="padding:5px 8px;text-align:right;\${pnlClass};font-weight:bold">\${p.pnl >= 0 ? '+' : ''}\${p.pnl.toFixed(4)} USDT</td>
-            <td style="padding:5px 8px;text-align:right;\${roiClass}">\${p.roi >= 0 ? '+' : ''}\${p.roi.toFixed(2)}%</td>
-            <td style="padding:5px 8px;color:#8b949e;white-space:nowrap">\${p.closeTime}</td>
+            <td style="padding:5px 6px;text-align:center">\${resultBadge}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:monospace;font-size:11px">\${entryFmt}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:monospace;font-size:11px">\${exitFmt}</td>
+            <td style="padding:5px 6px;text-align:right;color:#8b949e;font-size:11px">\${sizeFmt}</td>
+            <td style="padding:5px 6px;text-align:right;color:#8b949e">\${t.leverage || '--'}x</td>
+            <td style="padding:5px 8px;text-align:right;\${pnlCls};font-weight:700">\${pnlVal >= 0 ? '+' : ''}\${pnlVal.toFixed(4)}</td>
+            <td style="padding:5px 6px;text-align:right;\${netCls};font-size:11px">\${netVal >= 0 ? '+' : ''}\${netVal.toFixed(4)}</td>
+            <td style="padding:5px 6px;text-align:right;color:#d29922;font-size:11px">\${maxP}</td>
+            <td style="padding:5px 8px;font-size:11px;white-space:nowrap">\${reason}</td>
+            <td style="padding:5px 6px;font-size:10px;color:#8b949e;white-space:nowrap">\${smcInfo || '--'}</td>
+            <td style="padding:5px 6px;font-size:11px;\${sessCls}">\${t.entry_session || '--'}</td>
+            <td style="padding:5px 6px;color:#8b949e;font-size:11px">\${dur}</td>
+            <td style="padding:5px 8px;color:#8b949e;font-size:11px;white-space:nowrap">\${ct}</td>
           </tr>\`;
         }).join('');
+
       } catch (e) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#f85149;padding:12px">Gagal memuat: ' + e.message + '</td></tr>';
+        tbody.innerHTML = \`<tr><td colspan="14" style="text-align:center;color:#f85149;padding:20px">Error: \${e.message}</td></tr>\`;
       }
     }
-    // Auto-load saat halaman dibuka (hanya live mode — kalau DRY_RUN card disembunyikan)
-    loadBitgetHistory();
+
+    // Auto-load on page open + refresh every 30s
+    loadSupabaseTrades();
+    setInterval(loadSupabaseTrades, 30000);
 
     // ── Order Book & Market Trades ─────────────────────────────
     let _obSymbol = null;
@@ -7109,6 +7462,84 @@ function startDashboard() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, error: err.message, data: [] }));
       }
+    } else if (req.url?.startsWith("/api/supabase/trades") && req.method === "GET") {
+      // ── Supabase: ambil riwayat trade dari DB ─────────────────
+      const urlQ   = new URL(req.url, "http://localhost");
+      const limit  = Math.min(parseInt(urlQ.searchParams.get("limit") || "50"), 200);
+      const symbol = urlQ.searchParams.get("symbol") || null;
+      const result = urlQ.searchParams.get("result") || null; // WIN|LOSS|BE
+      const from   = urlQ.searchParams.get("from")   || null; // ISO date
+
+      res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+
+      if (!db.isEnabled()) {
+        res.end(JSON.stringify({ ok: false, error: "Supabase tidak aktif — set SUPABASE_URL dan SUPABASE_SERVICE_KEY di .env", data: [] }));
+        return;
+      }
+
+      try {
+        const { createClient } = require("@supabase/supabase-js");
+        const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, { auth: { persistSession: false } });
+        let q = sb.from("trades")
+          .select("trade_id,symbol,side,regime,entry_price,exit_price,size,leverage,notional_usdt,open_time,close_time,duration_sec,pnl_pct,pnl_usdt,fee_usdt,net_profit_usdt,result,close_reason,exit_type,breakeven_set,runner_activated,lock_level,max_profit_pct,max_drawdown_pct,entry_rsi,entry_ema_trend,entry_volume_ratio,entry_atr_pct,entry_session,entry_fear_greed,entry_smc_mode,entry_smc_score,entry_rev_score,entry_score,ai_confidence,ai_decision,ai_risk,phase,loss_streak_at_entry,dry_run")
+          .order("close_time", { ascending: false })
+          .limit(limit);
+        if (symbol) q = q.eq("symbol", symbol);
+        if (result) q = q.eq("result", result);
+        if (from)   q = q.gte("close_time", from);
+        const { data, error } = await q;
+        if (error) throw new Error(error.message);
+        res.end(JSON.stringify({ ok: true, count: data.length, data }));
+      } catch (err) {
+        res.end(JSON.stringify({ ok: false, error: err.message, data: [] }));
+      }
+
+    } else if (req.url?.startsWith("/api/supabase/stats") && req.method === "GET") {
+      // ── Supabase: ambil bot_stats ──────────────────────────────
+      res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+
+      if (!db.isEnabled()) {
+        res.end(JSON.stringify({ ok: false, error: "Supabase tidak aktif", data: null }));
+        return;
+      }
+
+      try {
+        const { createClient } = require("@supabase/supabase-js");
+        const sb  = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, { auth: { persistSession: false } });
+        const key = CONFIG.DRY_RUN ? "dry_run" : "live";
+        const { data, error } = await sb.from("bot_stats").select("*").eq("stat_key", key).single();
+        if (error) throw new Error(error.message);
+        res.end(JSON.stringify({ ok: true, data }));
+      } catch (err) {
+        res.end(JSON.stringify({ ok: false, error: err.message, data: null }));
+      }
+
+    } else if (req.url?.startsWith("/api/supabase/equity") && req.method === "GET") {
+      // ── Supabase: ambil equity_history ─────────────────────────
+      const urlQ  = new URL(req.url, "http://localhost");
+      const limit = Math.min(parseInt(urlQ.searchParams.get("limit") || "200"), 1000);
+
+      res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+
+      if (!db.isEnabled()) {
+        res.end(JSON.stringify({ ok: false, error: "Supabase tidak aktif", data: [] }));
+        return;
+      }
+
+      try {
+        const { createClient } = require("@supabase/supabase-js");
+        const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, { auth: { persistSession: false } });
+        const { data, error } = await sb.from("equity_history")
+          .select("ts,balance,initial_balance,equity_pct,total_pnl,drawdown_pct,has_position,phase")
+          .eq("dry_run", CONFIG.DRY_RUN)
+          .order("ts", { ascending: false })
+          .limit(limit);
+        if (error) throw new Error(error.message);
+        res.end(JSON.stringify({ ok: true, count: data.length, data: data.reverse() }));
+      } catch (err) {
+        res.end(JSON.stringify({ ok: false, error: err.message, data: [] }));
+      }
+
     } else if (req.url === "/api/start" && req.method === "POST") {
       // Start / restart trading loop secara manual dari dashboard
       if (state.running) {
@@ -7268,6 +7699,9 @@ async function main() {
     await runBacktest();
     process.exit(0);
   }
+
+  // Supabase data layer
+  db.initSupabase();
 
   // Load data tersimpan
   loadPersistedData();

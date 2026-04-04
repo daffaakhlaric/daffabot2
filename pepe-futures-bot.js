@@ -80,19 +80,30 @@ const CONFIG = {
   CHECK_INTERVAL_MS:        10000, // 10 detik
   CLAUDE_ANALYSIS_INTERVAL: 6,    // scalping: setiap 6 tick = ~1 menit (lebih responsif)
 
-  // Batas confidence AI — lebih selektif setelah loss streak
-  OPEN_CONFIDENCE:  58,   // BTC 15m: turunkan untuk sering trading
-  OPEN_CONFIDENCE_MIN: 55, // Tuning range
-  OPEN_CONFIDENCE_MAX: 65,
-  CLOSE_CONFIDENCE: 55,   // tidak dipakai SMC (SL/TP auto dari swing)
-  
-  // ATR Filter (NEW)
-  ATR_MIN_PERCENT: 0.15,  // Hard filter: ATR < 0.15% = compression, no entry
-  ATR_LOW_THRESHOLD: 0.15,
+  // ── SNIPER MODE ───────────────────────────────────────────────
+  // Mode 1: hanya masuk kalau semua kondisi terpenuhi
+  SNIPER_MODE:        true,   // aktifkan SNIPER filter
+  OPEN_CONFIDENCE:    65,     // Mode 1: AI confidence ≥ 65%
+  OPEN_CONFIDENCE_MIN: 65,
+  OPEN_CONFIDENCE_MAX: 75,
+  CLOSE_CONFIDENCE:   55,
+
+  // Mode 9: Market filter
+  MIN_VOLUME_RATIO:   0.8,   // block entry kalau vol < 0.8x
+  ENTRY_MIN_VOLUME:   1.2,   // entry hanya kalau vol ≥ 1.2x
+  BLOCK_ASIA_SESSION: true,  // jangan entry saat ASIA (mode 9)
+
+  // ATR Filter
+  ATR_MIN_PERCENT:    0.15,
+  ATR_LOW_THRESHOLD:  0.15,
   ATR_HIGH_THRESHOLD: 0.50,
-  
-  // Entry Quality Score (NEW)
-  ENTRY_SCORE_MIN: 70,    // Min score untuk entry
+
+  // Entry Quality Score (Mode 1)
+  ENTRY_SCORE_MIN: 70,    // Min score ≥ 70
+
+  // Mode 8: Daily trade limit
+  MAX_TRADES_PER_DAY: 5,    // normal mode
+  MAX_SNIPER_TRADES:  3,    // sniper mode
 
   // Hemat kredit AI: skip panggilan kalau tidak ada sinyal kuat
   CLAUDE_SMART_FILTER: false,   // SMC: Claude hanya dipanggil saat setup lengkap
@@ -225,6 +236,17 @@ let state = {
   lastPairSelection:    0,            // Timestamp of last selection
   pairAnalysis:         null,         // Latest pair analysis data
   btcAnalysis:          null,         // Latest BTC strategy analysis
+
+  // Mode 8: Daily trade limit
+  dailyTradeCount:      0,            // trades opened today
+  dailyTradeDate:       '',           // YYYY-MM-DD of current day
+  sniperModeActive:     true,         // SNIPER mode flag
+
+  // Mode 5: Scale-in tracking
+  scaleInDone:          false,        // whether we've scaled in this trade
+
+  // Mode 7: capital growth factor (applied to next position)
+  capitalGrowthFactor:  1.0,          // multiplier for next position (1.0 = normal)
 
   // Phase Indicator
   phase:                null,         // Current phase result from phaseIndicator
@@ -1375,6 +1397,18 @@ async function closePosition(reason, currentPrice, symbol = null) {
   updateCompoundBalance(pnlUSDT);
   updateWinRateTracker(pnlUSDT, pnlPct);
   autoAdjustStrategy();
+
+  // ── MODE 7: Capital Growth Loop ───────────────────────────────
+  // After a WIN: grow factor slightly → bigger next position
+  // After a LOSS: shrink factor → smaller next position
+  if (pnlUSDT > 0) {
+    state.capitalGrowthFactor = Math.min((state.capitalGrowthFactor || 1.0) * 1.05, 1.5);
+    log("INFO", `[MODE 7] WIN → capitalGrowthFactor: ${state.capitalGrowthFactor.toFixed(3)} (next pos slightly larger)`);
+  } else if (pnlUSDT < 0) {
+    state.capitalGrowthFactor = Math.max((state.capitalGrowthFactor || 1.0) * 0.90, 0.6);
+    log("INFO", `[MODE 7] LOSS → capitalGrowthFactor: ${state.capitalGrowthFactor.toFixed(3)} (next pos reduced)`);
+  }
+  state.scaleInDone = false; // reset for next trade
 
   recordTrade("CLOSE", pos.side, currentPrice, pos.size, pos.leverage, pos.liqPrice, reason, pnlUSDT, pos.notionalUSDT ?? null);
 
@@ -3459,10 +3493,10 @@ async function tradingLoop() {
       rawProfitPct
     );
 
-    // Fee-aware minimum profit (Bitget taker 0.06% × 2 sides = 0.12% raw, ×2 safety buffer)
+    // Fee-aware minimum profit (Mode 6: never close < 0.3% unless emergency)
     const TOTAL_FEE_RAW      = 0.12;                     // entry + exit fee as % of raw price
-    const min_profit_required = TOTAL_FEE_RAW * 2;       // 0.24% — must cover all fees × 2
-    const MIN_PROFIT_PCT      = Math.max(0.25, min_profit_required); // ≥0.25%
+    const min_profit_required = TOTAL_FEE_RAW * 2;       // 0.24%
+    const MIN_PROFIT_PCT      = Math.max(0.30, min_profit_required); // Mode 6: ≥0.30%
     const MIN_PROFIT_USDT     = 0.05;  // minimum profit USDT
     const HARD_SL_PCT         = 0.5;   // hard stop loss % (raw)
     const HARD_SL_USDT        = 0.20;  // hard stop loss USDT
@@ -3626,12 +3660,12 @@ async function tradingLoop() {
 
     if (!pos._wasProfit && rawProfitLock >= 0.15) pos._wasProfit = true;
 
-    // Rule 5 — Progressive lock levels (don't lock too early)
+    // Mode 4 — Runner priority lock levels (1%/2%/3%/5%)
     const V2_LEVELS = [
-      { id: 1, trigger: 0.30, lockPct: 0.10,  label: "10% locked"   },
-      { id: 2, trigger: 0.50, lockPct: 0.25,  label: "25% locked"   },
-      { id: 3, trigger: 1.00, lockPct: 0.50,  label: "50% locked"   },
-      { id: 4, trigger: 2.00, lockPct: 0.70,  label: "70% runner"   },
+      { id: 1, trigger: 1.00, lockPct: 0.20,  label: "20% locked @1%"  },
+      { id: 2, trigger: 2.00, lockPct: 0.40,  label: "40% locked @2%"  },
+      { id: 3, trigger: 3.00, lockPct: 0.60,  label: "60% locked @3%"  },
+      { id: 4, trigger: 5.00, lockPct: 0.80,  label: "80% locked @5%"  },
     ];
     if (rawProfitLock >= 0.8 && !pos._timeoutDisabled) {
       pos._timeoutDisabled = true;
@@ -3848,14 +3882,66 @@ async function tradingLoop() {
     }
     } // end else dari minimum hold time check
 
-    // Fitur #5: Partial close trigger
+    // ── MODE 5: SCALE-IN — tambah posisi saat profit > 0.7% + momentum kuat ─────
+    if (!state.scaleInDone && pos && !pos.partialClosed) {
+      const siRawPct = pos.side === "LONG"
+        ? (price - pos.entryPrice) / pos.entryPrice * 100
+        : (pos.entryPrice - price) / pos.entryPrice * 100;
+      const siVolOk = (indicators.volumeRatio || 0) > 1.2;
+      const siMomOk = momentumCondCount >= 2; // 2+ momentum conditions
+      if (siRawPct >= 0.7 && siVolOk && siMomOk) {
+        state.scaleInDone = true;
+        const scaleQty = Math.round(pos.size * 0.40); // add 40% of current position
+        log("TRADE",
+          `📈 [MODE 5] SCALE-IN | profit=${siRawPct.toFixed(3)}% Vol=${(indicators.volumeRatio||0).toFixed(2)}x ` +
+          `→ add ${scaleQty} (40% of current ${pos.size})`
+        );
+        if (!CONFIG.DRY_RUN && scaleQty > 0) {
+          const sym = pos.symbol || CONFIG.SYMBOL;
+          await bitgetRequest("POST", "/api/v2/mix/order/place-order", {}, {
+            symbol:      sym,
+            productType: CONFIG.PRODUCT_TYPE,
+            marginCoin:  CONFIG.MARGIN_COIN,
+            size:        scaleQty.toString(),
+            side:        pos.side === "LONG" ? "buy" : "sell",
+            tradeSide:   "open",
+            orderType:   "market",
+          });
+        } else if (CONFIG.DRY_RUN) {
+          log("INFO", `[DRY RUN] Simulasi scale-in +${scaleQty} @ ${price}`);
+        }
+        pos.size += scaleQty;
+        saveState();
+        broadcastSSE({ type: "scale_in", addedQty: scaleQty, totalSize: pos.size, profit: siRawPct.toFixed(3) });
+
+        // Optional second scale-in at 1.5%
+        if (siRawPct >= 1.5 && !pos._scaleIn2Done) {
+          pos._scaleIn2Done = true;
+          const scaleQty2 = Math.round(pos.size * 0.20);
+          if (scaleQty2 > 0) {
+            log("TRADE", `📈 [MODE 5] SCALE-IN 2 | profit=${siRawPct.toFixed(3)}% → add ${scaleQty2} (20%)`);
+            if (!CONFIG.DRY_RUN) {
+              await bitgetRequest("POST", "/api/v2/mix/order/place-order", {}, {
+                symbol: pos.symbol || CONFIG.SYMBOL, productType: CONFIG.PRODUCT_TYPE,
+                marginCoin: CONFIG.MARGIN_COIN, size: scaleQty2.toString(),
+                side: pos.side === "LONG" ? "buy" : "sell", tradeSide: "open", orderType: "market",
+              });
+            }
+            pos.size += scaleQty2;
+            saveState();
+          }
+        }
+      }
+    }
+
+    // Fitur #5: Partial close trigger (Phase 7 — close 30% at 1.5%)
     if (CONFIG.PARTIAL_CLOSE_ENABLED && !pos.partialClosed) {
       const profitPct = pos.side === "LONG"
         ? ((price - pos.entryPrice) / pos.entryPrice) * 100 * pos.leverage
         : ((pos.entryPrice - price) / pos.entryPrice) * 100 * pos.leverage;
       if (profitPct >= CONFIG.PARTIAL_CLOSE_TRIGGER) {
         await closePartialPosition("PARTIAL_PROFIT_LOCK", price);
-        pos.trailingHigh = price; pos.trailingLow = price; // longgarkan trailing
+        pos.trailingHigh = price; pos.trailingLow = price;
       }
     }
   }
@@ -4679,10 +4765,84 @@ async function tradingLoop() {
         log("FILTER", "[FILTER] Volume too low (${indicators.volumeRatio.toFixed(1)}) → HOLD");
       }
       
-      // ═══════════════════════════════════════════════════
+      // ════════════════════════════════════════════════════════════
+      // MODE 8: DAILY TRADE LIMIT
+      // ════════════════════════════════════════════════════════════
+      const todayDate = new Date().toISOString().slice(0, 10);
+      if (state.dailyTradeDate !== todayDate) {
+        state.dailyTradeDate  = todayDate;
+        state.dailyTradeCount = 0;  // reset at midnight
+      }
+      const dailyLimit = CONFIG.SNIPER_MODE ? CONFIG.MAX_SNIPER_TRADES : CONFIG.MAX_TRADES_PER_DAY;
+      if (state.dailyTradeCount >= dailyLimit) {
+        if (state.tickCount % 12 === 0)
+          log("FILTER", `[MODE 8] Daily limit reached (${state.dailyTradeCount}/${dailyLimit}) → SKIP until tomorrow`);
+        return;
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // MODE 9: MARKET FILTER — block ASIA + low volume
+      // ════════════════════════════════════════════════════════════
+      if (CONFIG.BLOCK_ASIA_SESSION && session.session === "ASIA") {
+        if (state.tickCount % 9 === 0)
+          log("FILTER", `[MODE 9] ASIA session — SNIPER only trades London/NY → SKIP`);
+        return;
+      }
+      if (indicators.volumeRatio < CONFIG.MIN_VOLUME_RATIO) {
+        if (state.tickCount % 6 === 0)
+          log("FILTER", `[MODE 9] Market choppy — Vol ${indicators.volumeRatio.toFixed(2)}x < ${CONFIG.MIN_VOLUME_RATIO}x → SKIP`);
+        return;
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // MODE 1: SNIPER ENTRY — ALL conditions must pass
+      // ════════════════════════════════════════════════════════════
+      const sniperVolOk     = indicators.volumeRatio >= CONFIG.ENTRY_MIN_VOLUME;
+      const sniperEmaOk     = trendAligned; // EMA9 > EMA21 (LONG) or EMA9 < EMA21 (SHORT)
+      const sniperAtrOk     = atrPct >= CONFIG.ATR_MIN_PERCENT;
+      const sniperSessionOk = session.session === "LONDON" || session.session === "NEW_YORK"
+                              || session.session === "ALL_SESSIONS";
+      const sniperSideways  = !squeezeActive || squeezeSafe;
+
+      const sniperFails = [
+        !sniperVolOk     && `Vol ${indicators.volumeRatio.toFixed(2)}x < 1.2x`,
+        !sniperEmaOk     && `EMA not aligned for ${tradeSide}`,
+        !sniperAtrOk     && `ATR ${atrPct.toFixed(3)}% too low`,
+        !sniperSessionOk && `Session ${session.session} not London/NY`,
+        !sniperSideways  && `Sideways/squeeze active`,
+      ].filter(Boolean);
+
+      if (CONFIG.SNIPER_MODE && sniperFails.length > 0) {
+        if (state.tickCount % 6 === 0)
+          log("FILTER", `[MODE 1 SNIPER] SKIP — ${sniperFails.join(' | ')}`);
+        return;
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // MODE 2: ENTRY QUALITY CLASSIFICATION
+      // PERFECT (score≥85 + conf≥70) → 100% size
+      // GOOD    (score≥70 + conf≥65) → 70% size
+      // WEAK                          → SKIP
+      // ════════════════════════════════════════════════════════════
+      let entryQuality;
+      let entryQualityFactor; // position size multiplier
+      if (entryScore >= 85 && claudeFilter.confidence >= 70) {
+        entryQuality       = "PERFECT";
+        entryQualityFactor = 1.0;
+      } else if (entryScore >= 70 && claudeFilter.confidence >= 65) {
+        entryQuality       = "GOOD";
+        entryQualityFactor = 0.70;
+      } else {
+        if (state.tickCount % 4 === 0)
+          log("FILTER", `[MODE 2] WEAK setup — score:${entryScore} conf:${claudeFilter.confidence}% → SKIP`);
+        return;
+      }
+      log("ENTRY", `[MODE 2] ${entryQuality} setup → pos size ×${entryQualityFactor} | score:${entryScore} conf:${claudeFilter.confidence}%`);
+
+      // ════════════════════════════════════════════════════════════
       // SD Zone & BOS Direct: threshold 65 | SMC/Reversal: 70
-      // BTC pullback uses lower threshold (58); SD/BOS direct: 65; else CONFIG default
-      // DRY_RUN: adaptive confidence boost applied on loss streak (no pause, only selectivity)
+      // DRY_RUN: adaptive confidence boost applied on loss streak
+      // ════════════════════════════════════════════════════════════
       const adaptive = CONFIG.DRY_RUN ? getAdaptiveRisk(stats.lossStreak || 0) : null;
       if (adaptive && adaptive.confidenceBoost > 0) {
         log("INFO",
@@ -4690,27 +4850,25 @@ async function tradingLoop() {
           `risk×${adaptive.riskMultiplier} conf+${adaptive.confidenceBoost}`
         );
       }
-      const baseConfThreshold = btcPullbackReady
-        ? 58
-        : (sdReady || (bosDirectEntry && !smcFull)) ? 65 : CONFIG.OPEN_CONFIDENCE;
+      const baseConfThreshold = CONFIG.OPEN_CONFIDENCE; // 65 (Sniper mode)
       const confThreshold = baseConfThreshold + (adaptive?.confidenceBoost ?? 0);
-      
+
       // ── ANTI-LOSS STREAK: Get adaptive minimum confidence ───────────
       const adaptiveRisk = getAdaptiveRisk(stats.lossStreak || 0);
-      const MIN_CONFIDENCE = adaptiveRisk.minConfidence || 55;
-      
+      const MIN_CONFIDENCE = Math.max(adaptiveRisk.minConfidence || 55, CONFIG.OPEN_CONFIDENCE);
+
       // ── SMART FILTER: Check loss streak filters ──────────────────────
       const lossStreakFilter = checkLossStreakFilters(
-        stats, 
-        orderBook, 
-        choch, 
+        stats,
+        orderBook,
+        choch,
         indicators.volumeRatio
       );
-      
+
       // ── LOW QUALITY TRADE FILTER: Skip if confidence < MIN ───────
       if (claudeFilter.confidence < MIN_CONFIDENCE) {
         if (state.tickCount % 6 === 0) {
-          log("FILTER", `[FILTER] Low confidence ${claudeFilter.confidence}% < ${MIN_CONFIDENCE}% → SKIP (reduce low-quality trades)`);
+          log("FILTER", `[FILTER] Low confidence ${claudeFilter.confidence}% < ${MIN_CONFIDENCE}% → SKIP`);
         }
         return;
       }
@@ -4725,28 +4883,59 @@ async function tradingLoop() {
 
       // ── I. Entry ────────────────────────────────────────
       // Allow entry if: score >= 70 AND confidence >= threshold AND squeeze is safe
-      if (entryScore >= CONFIG.ENTRY_SCORE_MIN && 
+      if (entryScore >= CONFIG.ENTRY_SCORE_MIN &&
           claudeFilter.confidence >= confThreshold &&
-          squeezeSafe && 
+          squeezeSafe &&
           !volumeTooLow) {
+
+        // Mode 3: Compound position size based on balance %
+        const balNow = state.totalAccountBalance > 0
+          ? state.totalAccountBalance
+          : (CONFIG.DRY_RUN ? compoundedBalance + (stats.totalPnL || 0) : compoundedBalance);
+        let riskPct;
+        if      (balNow < 50)  riskPct = 0.05;
+        else if (balNow < 100) riskPct = 0.06;
+        else if (balNow < 200) riskPct = 0.07;
+        else                   riskPct = 0.09; // 8–10%, use 9% average
+        const maxLossPerTrade = balNow * 0.02; // Mode 3: max loss = 2% balance
+        let sniperMarginUSDT = balNow * riskPct * state.capitalGrowthFactor * entryQualityFactor;
+        // Cap so max loss doesn't exceed 2% (SL covers the stop)
+        const slFraction = (slPct || CONFIG.STOP_LOSS_PCT) / 100;
+        const maxMarginFromRisk = maxLossPerTrade / (slFraction * leverage);
+        sniperMarginUSDT = Math.min(sniperMarginUSDT, maxMarginFromRisk, balNow * 0.15);
+        sniperMarginUSDT = Math.max(sniperMarginUSDT, 2); // minimum 2 USDT
+
+        // Recalculate qty from sniper margin
+        const isPepeEntry = (state.currentPair || CONFIG.SYMBOL).includes("PEPE");
+        let sniperQty;
+        if (isPepeEntry) {
+          const CONTRACT_SIZE = 1000;
+          sniperQty = Math.floor((sniperMarginUSDT * leverage / price) / CONTRACT_SIZE) * CONTRACT_SIZE;
+          if (sniperQty < CONTRACT_SIZE) sniperQty = CONTRACT_SIZE;
+        } else {
+          let qty = (sniperMarginUSDT * leverage) / price;
+          qty = Math.round(qty * 1000) / 1000;
+          if (qty < 0.001) qty = 0.001;
+          sniperQty = qty;
+        }
         log("TRADE",
-          `🚀 ENTRY ${tradeSide} [${modeLabel}] | ` +
+          `🎯 SNIPER ENTRY ${tradeSide} [${entryQuality}] | ` +
           `SL:${slPct.toFixed(3)}% TP:${tpPct.toFixed(3)}% ` +
-          `Lev:${leverage}x RR:1:2 | ` +
-          `${claudeFilter.direct ? modeLabel : `Claude:${claudeFilter.confidence}%`} (${claudeFilter.risk})`
+          `Lev:${leverage}x | Margin:${sniperMarginUSDT.toFixed(2)} USDT (${(riskPct*100).toFixed(0)}% bal) | ` +
+          `Claude:${claudeFilter.confidence}% score:${entryScore}`
         );
-        
-        // Prevent opening if position already exists (synced from exchange earlier)
+
+        // Prevent opening if position already exists
         if (state.activePosition) {
           log("WARN", `[SYNC] Skipping SMC entry - position already exists!`);
           return;
         }
-        
+
         const opened = await openPosition(
           tradeSide === "BULLISH" ? "LONG" : "SHORT",
           leverage,
           price,
-          orderQty,
+          sniperQty,
           null,
           indicators,
           orderBook
@@ -4760,9 +4949,19 @@ async function tradingLoop() {
             ? price * (1 + tpPct / 100)
             : price * (1 - tpPct / 100);
           smcState.lastEntryTime = Date.now();
+          // Mode 8: count trade
+          state.dailyTradeCount = (state.dailyTradeCount || 0) + 1;
+          // Mode 5: reset scale-in flag
+          state.scaleInDone = false;
+          // Store quality for dashboard
+          state.activePosition._entryQuality       = entryQuality;
+          state.activePosition._entryQualityFactor = entryQualityFactor;
+          state.activePosition._entryRiskPct       = riskPct;
+          state.activePosition._dailyTradeNum      = state.dailyTradeCount;
           log("TRADE",
-            `SL: ${state.activePosition.stopLoss.toFixed(8)} | ` +
-            `TP: ${state.activePosition.takeProfit.toFixed(8)}`
+            `SL: ${state.activePosition.stopLoss?.toFixed(8) ?? '--'} | ` +
+            `TP: ${state.activePosition.takeProfit?.toFixed(8) ?? '--'} | ` +
+            `Daily trade #${state.dailyTradeCount}/${dailyLimit}`
           );
           // ── Supabase: store SMC + AI context on position for closePosition ──
           state.activePosition._smcData      = smcData;

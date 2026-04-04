@@ -3874,8 +3874,8 @@ async function tradingLoop() {
     // ═══════════════════════════════════════════════════════════════
     // BTC RANGE MODE STRATEGY
     // ═══════════════════════════════════════════════════════════════
-    if (isRangeMode && !pos) {
-      // Range mode entry conditions
+    if (isRangeMode && !pos && session.active) {
+      // Range mode entry conditions — hanya London/NY session
       const rsi = indicators.rsi || 50;
       const volRatio = indicators.volumeRatio || 0;
       
@@ -3917,12 +3917,15 @@ async function tradingLoop() {
           orderQty = Math.floor((notional / price) / CONTRACT_SIZE) * CONTRACT_SIZE;
           if (orderQty < CONTRACT_SIZE) orderQty = CONTRACT_SIZE;
         } else {
-          // BTC USDT-M: minimum order 0.001 BTC
-          // Pastikan leverage cukup agar margin = POSITION_SIZE_USDT bisa cover 0.001 BTC
+          // BTC USDT-M: margin = POSITION_SIZE_USDT, cap ke 80% saldo live agar tidak exceed balance
+          const availBalance = state.totalAccountBalance > 0
+            ? state.totalAccountBalance * 0.8
+            : CONFIG.POSITION_SIZE_USDT;
+          const marginUsdt = Math.min(CONFIG.POSITION_SIZE_USDT, availBalance);
           const minQty = 0.001;
-          const minLevNeeded = Math.ceil((minQty * price) / CONFIG.POSITION_SIZE_USDT);
+          const minLevNeeded = Math.ceil((minQty * price) / marginUsdt);
           leverage = Math.min(Math.max(leverage, minLevNeeded, 3), CONFIG.MAX_LEVERAGE);
-          let qty = (CONFIG.POSITION_SIZE_USDT * leverage) / price;
+          let qty = (marginUsdt * leverage) / price;
           qty = Math.round(qty * 1000) / 1000;
           if (qty < minQty) qty = minQty;
           orderQty = qty;
@@ -4434,12 +4437,15 @@ async function tradingLoop() {
         orderQty = Math.floor(qty / CONTRACT_SIZE) * CONTRACT_SIZE;
         if (orderQty < CONTRACT_SIZE) orderQty = CONTRACT_SIZE;
       } else {
-        // BTC USDT-M: minimum order 0.001 BTC
-        // Auto-adjust leverage agar margin = POSITION_SIZE_USDT bisa cover minimum order
+        // BTC USDT-M: cap margin ke 80% saldo live agar tidak exceed balance
+        const availBalance = state.totalAccountBalance > 0
+          ? state.totalAccountBalance * 0.8
+          : CONFIG.POSITION_SIZE_USDT;
+        const marginUsdt = Math.min(CONFIG.POSITION_SIZE_USDT, availBalance);
         const minQty = 0.001;
-        const minLevNeeded = Math.ceil((minQty * price) / CONFIG.POSITION_SIZE_USDT);
+        const minLevNeeded = Math.ceil((minQty * price) / marginUsdt);
         leverage = Math.min(Math.max(leverage, minLevNeeded, 3), CONFIG.MAX_LEVERAGE);
-        let qty = (CONFIG.POSITION_SIZE_USDT * leverage) / price;
+        let qty = (marginUsdt * leverage) / price;
         qty = Math.round(qty * 1000) / 1000;
         if (qty < minQty) qty = minQty;
         orderQty = qty;
@@ -7190,25 +7196,40 @@ function startDashboard() {
           productType: CONFIG.PRODUCT_TYPE,
           limit: "20",
         });
-        // Log raw field names dari 1 record pertama untuk debug
         const rawList = histRes.data?.list || histRes.data || [];
         if (rawList.length > 0) {
-          log("INFO", `[HISTORY DEBUG] Raw fields: ${Object.keys(rawList[0]).join(", ")}`);
-          log("INFO", `[HISTORY DEBUG] Sample: ${JSON.stringify(rawList[0]).substring(0, 300)}`);
+          log("INFO", `[HISTORY] Fields: ${Object.keys(rawList[0]).join(", ")}`);
         }
-        const rows = rawList.map(p => ({
-          symbol:      p.symbol,
-          side:        (p.holdSide || p.side || "") === "long" ? "Long" : "Short",
-          leverage:    p.leverage || p.lever || "--",
-          marginMode:  (p.marginMode || p.marginCoin) === "isolated" ? "Isolated" : "Cross",
-          openTime:    p.openTime  ? new Date(Number(p.openTime)).toLocaleString("id-ID")  : "--",
-          closeTime:   p.closeTime ? new Date(Number(p.closeTime)).toLocaleString("id-ID") : "--",
-          entryPrice:  parseFloat(p.openPriceAvg  || p.entryPrice  || p.openPrice || 0),
-          exitPrice:   parseFloat(p.closePriceAvg || p.exitPrice   || p.closePrice || 0),
-          size:        parseFloat(p.closeTotalPos  || p.closeSize   || p.total      || p.size || 0),
-          pnl:         parseFloat(p.pnl || p.realizedPL || 0),
-          roi:         parseFloat(p.pnlRate || p.roi || 0) * 100,
-        }));
+        const rows = rawList.map(p => {
+          // Bitget v2 field names (berbeda dari v1)
+          const entryPrice = parseFloat(
+            p.openAvgPrice || p.openPriceAvg || p.entryPrice || p.openPrice || 0
+          );
+          const exitPrice = parseFloat(
+            p.closeAvgPrice || p.closePriceAvg || p.exitPrice || p.closePrice || 0
+          );
+          const openTs  = p.cTime || p.ctime || p.openTime  || p.createTime;
+          const closeTs = p.uTime || p.utime || p.closeTime || p.updateTime;
+          const lev     = p.leverage || p.lever;
+          const size    = parseFloat(p.closeTotalPos || p.openTotalPos || p.total || p.size || 0);
+          const pnl     = parseFloat(p.pnl || p.realizedPL || p.netProfit || 0);
+          // ROI = pnl / margin, margin = entryPrice * size / leverage
+          const margin  = lev && entryPrice && size ? (entryPrice * size / parseFloat(lev)) : 0;
+          const roi     = margin > 0 ? (pnl / margin) * 100 : parseFloat(p.pnlRate || 0) * 100;
+          return {
+            symbol:     p.symbol,
+            side:       (p.holdSide || p.side || "long") === "long" ? "Long" : "Short",
+            leverage:   lev || "--",
+            marginMode: (p.marginMode || "") === "isolated" ? "Isolated" : "Cross",
+            openTime:   openTs  ? new Date(Number(openTs)).toLocaleString("id-ID")  : "--",
+            closeTime:  closeTs ? new Date(Number(closeTs)).toLocaleString("id-ID") : "--",
+            entryPrice,
+            exitPrice,
+            size,
+            pnl,
+            roi,
+          };
+        });
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true, data: rows }));
       } catch (err) {

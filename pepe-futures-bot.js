@@ -66,14 +66,14 @@ const CONFIG = {
   MAX_POSITIONS:       1,
 
   // Risk management — SL disesuaikan untuk PEPE (spread ~0.2% + fee 0.12% = cost 0.32%)
-  STOP_LOSS_PCT:    2.5,    // dari 1.0 → 2.5% (beri ruang noise PEPE)
+  STOP_LOSS_PCT:    3.0,    // maksimal SL 3% dari entry price
   TAKE_PROFIT_PCT:  5.0,    // dari 2.0 → 5.0% (RR 1:2 tetap terjaga)
   TRAILING_STOP:    true,    // aktifkan trailing stop
   TRAILING_OFFSET:  0.8,     // dari 0.3 → 0.8% (tidak kena noise)
-  MAX_LOSS_PCT:     8.0,     // dari 5.0 → 8.0% (longgarkan force close)
+  MAX_LOSS_PCT:     3.0,     // force close jika rugi > 3% raw price
   // Minimum SL untuk cover spread + fee PEPE
   MIN_SL_PCT:       0.5,    // minimal SL untuk cover cost masuk-keluar
-  MAX_SL_PCT:       3.5,    // maksimal SL
+  MAX_SL_PCT:       3.0,    // maksimal SL — tidak boleh lebih dari 3%
   HARD_STOP_TOTAL:  20.0,   // hard stop jika total loss > 20%
 
   // Funding rate threshold
@@ -187,12 +187,12 @@ const CONFIG = {
     MAX_SL_PCT:       2.0,
   },
   PEPE_SPECIFIC_CONFIG: {
-    STOP_LOSS_PCT:    2.5,    // SL lebih besar untuk PEPE (volatil)
+    STOP_LOSS_PCT:    3.0,    // maksimal SL 3% dari entry
     TAKE_PROFIT_PCT:  5.0,
     TRAILING_OFFSET:  0.8,
     POSITION_SIZE_USDT: 15,  // 15 USDT margin → notional ~75 USDT @ 5x, ~105 USDT @ 7x
     MIN_SL_PCT:       0.5,
-    MAX_SL_PCT:       3.5,
+    MAX_SL_PCT:       3.0,   // cap SL 3%
   },
 };
 
@@ -3504,18 +3504,14 @@ async function tradingLoop() {
     const min_profit_required = TOTAL_FEE_RAW * 2;       // 0.24%
     const MIN_PROFIT_PCT      = Math.max(0.30, min_profit_required); // Mode 6: ≥0.30%
     const MIN_PROFIT_USDT     = 0.05;  // minimum profit USDT
-    const HARD_SL_PCT         = 0.5;   // hard stop loss % (raw)
-    const HARD_SL_USDT        = 0.20;  // hard stop loss USDT
+    const HARD_SL_PCT         = 3.0;   // hard stop loss 3% raw price dari entry
+    const HARD_SL_USDT        = 4.5;   // hard stop ~3% raw × 5x × 15 USDT margin
 
-    // ── 1. HARD STOP LOSS ─────────────────────────────────────────
-    if (rawProfitPct < 0) {
-      const hitPct  = rawProfitPct <= -HARD_SL_PCT;
-      const hitUsdt = lossUsdt >= HARD_SL_USDT;
-      if (hitPct || hitUsdt) {
-        log("TRADE", `[RISK] Hard SL triggered | Loss=${rawProfitPct.toFixed(3)}% / ${lossUsdt.toFixed(4)} USDT`);
-        await closePosition("HARD_STOP_LOSS", price);
-        return;
-      }
+    // ── 1. HARD STOP LOSS — langsung close jika rugi ≥ 3% ────────
+    if (rawProfitPct <= -HARD_SL_PCT) {
+      log("TRADE", `[RISK] Hard SL 3% triggered | Loss=${rawProfitPct.toFixed(3)}% / ${lossUsdt.toFixed(4)} USDT → langsung close`);
+      await closePosition("HARD_STOP_LOSS", price);
+      return;
     }
 
     // ── 2. VIRTUAL SL CHECK (SL dari state lokal) ─────────────────

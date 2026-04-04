@@ -3460,6 +3460,9 @@ async function tradingLoop() {
     const holdMs    = pos.openTime ? Date.now() - new Date(pos.openTime).getTime() : 99999;
     const minHoldMs = 30 * 1000; // 30 detik minimum hold
 
+    // Declare momentumCondCount at function level (outside if/else)
+    let momentumCondCount = 0;
+
     if (holdMs < minHoldMs) {
       const sisaSec = Math.ceil((minHoldMs - holdMs) / 1000);
       if (state.tickCount % 3 === 0) {
@@ -3489,9 +3492,6 @@ async function tradingLoop() {
     const marginUsdt   = CONFIG.POSITION_SIZE_USDT;
     const profitUsdt   = marginUsdt * pos.leverage * rawProfitPct / 100;
     const lossUsdt     = -profitUsdt; // positif kalau rugi
-
-    // Variables for momentum checks (needed in scale-in logic)
-    let momentumCondCount = 0;
 
     // ── Supabase: track max profit / max drawdown per trade ──────
     db.updateTradeTracker(

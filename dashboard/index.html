@@ -456,7 +456,10 @@ select.fsel{background:var(--bg);border:1px solid var(--border2);color:var(--tex
       <div class="row"><div class="lbl">Cooldown Trade</div><div class="val yellow" id="bot-cooldown">0</div></div>
       <div class="row"><div class="lbl">Confidence Req</div><div class="val blue" id="bot-conf-req">--</div></div>
       <div class="divider"></div>
-      <!-- SMC Status -->
+      <!-- Learning Engine -->
+      <div style="font-size:10px;color:var(--text3);margin-bottom:8px">🤖 AI LEARNING</div>
+      <div id="learning-rules" style="font-size:10px;color:var(--text2)">Belum ada data...</div>
+    </div>
       <div style="font-size:10px;color:var(--text3);margin-bottom:8px">SMC SINYAL TERAKHIR</div>
       <div class="row"><div class="lbl">HTF Trend</div><div class="val" id="smc-htf">--</div></div>
       <div class="row"><div class="lbl">Session</div><div class="val" id="smc-sess">--</div></div>
@@ -663,7 +666,7 @@ const S = {
   dryRun: true, lastAnalysis: null, smcData: null,
   trades: [], equityData: [],
   lossStreak: 0, winStreak: 0,
-  lastTs: 0,
+  lastTs: 0, learningRules: [],
 };
 
 // ── Clock ──────────────────────────────────────────────────────
@@ -755,6 +758,12 @@ function handle(d) {
       break;
     case 'lock_profit': case 'breakeven':
       renderPosition();
+      break;
+    case 'learning':
+      if (d.favorable_conditions || d.avoid_conditions) {
+        S.learningRules = d;
+        renderLearning(d);
+      }
       break;
   }
 }
@@ -988,6 +997,32 @@ function renderIndicators() {
   rEl.style.color = r>70?'var(--red)':r<30?'var(--green)':'var(--text)';
   set('hdr-ema9',  S.ema9  ? S.ema9.toFixed(2)  : '--');
   set('hdr-vol',   S.volumeRatio ? S.volumeRatio.toFixed(2) : '--');
+}
+
+function renderLearning(d) {
+  const el = document.getElementById('learning-rules');
+  if (!d || (!d.favorable_conditions?.length && !d.avoid_conditions?.length)) {
+    el.textContent = 'Menunggu analisis...';
+    return;
+  }
+  
+  const fav = d.favorable_conditions?.slice(0, 4).map(f => 
+    `<div style="margin-bottom:3px;color:var(--green)">✓ ${f.condition}: ${f.winRate}% win</div>`
+  ).join('') || '';
+  
+  const avoid = d.avoid_conditions?.slice(0, 4).map(a => 
+    `<div style="margin-bottom:3px;color:var(--red)">✗ ${a.condition}: ${a.winRate}% win</div>`
+  ).join('') || '';
+  
+  const weights = d.weight_adjustments;
+  const weightStr = weights ? 
+    `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);font-size:10px;color:var(--accent)">
+     Weights: trend=${weights.trend}%, vol=${weights.volume}%, rsi=${weights.rsi}%
+    </div>` : '';
+  
+  const conf = d.confidence ? `<div style="font-size:9px;color:var(--text3)">Confidence: ${d.confidence}%</div>` : '';
+  
+  el.innerHTML = `<div style="font-size:11px;margin-bottom:6px">Sample: ${d.sampleSize?.total || 0} trades</div>${conf}${fav}${avoid}${weightStr}`;
 }
 
 // ═══════════════════════════════════════════════════════════════

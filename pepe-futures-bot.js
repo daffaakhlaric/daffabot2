@@ -29,6 +29,9 @@ const { evaluatePhase, phaseLogLine, PHASES } = require("./phaseIndicator");
 // ── SUPABASE DATA LAYER ──────────────────────────────────────────
 const db = require("./supabaseClient");
 
+// ── SELF-LEARNING ENGINE ──────────────────────────────────────────
+const learningEngine = require("./learningEngine");
+
 // ── Bypass DNS hijacking ISP (Indosat/IOH memblokir api.bitget.com) ──────────
 // ISP Indonesia sering redirect DNS ke server mereka sendiri.
 // Paksa Node.js pakai DNS publik Google + Cloudflare agar resolve ke IP asli.
@@ -3487,6 +3490,9 @@ async function tradingLoop() {
     const profitUsdt   = marginUsdt * pos.leverage * rawProfitPct / 100;
     const lossUsdt     = -profitUsdt; // positif kalau rugi
 
+    // Variables for momentum checks (needed in scale-in logic)
+    let momentumCondCount = 0;
+
     // ── Supabase: track max profit / max drawdown per trade ──────
     db.updateTradeTracker(
       db.makeTradeId(pos.symbol || CONFIG.SYMBOL, pos.openTime),
@@ -3535,7 +3541,7 @@ async function tradingLoop() {
         : klines.slice(-3).every((c, i, a) => i === 0 || c.close < a[i-1].close)
     );
     // Count how many Phase-2 conditions are met
-    const momentumCondCount = [
+    momentumCondCount = [
       volRatioNow > 1.3,
       pos.side === "LONG" ? (rsiNow >= 55 && rsiNow <= 70) : (rsiNow >= 30 && rsiNow <= 45),
       pos.side === "LONG" ? (price > ema9Now && price > ema21Now) : (price < ema9Now && price < ema21Now),
@@ -5927,6 +5933,9 @@ async function main() {
   // Supabase data layer
   db.initSupabase();
 
+  // Self-learning engine
+  learningEngine.initLearning();
+
   // Load data tersimpan
   loadPersistedData();
   // Evaluasi phase langsung dari data yang sudah di-load
@@ -5970,6 +5979,45 @@ async function main() {
   // Mulai dashboard
   startDashboard();
   await fetchAndUpdateBalance();
+
+  // Self-learning cycle - run every 30 minutes (DRY RUN only)
+  const LEARNING_INTERVAL_MS = 30 * 60 * 1000;
+  setInterval(async () => {
+    if (!learningEngine.isEnabled()) return;
+    
+    // Check eligibility first
+    const eligibility = await learningEngine.checkLearningEligibility(CONFIG.SYMBOL);
+    log("LEARNING", `Status: ${eligibility.status} - ${eligibility.reason}`);
+    
+    if (!eligibility.self_learning) {
+      log("LEARNING", "Not eligible for learning yet");
+      return;
+    }
+    
+    try {
+      const result = await learningEngine.runLearningCycle(CONFIG.SYMBOL, CONFIG.DRY_RUN);
+      if (result && (result.favorable_conditions?.length > 0 || result.avoid_conditions?.length > 0)) {
+        log("LEARNING", `[LEARNING] Cycle: ${result.sampleSize.total} trades analyzed`);
+        log("LEARNING", `  Favorable: ${result.favorable_conditions.length} | Avoid: ${result.avoid_conditions.length}`);
+        log("LEARNING", `  Weights: trend=${result.weight_adjustments.trend}%, volume=${result.weight_adjustments.volume}%, rsi=${result.weight_adjustments.rsi}%`);
+        
+        // Broadcast learning results to dashboard
+        broadcastSSE({
+          type: "learning",
+          favorable_conditions: result.favorable_conditions,
+          avoid_conditions: result.avoid_conditions,
+          weight_adjustments: result.weight_adjustments,
+          current_weights: result.current_weights,
+          sampleSize: result.sampleSize,
+          confidence: result.confidence,
+          status: eligibility.status,
+          timestamp: result.timestamp,
+        });
+      }
+    } catch (err) {
+      log("WARN", `[LEARNING] Cycle failed: ${err.message}`);
+    }
+  }, LEARNING_INTERVAL_MS);
 
   log("INFO", "Bot trading dimulai! Tekan Ctrl+C untuk berhenti.");
   console.log();

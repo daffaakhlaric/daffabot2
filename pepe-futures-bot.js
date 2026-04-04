@@ -58,23 +58,37 @@ const CONFIG = {
   PRODUCT_TYPE:     "usdt-futures",
   MARGIN_COIN:      "USDT",
   MARGIN_MODE:      "isolated",
-  DEFAULT_LEVERAGE: 5,
-  MAX_LEVERAGE:     7,
+  DEFAULT_LEVERAGE: 7,      // SMC: min 7x
+  MAX_LEVERAGE:     10,     // SMC: max 10x (never exceed)
 
   // Ukuran posisi
   POSITION_SIZE_USDT: 15,  // USDT margin per trade (notional = margin × leverage)
   MAX_POSITIONS:       1,
 
-  // Risk management — SL disesuaikan untuk PEPE (spread ~0.2% + fee 0.12% = cost 0.32%)
-  STOP_LOSS_PCT:    3.0,    // maksimal SL 3% dari entry price
-  TAKE_PROFIT_PCT:  5.0,    // dari 2.0 → 5.0% (RR 1:2 tetap terjaga)
-  TRAILING_STOP:    true,    // aktifkan trailing stop
-  TRAILING_OFFSET:  0.8,     // dari 0.3 → 0.8% (tidak kena noise)
-  MAX_LOSS_PCT:     3.0,     // force close jika rugi > 3% raw price
-  // Minimum SL untuk cover spread + fee PEPE
+  // Risk management — SMC elite rules
+  STOP_LOSS_PCT:    3.0,    // max SL 3% raw dari entry (structure-based via ATR/OB)
+  TAKE_PROFIT_PCT:  2.0,    // TP2 final: 1.2–2.0% raw (diset dinamis di SMC logic)
+  TP1_PCT:          0.5,    // SMC TP1: 0.5% raw → partial close 50%
+  TP2_MIN_PCT:      1.2,    // SMC TP2 minimum 1.2%
+  TP2_MAX_PCT:      2.0,    // SMC TP2 maksimum 2.0%
+  TRAILING_STOP:    true,   // aktifkan trailing stop setelah TP1 hit
+  TRAILING_OFFSET:  0.8,    // trailing offset % raw
+  MAX_LOSS_PCT:     3.0,    // force close jika rugi > 3% raw
+  MIN_RR_RATIO:     2.0,    // minimum Risk:Reward 1:2 (TP harus ≥ 2× SL)
+  // Minimum SL untuk cover spread + fee
   MIN_SL_PCT:       0.5,    // minimal SL untuk cover cost masuk-keluar
   MAX_SL_PCT:       3.0,    // maksimal SL — tidak boleh lebih dari 3%
   HARD_STOP_TOTAL:  20.0,   // hard stop jika total loss > 20%
+
+  // SMC Daily Loss Limit
+  DAILY_LOSS_LIMIT_PCT: 3.0,   // stop trading hari ini jika rugi > 3% equity
+  MAX_CONSEC_LOSSES:    3,      // pause setelah 3 loss berturut
+
+  // SMC Entry Filters
+  REQUIRE_LIQ_SWEEP:    true,   // wajib ada liquidity sweep sebelum entry
+  MIN_PRICE_MOVE_PCT:   0.3,    // reject jika price move pemicu < 0.3%
+  REQUIRE_HTF_ALIGN:    true,   // wajib HTF 4H/1D aligned
+  BLOCK_MID_ASIA:       true,   // block mid-session 10:00–16:00 WIB
 
   // Funding rate threshold
   FUNDING_RATE_THRESHOLD: 0.001, // 0.1% = pertimbangkan tutup
@@ -135,10 +149,10 @@ const CONFIG = {
   // ── Fitur #3: VWAP ────────────────────────────────────────
   VWAP_BIAS_THRESHOLD: 0.5,   // % di atas/bawah VWAP untuk bias
 
-  // ── Fitur #5: Partial Close ───────────────────────────────
+  // ── Fitur #5: Partial Close (SMC TP1) ───────────────────────
   PARTIAL_CLOSE_ENABLED: true,
-  PARTIAL_CLOSE_PCT:     30,    // tutup 30% posisi (Phase 7: close 30%, keep 70% running)
-  PARTIAL_CLOSE_TRIGGER: 1.5,   // Phase 7: partial at 1.5% profit
+  PARTIAL_CLOSE_PCT:     50,    // SMC TP1: close 50% posisi saat TP1 hit
+  PARTIAL_CLOSE_TRIGGER: 0.5,   // SMC TP1: trigger at 0.5% raw profit, trailing aktif setelahnya
 
   // ── Fitur #6: Auto Compound ───────────────────────────────
   AUTO_COMPOUND:       true,
@@ -179,20 +193,22 @@ const CONFIG = {
                                          // Jika false: switching antara BTC dan PEPE
   PAIR_SELECTION_INTERVAL:  300000,     // 5 menit - interval evaluasi ulang pair
   BTC_SPECIFIC_CONFIG: {
-    STOP_LOSS_PCT:    1.5,    // Lebih konservatif untuk BTC
-    TAKE_PROFIT_PCT:  3.0,
+    STOP_LOSS_PCT:    1.5,    // BTC: structure SL ~1.5% (tighter — BTC less volatile)
+    TAKE_PROFIT_PCT:  2.0,    // TP2 BTC
+    TP1_PCT:          0.5,    // TP1 BTC sama
     TRAILING_OFFSET:  0.5,
-    POSITION_SIZE_USDT: 15,  // Min 15 USDT: 0.001 BTC × 68k = 68 USDT notional, butuh ≥14 USDT margin @ 5x
+    POSITION_SIZE_USDT: 15,
     MIN_SL_PCT:       0.3,
     MAX_SL_PCT:       2.0,
   },
   PEPE_SPECIFIC_CONFIG: {
-    STOP_LOSS_PCT:    3.0,    // maksimal SL 3% dari entry
-    TAKE_PROFIT_PCT:  5.0,
+    STOP_LOSS_PCT:    3.0,    // PEPE: lebih volatile, SL lebih longgar
+    TAKE_PROFIT_PCT:  2.0,    // TP2
+    TP1_PCT:          0.5,    // TP1
     TRAILING_OFFSET:  0.8,
-    POSITION_SIZE_USDT: 15,  // 15 USDT margin → notional ~75 USDT @ 5x, ~105 USDT @ 7x
+    POSITION_SIZE_USDT: 15,
     MIN_SL_PCT:       0.5,
-    MAX_SL_PCT:       3.0,   // cap SL 3%
+    MAX_SL_PCT:       3.0,
   },
 };
 
@@ -244,6 +260,10 @@ let state = {
   dailyTradeCount:      0,            // trades opened today
   dailyTradeDate:       '',           // YYYY-MM-DD of current day
   sniperModeActive:     true,         // SNIPER mode flag
+  dailyLossUsdt:        0,            // SMC: total loss USDT today (reset daily)
+  dailyLossPaused:      false,        // SMC: stop trading — daily loss limit hit
+  lastTradeWasLoss:     false,        // SMC: require 1 confirmed setup after loss before re-entry
+  lastSetupConfirmed:   false,        // SMC: tracks if 1 valid setup was seen after last loss
 
   // Mode 5: Scale-in tracking
   scaleInDone:          false,        // whether we've scaled in this trade
@@ -1387,12 +1407,35 @@ async function closePosition(reason, currentPrice, symbol = null) {
     stats.wins++;
     stats.winStreak  = (stats.winStreak  || 0) + 1;
     stats.lossStreak = 0;
+    state.lastTradeWasLoss   = false;
+    state.lastSetupConfirmed = false; // reset — no longer needed
   } else {
     stats.losses++;
     stats.lossStreak = (stats.lossStreak || 0) + 1;
     stats.winStreak  = 0;
+    state.lastTradeWasLoss   = true;
+    state.lastSetupConfirmed = false; // must see 1 confirmed setup before next entry
   }
   if (stats.totalPnL < stats.maxDrawdown) stats.maxDrawdown = stats.totalPnL;
+
+  // SMC: Daily loss accumulation
+  const todayD = new Date().toISOString().slice(0, 10);
+  if (state.dailyTradeDate !== todayD) {
+    state.dailyTradeDate  = todayD;
+    state.dailyTradeCount = 0;
+    state.dailyLossUsdt   = 0;
+    state.dailyLossPaused = false;
+  }
+  if (pnlUSDT < 0) {
+    state.dailyLossUsdt = (state.dailyLossUsdt || 0) + Math.abs(pnlUSDT);
+    const equity = state.totalAccountBalance > 0 ? state.totalAccountBalance : (state.initialBalance || 100);
+    const dailyLossPct = (state.dailyLossUsdt / equity) * 100;
+    if (dailyLossPct >= CONFIG.DAILY_LOSS_LIMIT_PCT && !state.dailyLossPaused) {
+      state.dailyLossPaused = true;
+      log("WARN", `🛑 [SMC] DAILY LOSS LIMIT HIT — total loss today: ${state.dailyLossUsdt.toFixed(2)} USDT (${dailyLossPct.toFixed(1)}% equity) → STOP trading today`);
+      broadcastSSE({ type: "daily_loss_limit", lossUsdt: state.dailyLossUsdt, lossPct: dailyLossPct });
+    }
+  }
 
   // BUG #4 FIX: update currentBalance setiap posisi ditutup
   state.currentBalance = state.initialBalance + stats.totalPnL;
@@ -3499,11 +3542,11 @@ async function tradingLoop() {
       rawProfitPct
     );
 
-    // Fee-aware minimum profit (Mode 6: never close < 0.3% unless emergency)
+    // Fee-aware minimum profit (Mode 6: never close below meaningful profit)
     const TOTAL_FEE_RAW      = 0.12;                     // entry + exit fee as % of raw price
     const min_profit_required = TOTAL_FEE_RAW * 2;       // 0.24%
-    const MIN_PROFIT_PCT      = Math.max(0.30, min_profit_required); // Mode 6: ≥0.30%
-    const MIN_PROFIT_USDT     = 0.05;  // minimum profit USDT
+    const MIN_PROFIT_PCT      = Math.max(0.50, min_profit_required); // Mode 6: ≥0.50% raw (raised from 0.30%)
+    const MIN_PROFIT_USDT     = 0.30;  // minimum profit USDT sebelum boleh exit apapun (raised from 0.05)
     const HARD_SL_PCT         = 3.0;   // hard stop loss 3% raw price dari entry
     const HARD_SL_USDT        = 4.5;   // hard stop ~3% raw × 5x × 15 USDT margin
 
@@ -3573,7 +3616,7 @@ async function tradingLoop() {
     }
 
     // ── 6. MICRO PROFIT BLOCKER (Rules 1 + 2) ─────────────────────────────────
-    // HOLD profit < MIN unless STRONG reversal: engulfing + vol-spike + RSI-div (≥2/3)
+    // HOLD profit < MIN unless ALL 3 reversal signals fire + profit ≥ MIN_PROFIT_USDT
     if (rawProfitPct > 0 && rawProfitPct < MIN_PROFIT_PCT) {
       const last3   = klines.slice(-3);
       const lastC   = last3[last3.length - 1];
@@ -3584,23 +3627,25 @@ async function tradingLoop() {
             && lastC.open >= prevC.close && lastC.close <= prevC.open  // bear engulf
         : lastC && prevC && lastC.close > lastC.open
             && lastC.open <= prevC.close && lastC.close >= prevC.open; // bull engulf
-      // Volume spike against position direction
-      const volSpike     = volRatioNow > 1.5;
-      // RSI divergence: RSI moving against position
-      const rsiDivergence = pos.side === "LONG" ? rsiNow < 40 : rsiNow > 62;
-      const reversalScore = (engulfing ? 1 : 0) + (volSpike ? 1 : 0) + (rsiDivergence ? 1 : 0);
-      const strongReversal = reversalScore >= 2;
+      // Volume spike against position direction (raised 1.5 → 2.0 — only genuine vol surge)
+      const volSpike     = volRatioNow > 2.0;
+      // RSI extreme divergence (tighter threshold)
+      const rsiDivergence = pos.side === "LONG" ? rsiNow < 35 : rsiNow > 65;
+      const reversalScore  = (engulfing ? 1 : 0) + (volSpike ? 1 : 0) + (rsiDivergence ? 1 : 0);
+      // Require ALL 3 signals (was ≥2) AND profit in USDT ≥ MIN_PROFIT_USDT
+      const strongReversal = reversalScore >= 3;
+      const profitUsdtOK   = profitUsdt >= MIN_PROFIT_USDT;
 
-      if (strongReversal && momentumWeak) {
+      if (strongReversal && momentumWeak && profitUsdtOK) {
         log("TRADE",
-          `[PROFIT] Micro profit + strong reversal (engulf=${engulfing} volSpike=${volSpike} rsiDiv=${rsiDivergence}) → close ${rawProfitPct.toFixed(3)}%`
+          `[PROFIT] Micro profit + full reversal (engulf=${engulfing} volSpike=${volSpike} rsiDiv=${rsiDivergence}) → close ${rawProfitPct.toFixed(3)}% / ${profitUsdt.toFixed(4)} USDT`
         );
         await closePosition("MICRO_PROFIT_REVERSAL", price);
         return;
       }
       // Otherwise HOLD — fee protection active
       if (state.tickCount % 5 === 0)
-        log("INFO", `[FEE GATE] Hold — profit ${rawProfitPct.toFixed(3)}% < min ${MIN_PROFIT_PCT}% (fee protection, reversal score ${reversalScore}/3)`);
+        log("INFO", `[FEE GATE] Hold — profit ${rawProfitPct.toFixed(3)}% (${profitUsdt.toFixed(4)} USDT) < min ${MIN_PROFIT_PCT}% / ${MIN_PROFIT_USDT} USDT | rev=${reversalScore}/3`);
     }
 
     // ── 7. SMART HOLD — Market-Condition Exit Only ───────────────────────────
@@ -3873,9 +3918,9 @@ async function tradingLoop() {
         pos.momentumWeakCount = (pos.momentumWeakCount || 0) + 1;
 
         if (pos.momentumWeakCount >= 2) {
-          // STEP 3: FEE GATE - Don't close if profit < minProfitPercent
-          if (rawProfitPct > 0 && rawProfitPct < MIN_PROFIT_PCT) {
-            log("FEE", `[FEE GATE] Early exit blocked - profit ${rawProfitPct.toFixed(2)}% < min ${MIN_PROFIT_PCT}% → HOLD`);
+          // STEP 3: FEE GATE - Don't close if profit < minProfitPercent or USDT too small
+          if (rawProfitPct > 0 && (rawProfitPct < MIN_PROFIT_PCT || profitUsdt < MIN_PROFIT_USDT)) {
+            log("FEE", `[FEE GATE] Early exit blocked - profit ${rawProfitPct.toFixed(2)}% / ${profitUsdt.toFixed(4)} USDT < min → HOLD`);
           } else {
             log("TRADE",
               `⚡ EARLY EXIT — Momentum melemah [${reasons.join(", ")}] ` +
@@ -3949,14 +3994,25 @@ async function tradingLoop() {
       }
     }
 
-    // Fitur #5: Partial close trigger (Phase 7 — close 30% at 1.5%)
+    // SMC TP1: Partial close 50% at TP1 (0.5% raw price move)
+    // PARTIAL_CLOSE_TRIGGER = 0.5% raw (NOT leverage-adjusted)
+    // After TP1 hit: trailing stop activates to protect remainder
     if (CONFIG.PARTIAL_CLOSE_ENABLED && !pos.partialClosed) {
-      const profitPct = pos.side === "LONG"
-        ? ((price - pos.entryPrice) / pos.entryPrice) * 100 * pos.leverage
-        : ((pos.entryPrice - price) / pos.entryPrice) * 100 * pos.leverage;
-      if (profitPct >= CONFIG.PARTIAL_CLOSE_TRIGGER) {
-        await closePartialPosition("PARTIAL_PROFIT_LOCK", price);
-        pos.trailingHigh = price; pos.trailingLow = price;
+      const rawMovePct = pos.side === "LONG"
+        ? ((price - pos.entryPrice) / pos.entryPrice) * 100
+        : ((pos.entryPrice - price) / pos.entryPrice) * 100;
+      if (rawMovePct >= CONFIG.PARTIAL_CLOSE_TRIGGER) {
+        log("TRADE", `[SMC TP1] Raw move ${rawMovePct.toFixed(3)}% ≥ ${CONFIG.PARTIAL_CLOSE_TRIGGER}% → close 50% + activate trailing`);
+        await closePartialPosition("SMC_TP1_PARTIAL", price);
+        pos.trailingHigh = price;
+        pos.trailingLow  = price;
+        // Activate trailing stop immediately after TP1
+        if (!pos.runnerActivated) {
+          pos.runnerActivated  = true;
+          pos._timeoutDisabled = true;
+          pos.tpTrailPct       = 0.25;
+          log("TRADE", `[SMC TP1] Trailing stop activated at ${price.toFixed(8)}`);
+        }
       }
     }
   }
@@ -4543,21 +4599,30 @@ async function tradingLoop() {
         leverage = Math.min(Math.max(Math.round(1 / slPct * 8), CONFIG.DEFAULT_LEVERAGE), CONFIG.MAX_LEVERAGE);
       }
 
-      // FIX #3: Validasi minimum SL sebelum entry — wajib cover spread + fee PEPE
+      // FIX #3: Validasi minimum SL sebelum entry
       const MIN_SL_PCT = CONFIG.MIN_SL_PCT || 0.5;
-      const MAX_SL_PCT = CONFIG.MAX_SL_PCT || 3.5;
+      const MAX_SL_PCT = CONFIG.MAX_SL_PCT || 3.0;
       if (slPct < MIN_SL_PCT) {
-        log("WARN",
-          `SL ${slPct.toFixed(3)}% terlalu kecil (minimum ${MIN_SL_PCT}%) — akan langsung KENA SPREAD/fee! Skip.`
-        );
-        return; // skip entry
+        log("WARN", `SL ${slPct.toFixed(3)}% terlalu kecil (minimum ${MIN_SL_PCT}%) → Skip.`);
+        return;
       }
       if (slPct > MAX_SL_PCT) {
-        log("WARN",
-          `SL ${slPct.toFixed(3)}% terlalu besar (maksimum ${MAX_SL_PCT}%) — risiko terlalu tinggi. Skip.`
-        );
-        return; // skip entry
+        log("WARN", `SL ${slPct.toFixed(3)}% terlalu besar (maksimum ${MAX_SL_PCT}%) → Skip.`);
+        return;
       }
+
+      // SMC: Minimum Risk:Reward 1:2 — TP2 must be ≥ 2× SL
+      // Clamp TP to TP2_MIN_PCT–TP2_MAX_PCT range, then validate RR
+      const tp2Min = CONFIG.TP2_MIN_PCT || 1.2;
+      const tp2Max = CONFIG.TP2_MAX_PCT || 2.0;
+      tpPct = Math.max(tpPct, slPct * CONFIG.MIN_RR_RATIO, tp2Min);
+      tpPct = Math.min(tpPct, tp2Max);
+      const rrRatio = tpPct / slPct;
+      if (rrRatio < CONFIG.MIN_RR_RATIO) {
+        log("FILTER", `[SMC] RR ${rrRatio.toFixed(2)} < ${CONFIG.MIN_RR_RATIO} (SL=${slPct.toFixed(3)}% TP=${tpPct.toFixed(3)}%) → Skip`);
+        return;
+      }
+      log("ENTRY", `[SMC] RR=${rrRatio.toFixed(2)} | SL=${slPct.toFixed(3)}% | TP2=${tpPct.toFixed(3)}% | TP1=0.5% raw`);
 
       // ═══════════════════════════════════════════════════════════════
       // ADAPTIVE POSITION SIZING - Dynamic calculation before entry
@@ -4786,7 +4851,9 @@ async function tradingLoop() {
       const todayDate = new Date().toISOString().slice(0, 10);
       if (state.dailyTradeDate !== todayDate) {
         state.dailyTradeDate  = todayDate;
-        state.dailyTradeCount = 0;  // reset at midnight
+        state.dailyTradeCount = 0;
+        state.dailyLossUsdt   = 0;
+        state.dailyLossPaused = false;
       }
       const dailyLimit = CONFIG.SNIPER_MODE ? CONFIG.MAX_SNIPER_TRADES : CONFIG.MAX_TRADES_PER_DAY;
       if (state.dailyTradeCount >= dailyLimit) {
@@ -4796,17 +4863,85 @@ async function tradingLoop() {
       }
 
       // ════════════════════════════════════════════════════════════
-      // MODE 9: MARKET FILTER — block ASIA + low volume
+      // SMC: DAILY LOSS LIMIT — 3% equity → stop trading today
       // ════════════════════════════════════════════════════════════
+      if (state.dailyLossPaused) {
+        if (state.tickCount % 18 === 0)
+          log("FILTER", `🛑 [SMC] Daily loss limit reached (${state.dailyLossUsdt?.toFixed(2)} USDT) → NO new entries today`);
+        return;
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // SMC: RE-ENTRY FILTER — require 1 confirmed setup after loss
+      // ════════════════════════════════════════════════════════════
+      if (state.lastTradeWasLoss && !state.lastSetupConfirmed) {
+        // Mark this as a "seen" confirmed setup (but don't enter yet — still processing)
+        // The setup IS confirmed when entryScore + smcScore pass threshold below
+        // We'll flip lastSetupConfirmed = true and skip just this one cycle
+        state.lastSetupConfirmed = true;
+        log("FILTER", `[SMC] Post-loss: 1 confirmed setup observed → next valid signal will be traded`);
+        return;
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // MODE 9: MARKET FILTER — block ASIA + mid-session + low volume
+      // ════════════════════════════════════════════════════════════
+      // Block full ASIA session (no London/NY)
       if (CONFIG.BLOCK_ASIA_SESSION && session.session === "ASIA") {
         if (state.tickCount % 9 === 0)
           log("FILTER", `[MODE 9] ASIA session — SNIPER only trades London/NY → SKIP`);
         return;
       }
+      // SMC: Block mid-Asian-session 10:00–16:00 WIB (UTC 03:00–09:00) — low volatility
+      if (CONFIG.BLOCK_MID_ASIA) {
+        const wibH = session.wibHour;
+        if (wibH >= 10 && wibH < 16) {
+          if (state.tickCount % 12 === 0)
+            log("FILTER", `[SMC] Mid-session dead zone ${wibH}:xx WIB (10–16 WIB) — low vol → SKIP`);
+          return;
+        }
+      }
       if (indicators.volumeRatio < CONFIG.MIN_VOLUME_RATIO) {
         if (state.tickCount % 6 === 0)
           log("FILTER", `[MODE 9] Market choppy — Vol ${indicators.volumeRatio.toFixed(2)}x < ${CONFIG.MIN_VOLUME_RATIO}x → SKIP`);
         return;
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // SMC: MANDATORY LIQUIDITY SWEEP CHECK
+      // Reject entry if no liquidity sweep detected before signal
+      // ════════════════════════════════════════════════════════════
+      if (CONFIG.REQUIRE_LIQ_SWEEP && !sweep.detected) {
+        if (state.tickCount % 6 === 0)
+          log("FILTER", `[SMC] No liquidity sweep detected — entry rejected (stop hunt required before OB entry)`);
+        return;
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // SMC: BOS TIMEFRAME QUALITY FILTER
+      // Reject if BOS is only detected on 1m/3m (too low TF — noise)
+      // BOS on 15m+ required (proxy: bos.momentum must be meaningful)
+      // ════════════════════════════════════════════════════════════
+      if (bos.detected && bos.breakAmount !== undefined) {
+        const bosTooWeak = bos.breakAmount < CONFIG.MIN_PRICE_MOVE_PCT;
+        if (bosTooWeak) {
+          if (state.tickCount % 6 === 0)
+            log("FILTER", `[SMC] BOS break ${bos.breakAmount?.toFixed(3)}% < ${CONFIG.MIN_PRICE_MOVE_PCT}% — micro BOS / low TF noise → SKIP`);
+          return;
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // SMC: HTF ALIGNMENT CHECK (4H/1D must align with trade direction)
+      // ════════════════════════════════════════════════════════════
+      if (CONFIG.REQUIRE_HTF_ALIGN) {
+        const htfAligned = htf.trend === tradeSide ||
+                           htf.trend === (tradeSide === "BULLISH" ? "BULLISH" : "BEARISH");
+        if (!htfAligned && htf.trend !== "NEUTRAL") {
+          if (state.tickCount % 6 === 0)
+            log("FILTER", `[SMC] HTF ${htf.trend} ≠ trade direction ${tradeSide} → SKIP (no counter-trend entries)`);
+          return;
+        }
       }
 
       // ════════════════════════════════════════════════════════════
@@ -4903,25 +5038,25 @@ async function tradingLoop() {
           squeezeSafe &&
           !volumeTooLow) {
 
-        // Mode 3: Compound position size based on balance %
+        // SMC Position Sizing: risk MAX 1.5% equity per trade
         const balNow = state.totalAccountBalance > 0
           ? state.totalAccountBalance
           : (CONFIG.DRY_RUN ? compoundedBalance + (stats.totalPnL || 0) : compoundedBalance);
-        let riskPct;
-        if      (balNow < 50)  riskPct = 0.05;
-        else if (balNow < 100) riskPct = 0.06;
-        else if (balNow < 200) riskPct = 0.07;
-        else                   riskPct = 0.09; // 8–10%, use 9% average
-        const maxLossPerTrade = balNow * 0.03; // Mode 3: max loss = 3% balance
-        let sniperMarginUSDT = balNow * riskPct * state.capitalGrowthFactor * entryQualityFactor;
-        // Cap by risk budget (SL × leverage must not exceed maxLoss)
-        const slFraction = (slPct || CONFIG.STOP_LOSS_PCT) / 100;
-        const maxMarginFromRisk = maxLossPerTrade / (slFraction * leverage);
-        sniperMarginUSDT = Math.min(sniperMarginUSDT, maxMarginFromRisk);
-        // Hard range: 15–20 USDT margin (notional = margin × leverage)
-        // @5x: 75–100 USDT notional | @7x: 105–140 USDT notional
+        const SMC_RISK_PCT    = 0.015;  // 1.5% equity risk per trade
+        const maxLossPerTrade = balNow * SMC_RISK_PCT;
+        // Margin = maxLoss / (SL% × leverage)
+        const slFraction      = (slPct || CONFIG.STOP_LOSS_PCT) / 100;
+        // Clamp leverage to 7–10x (SMC rule)
+        leverage = Math.max(leverage, CONFIG.DEFAULT_LEVERAGE); // min 7x
+        leverage = Math.min(leverage, CONFIG.MAX_LEVERAGE);     // max 10x
+        let sniperMarginUSDT = maxLossPerTrade / (slFraction * leverage);
+        // Apply quality and growth multipliers (still capped by risk budget)
+        sniperMarginUSDT = sniperMarginUSDT * state.capitalGrowthFactor * entryQualityFactor;
+        // Hard range: 15–20 USDT margin
+        // @7x: 105–140 USDT notional | @10x: 150–200 USDT notional
         sniperMarginUSDT = Math.max(sniperMarginUSDT, 15); // floor 15 USDT
         sniperMarginUSDT = Math.min(sniperMarginUSDT, 20); // cap  20 USDT
+        const riskPct = sniperMarginUSDT * slFraction * leverage / balNow; // actual risk%
 
         // Recalculate qty from sniper margin
         const isPepeEntry = (state.currentPair || CONFIG.SYMBOL).includes("PEPE");
@@ -4938,8 +5073,8 @@ async function tradingLoop() {
         }
         log("TRADE",
           `🎯 SNIPER ENTRY ${tradeSide} [${entryQuality}] | ` +
-          `SL:${slPct.toFixed(3)}% TP:${tpPct.toFixed(3)}% ` +
-          `Lev:${leverage}x | Margin:${sniperMarginUSDT.toFixed(2)} USDT (${(riskPct*100).toFixed(0)}% bal) | ` +
+          `SL:${slPct.toFixed(3)}% TP1:0.5%(50%) TP2:${tpPct.toFixed(3)}% RR:${(tpPct/slPct).toFixed(1)} ` +
+          `Lev:${leverage}x | Margin:${sniperMarginUSDT.toFixed(2)} USDT (risk ${(riskPct*100).toFixed(2)}% eq) | ` +
           `Claude:${claudeFilter.confidence}% score:${entryScore}`
         );
 

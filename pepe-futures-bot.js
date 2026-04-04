@@ -3320,307 +3320,180 @@ async function tradingLoop() {
     if (holdMs < minHoldMs) {
       const sisaSec = Math.ceil((minHoldMs - holdMs) / 1000);
       if (state.tickCount % 3 === 0) {
-        log("INFO",
-          `⏳ Minimum hold time — tunggu ${sisaSec} detik lagi (cegah exit karena spread)`
-        );
+        log("INFO", `⏳ Minimum hold time — tunggu ${sisaSec}s lagi`);
       }
-      // Tetap cek force close (MAX_LOSS) tapi skip TP/SL normal
+      // Hard SL tetap aktif saat hold time
       if (pnlPct < -CONFIG.MAX_LOSS_PCT) {
         log("TRADE", `Force close dalam hold time — rugi > ${CONFIG.MAX_LOSS_PCT}%`);
         await closePosition("FORCE_CLOSE_MAX_LOSS", price);
         return;
       }
-      // Skip semua SL/TP lainnya selama minimum hold time
     } else {
-    
+
     // ═══════════════════════════════════════════════════════════════
-    // STEP 1: DEFINE FEE MODEL
+    // LOW-RISK PROFIT MAXIMIZER
     // ═══════════════════════════════════════════════════════════════
-    const TAKER_FEE = 0.0006;    // 0.06%
-    const MAKER_FEE = 0.0002;    // 0.02%
-    const ROUND_TRIP_FEE = TAKER_FEE * 2;  // assume taker worst case = 0.12%
-    const FEE_PERCENT = ROUND_TRIP_FEE * 100;  // ≈ 0.12%
-    
-    // STEP 2: MINIMUM PROFIT THRESHOLD = 2x fee
-    const MIN_PROFIT_PCT = FEE_PERCENT * 2;  // ≈ 0.24%
-    
-    // STEP 4: SMART TIMEOUT SYSTEM
-    const TIMEOUT_DEAD_TRADE = 60;  // minutes - close if profit still < min after 60min
-    
     const holdDurationMs = pos.openTime ? Date.now() - new Date(pos.openTime).getTime() : 0;
-    const holdMinutes = holdDurationMs / (60 * 1000);
+    const holdMinutes    = holdDurationMs / 60000;
+    const positionRegime = pos.regime || "TREND";
+
+    // Profit tanpa leverage (raw price move %)
     const rawProfitPct = pos.side === "LONG"
       ? (price - pos.entryPrice) / pos.entryPrice * 100
       : (pos.entryPrice - price) / pos.entryPrice * 100;
-    
-    // ═══════════════════════════════════════════════════════════════
-    // STEP 3: FEE-AWARE EXIT LOGIC
-    // ═══════════════════════════════════════════════════════════════
-    // [FEE CHECK] — jika profit kecil, cek momentum dulu
-    if (rawProfitPct > 0 && rawProfitPct < MIN_PROFIT_PCT) {
-      // Cek momentum 3 candle terakhir
-      const last3 = klines.slice(-3);
-      const momentumWeak = last3.length >= 2 && (
-        pos.side === "LONG"
-          ? last3[last3.length - 1].close < last3[0].close  // harga turun
-          : last3[last3.length - 1].close > last3[0].close  // harga naik (melawan SHORT)
-      );
-      const rsiWeak = pos.side === "LONG"
-        ? (indicators.rsi || 50) < 40
-        : (indicators.rsi || 50) > 60;
 
-      if (momentumWeak && rsiWeak && rawProfitPct > 0) {
-        log("FEE", `[FEE CHECK] Profit=${rawProfitPct.toFixed(3)}% | Momentum LEMAH + RSI=${(indicators.rsi||50).toFixed(1)} → CLOSE untuk lindungi profit`);
-        await closePosition("PROFIT_PROTECT_MOMENTUM", price);
+    // Estimasi PnL dalam USDT (pakai margin = POSITION_SIZE_USDT sebagai basis)
+    const marginUsdt   = CONFIG.POSITION_SIZE_USDT;
+    const profitUsdt   = marginUsdt * pos.leverage * rawProfitPct / 100;
+    const lossUsdt     = -profitUsdt; // positif kalau rugi
+
+    const MIN_PROFIT_PCT  = 0.25;  // minimum profit sebelum boleh close
+    const MIN_PROFIT_USDT = 0.05;  // minimum profit USDT
+    const HARD_SL_PCT     = 0.5;   // hard stop loss % (raw)
+    const HARD_SL_USDT    = 0.20;  // hard stop loss USDT
+
+    // ── 1. HARD STOP LOSS ─────────────────────────────────────────
+    if (rawProfitPct < 0) {
+      const hitPct  = rawProfitPct <= -HARD_SL_PCT;
+      const hitUsdt = lossUsdt >= HARD_SL_USDT;
+      if (hitPct || hitUsdt) {
+        log("TRADE", `[RISK] Hard SL triggered | Loss=${rawProfitPct.toFixed(3)}% / ${lossUsdt.toFixed(4)} USDT`);
+        await closePosition("HARD_STOP_LOSS", price);
         return;
-      } else {
-        log("FEE", `[FEE CHECK] Profit=${rawProfitPct.toFixed(3)}% < min ${MIN_PROFIT_PCT.toFixed(2)}% | Momentum OK → HOLD`);
       }
-    } else if (rawProfitPct >= MIN_PROFIT_PCT) {
-      log("FEE", `[FEE CHECK] Profit=${rawProfitPct.toFixed(3)}% → ALLOW CLOSE`);
     }
-    
-    // STEP 4: SMART TIMEOUT - Close dead trades after 60min if profit still < min
-    if (holdMinutes >= TIMEOUT_DEAD_TRADE && rawProfitPct < MIN_PROFIT_PCT && rawProfitPct > -CONFIG.STOP_LOSS_PCT) {
-      log("TRADE", `⏰ DEAD TRADE EXIT: Held ${holdMinutes.toFixed(0)}min with only ${rawProfitPct.toFixed(2)}% profit (< min ${MIN_PROFIT_PCT}%) → Closing anyway to free capital`);
-      await closePosition("DEAD_TRADE_TIMEOUT", price);
+
+    // ── 2. VIRTUAL SL CHECK (SL dari state lokal) ─────────────────
+    if (pos.stopLoss) {
+      const slHit = pos.side === "LONG" ? price <= pos.stopLoss : price >= pos.stopLoss;
+      if (slHit) {
+        log("TRADE", `[RISK] SL kena: ${price.toFixed(8)} vs SL ${pos.stopLoss.toFixed(8)}`);
+        await closePosition("STOP_LOSS", price);
+        return;
+      }
+    }
+
+    // ── 3. MOMENTUM CHECK ─────────────────────────────────────────
+    const rsiNow     = indicators.rsi || 50;
+    const ema9Now    = indicators.ema9 || price;
+    const volRatioNow = indicators.volumeRatio || 1;
+    const momentumStrong = volRatioNow > 1.2
+      && rsiNow > 55
+      && (pos.side === "LONG" ? price > ema9Now : price < ema9Now);
+    const momentumWeak = volRatioNow < 0.8
+      || (pos.side === "LONG" ? rsiNow < 40 : rsiNow > 62);
+
+    // ── 4. EARLY BREAKEVEN ────────────────────────────────────────
+    if (!pos.breakevenSet && rawProfitPct >= 0.15) {
+      const beSL = pos.side === "LONG"
+        ? pos.entryPrice * (1 + 0.03 / 100)
+        : pos.entryPrice * (1 - 0.03 / 100);
+      const beImproved = pos.stopLoss == null
+        ? true
+        : pos.side === "LONG" ? beSL > pos.stopLoss : beSL < pos.stopLoss;
+      if (beImproved) {
+        pos.stopLoss    = beSL;
+        pos.breakevenSet = true;
+        log("TRADE", `[PROFIT] Early BE activated | Profit=${rawProfitPct.toFixed(3)}% → SL=${beSL.toFixed(8)}`);
+        broadcastSSE({ type: "breakeven", message: `BE aktif → SL=${beSL.toFixed(8)}`, sl: beSL, entry: pos.entryPrice });
+        saveState();
+      }
+    }
+
+    // ── 5. LOSS CONTROL AFTER PROFIT ──────────────────────────────
+    if (!pos._wasProfit && rawProfitPct >= 0.2) pos._wasProfit = true;
+    if (pos._wasProfit && rawProfitPct <= 0.02) {
+      log("TRADE", `[RISK] Trade was profitable tapi harga kembali ke entry → exit paksa`);
+      await closePosition("PROFIT_RETURN_PROTECT", price);
       return;
     }
-    
-    // STEP 6: RUNNER PROTECTION - Activate trailing if profit > 0.4%
-    const RUNNER_THRESHOLD = 0.4;  // Activate trailing at 0.4%
-    if (rawProfitPct >= RUNNER_THRESHOLD && !pos.runnerActivated) {
-      pos.runnerActivated = true;
-      log("TRADE", `🏃 RUNNER ACTIVATED: Profit ${rawProfitPct.toFixed(2)}% > ${RUNNER_THRESHOLD}% → Trailing enabled, timeout disabled`);
-    }
-    
-    // Skip timeout jika runner aktif atau Lock V2 disable timeout (profit ≥0.6%)
-    if (!pos.runnerActivated && !pos._timeoutDisabled) {
-      const TIMEOUT_NORMAL = 45;  // minutes
-      if (holdMinutes >= TIMEOUT_NORMAL && rawProfitPct >= MIN_PROFIT_PCT) {
-        log("TRADE", `⏰ TIMEOUT EXIT: Held ${holdMinutes.toFixed(0)}min dengan ${rawProfitPct.toFixed(2)}% profit → Closing`);
-        await closePosition("TIMEOUT_EXIT", price);
-        return;
-      }
-    }
 
-    // ── FITUR #1: AUTO BREAKEVEN (Regime-based) ───────────────────────
-    // RANGE: breakeven at +0.15% | TREND: breakeven at +0.15%
-    const positionRegime = pos.regime || "TREND";
-    const BREAKEVEN_TRIGGER_PCT = 0.15;
-    const BREAKEVEN_BUFFER_PCT  = 0.08; // buffer kecil di atas entry untuk nutup fee
-
-    log("INFO", `[DEBUG BE] breakevenSet=${pos.breakevenSet} rawProfitPct=${rawProfitPct.toFixed(4)}% trigger=${BREAKEVEN_TRIGGER_PCT}% stopLoss=${pos.stopLoss?.toFixed(4) ?? 'null'}`);
-    if (!pos.breakevenSet) {
-      // Gunakan rawProfitPct dari scope luar (sudah dihitung line 3352)
-      if (rawProfitPct >= BREAKEVEN_TRIGGER_PCT) {
-        const newSL = pos.side === "LONG"
-          ? pos.entryPrice * (1 + BREAKEVEN_BUFFER_PCT / 100)
-          : pos.entryPrice * (1 - BREAKEVEN_BUFFER_PCT / 100);
-
-        // Geser SL kalau lebih baik dari SL sekarang, atau SL belum ada (sync dari exchange)
-        const slImproved = pos.stopLoss == null
-          ? true
-          : pos.side === "LONG"
-            ? newSL > pos.stopLoss
-            : newSL < pos.stopLoss;
-
-        if (slImproved) {
-          pos.stopLoss    = newSL;
-          pos.breakevenSet = true;
-          log("TRADE",
-            `[PROFIT PROTECT] Profit=${rawProfitPct.toFixed(3)}% → SL digeser ke breakeven: ` +
-            `${newSL.toFixed(8)} (entry+${BREAKEVEN_BUFFER_PCT}% buffer)`
-          );
-          broadcastSSE({
-            type:    "breakeven",
-            message: `Breakeven aktif (${positionRegime}) — SL = ${newSL.toFixed(8)}`,
-            sl:      newSL,
-            entry:   pos.entryPrice,
-          });
-          saveState();
-        }
-      }
-    }
-
-    // ── DYNAMIC PROFIT LOCK V2 ────────────────────────────────────────
-    // Level 1: ≥0.15% → BE secured
-    // Level 2: ≥0.30% → lock 30%
-    // Level 3: ≥0.60% → lock 55%, trailing aktif
-    // Level 4: ≥1.20% → lock 75%, runner mode
-    // ─────────────────────────────────────────────────────────────────
-
-    // rawProfitLock = rawProfitPct (sama, dari scope luar)
-    const rawProfitLock = rawProfitPct;
-
-    // ── MOMENTUM CHECK ────────────────────────────────────────────────
-    const rsiNowLock     = indicators.rsi || 50;
-    const ema9NowLock    = indicators.ema9 || price;
-    const volRatioLock   = indicators.volumeRatio || 1;
-    const momentumStrong = volRatioLock > 1.3
-      && rsiNowLock > 55
-      && (pos.side === "LONG" ? price > ema9NowLock : price < ema9NowLock);
-    const momentumWeak   = !momentumStrong && (
-      volRatioLock < 0.8 || rsiNowLock < 40 || rsiNowLock > 75
-    );
-
-    if (state.tickCount % 5 === 0 && rawProfitLock > 0.1) {
-      log("INFO",
-        `[LOCK V2] Profit=${rawProfitLock.toFixed(3)}% | ` +
-        `Vol=${volRatioLock.toFixed(2)}x RSI=${rsiNowLock.toFixed(1)} | ` +
-        `Momentum=${momentumStrong ? "STRONG" : momentumWeak ? "WEAK" : "NEUTRAL"}`
-      );
-    }
-
-    // ── ANTI-LOSS RULE ────────────────────────────────────────────────
-    // Jika trade pernah profit >0.15% tapi harga balik dekat entry → exit
-    if (!pos._wasProfit && rawProfitLock >= 0.15) pos._wasProfit = true;
-    if (pos._wasProfit) {
-      const distFromEntry = pos.side === "LONG"
-        ? (price - pos.entryPrice) / pos.entryPrice * 100
-        : (pos.entryPrice - price) / pos.entryPrice * 100;
-      if (distFromEntry <= 0.03) {  // harga kembali ke entry ±0.03%
-        log("TRADE", `[LOCK V2] ANTI-LOSS: Trade pernah profit tapi harga kembali ke entry → exit paksa`);
-        await closePosition("ANTI_LOSS_PROTECT", price);
-        return;
-      }
-    }
-
-    // ── SMART EXIT: profit >0.15% + momentum lemah → boleh exit ──────
-    if (rawProfitLock >= 0.15 && momentumWeak) {
+    // ── 6. MICRO PROFIT BLOCKER ───────────────────────────────────
+    // Jangan close kalau profit terlalu kecil (kecuali reversal signal)
+    if (rawProfitPct > 0 && rawProfitPct < MIN_PROFIT_PCT) {
       const last3 = klines.slice(-3);
       const reversing = last3.length >= 2 && (
         pos.side === "LONG"
           ? last3[last3.length-1].close < last3[last3.length-2].close
           : last3[last3.length-1].close > last3[last3.length-2].close
       );
-      if (reversing && rawProfitLock >= MIN_PROFIT_PCT) {
-        log("TRADE", `[LOCK V2] Smart exit: profit=${rawProfitLock.toFixed(3)}% + momentum lemah + reversal candle → close`);
-        await closePosition("SMART_EXIT_WEAK_MOM", price);
+      if (reversing && momentumWeak) {
+        log("TRADE", `[PROFIT] Micro profit + reversal + momentum lemah → close (${rawProfitPct.toFixed(3)}%)`);
+        await closePosition("MICRO_PROFIT_REVERSAL", price);
         return;
+      }
+      if (profitUsdt < MIN_PROFIT_USDT) {
+        if (state.tickCount % 5 === 0)
+          log("INFO", `[PROFIT] Hold — profit ${profitUsdt.toFixed(4)} USDT < min ${MIN_PROFIT_USDT} USDT`);
+        // lanjut, jangan close
       }
     }
 
-    // ── LEVEL LOCK TABLE ──────────────────────────────────────────────
-    // Kalau momentum kuat, delay tighten (buffer lebih longgar)
-    const lockBuffer = momentumStrong ? 1.15 : momentumWeak ? 0.85 : 1.0;
-
-    const V2_LEVELS = [
-      { id: 1, trigger: 0.15, lockPct: 0.05,  label: "BE secured"        },
-      { id: 2, trigger: 0.30, lockPct: 0.30,  label: "30% locked"        },
-      { id: 3, trigger: 0.60, lockPct: 0.55,  label: "55% locked"        },
-      { id: 4, trigger: 1.20, lockPct: 0.75,  label: "runner mode"       },
-    ];
-
-    // Disable timeout saat profit ≥ 0.6% (biarkan trade jalan)
-    if (rawProfitLock >= 0.6 && !pos._timeoutDisabled) {
-      pos._timeoutDisabled = true;
-      log("INFO", `[LOCK V2] Profit ≥0.6% → timeout exit DINONAKTIFKAN, biarkan trade jalan`);
+    // ── 7. TIMEOUT EXITS ──────────────────────────────────────────
+    // Dead trade: >60 menit, profit < 0.2%
+    if (!pos._timeoutDisabled && holdMinutes >= 60 && rawProfitPct < 0.2) {
+      log("TRADE", `⏰ DEAD TRADE: ${holdMinutes.toFixed(0)}min | profit=${rawProfitPct.toFixed(3)}% → close`);
+      await closePosition("DEAD_TRADE_TIMEOUT", price);
+      return;
+    }
+    // Normal timeout: >45 menit, profit cukup tapi bukan runner
+    if (!pos.runnerActivated && !pos._timeoutDisabled && holdMinutes >= 45 && rawProfitPct >= MIN_PROFIT_PCT) {
+      log("TRADE", `⏰ TIMEOUT EXIT: ${holdMinutes.toFixed(0)}min | profit=${rawProfitPct.toFixed(3)}% → close`);
+      await closePosition("TIMEOUT_EXIT", price);
+      return;
     }
 
+    // ── 8. RUNNER MODE ────────────────────────────────────────────
+    if (rawProfitPct >= 0.6 && momentumStrong && !pos.runnerActivated) {
+      pos.runnerActivated  = true;
+      pos._timeoutDisabled = true;
+      pos.tpTrailPct       = 0.3; // trailing lebih longgar
+      log("TRADE", `[RUNNER] Momentum detected → letting run | profit=${rawProfitPct.toFixed(3)}% Vol=${volRatioNow.toFixed(2)} RSI=${rsiNow.toFixed(1)}`);
+    }
+
+    // ── 9. DYNAMIC LOCK V2 ────────────────────────────────────────
+    const rawProfitLock = rawProfitPct;
+    const lockBuffer = momentumStrong ? 1.15 : momentumWeak ? 0.85 : 1.0;
+
+    if (state.tickCount % 5 === 0 && rawProfitLock > 0.1) {
+      log("INFO", `[LOCK] Profit=${rawProfitLock.toFixed(3)}% Vol=${volRatioNow.toFixed(2)} RSI=${rsiNow.toFixed(1)} Mom=${momentumStrong?"STRONG":momentumWeak?"WEAK":"NEUTRAL"}`);
+    }
+
+    if (!pos._wasProfit && rawProfitLock >= 0.15) pos._wasProfit = true;
+
+    const V2_LEVELS = [
+      { id: 1, trigger: 0.15, lockPct: 0.05,  label: "BE secured"   },
+      { id: 2, trigger: 0.30, lockPct: 0.30,  label: "30% locked"   },
+      { id: 3, trigger: 0.60, lockPct: 0.55,  label: "trailing on"  },
+      { id: 4, trigger: 1.20, lockPct: 0.75,  label: "runner mode"  },
+    ];
+    if (rawProfitLock >= 0.6 && !pos._timeoutDisabled) {
+      pos._timeoutDisabled = true;
+      log("INFO", `[LOCK] Profit ≥0.6% → timeout DINONAKTIFKAN`);
+    }
     for (let i = V2_LEVELS.length - 1; i >= 0; i--) {
       const lv = V2_LEVELS[i];
       if (rawProfitLock >= lv.trigger) {
-        // SL = entry + lockPct% dari profit saat ini × buffer momentum
         const lockAmt  = rawProfitLock * lv.lockPct * lockBuffer;
         const lockedSL = pos.side === "LONG"
           ? pos.entryPrice * (1 + lockAmt / 100)
           : pos.entryPrice * (1 - lockAmt / 100);
-
-        const improved = pos.stopLoss == null
-          ? true
-          : pos.side === "LONG"
-            ? lockedSL > pos.stopLoss
-            : lockedSL < pos.stopLoss;
-
+        const improved = pos.stopLoss == null ? true
+          : pos.side === "LONG" ? lockedSL > pos.stopLoss : lockedSL < pos.stopLoss;
         if (improved) {
           const prevSL  = pos.stopLoss;
           pos.stopLoss  = lockedSL;
           pos.lockLevel = i;
-
-          // Level 4: aktifkan runner trailing
           if (lv.id === 4 && !pos.runnerActivated) {
             pos.runnerActivated = true;
-            pos.tpTrailPct      = 0.25; // trailing lebih longgar untuk biarkan jalan
-            log("TRADE", `[RUNNER] Level 4 → letting trade run | trailing=0.25%`);
+            pos.tpTrailPct      = 0.3;
+            log("TRADE", `[RUNNER] Level 4 → letting run | trailing=0.3%`);
           }
-
-          const lockLabel = lv.id === 1 ? "BE secured"
-            : lv.id === 2 ? "30% locked"
-            : lv.id === 3 ? "trailing active"
-            : "runner mode";
-
-          log("TRADE",
-            `[LOCK] Level ${lv.id} → ${lockLabel} | ` +
-            `SL ${prevSL?.toFixed(8) ?? '--'} → ${lockedSL.toFixed(8)} ` +
-            `(profit=${rawProfitLock.toFixed(3)}% lock=${(lv.lockPct*100).toFixed(0)}% buf=${lockBuffer.toFixed(2)})`
-          );
-          broadcastSSE({
-            type:      "lock_profit",
-            level:     lv.id,
-            label:     lockLabel,
-            lockPct:   lv.lockPct,
-            newSL:     lockedSL,
-            profitRaw: rawProfitLock.toFixed(3),
-          });
+          log("TRADE", `[LOCK] Level ${lv.id} → ${lv.label} | SL ${prevSL?.toFixed(8)??"--"} → ${lockedSL.toFixed(8)} (profit=${rawProfitLock.toFixed(3)}%)`);
+          broadcastSSE({ type: "lock_profit", level: lv.id, label: lv.label, newSL: lockedSL, profitRaw: rawProfitLock.toFixed(3) });
           saveState();
         }
         break;
-      }
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // REVERSAL PROTECTION - Tighten SL if reversal signals detected
-    // ═══════════════════════════════════════════════════════════════
-    if (rawProfitLock > 0.3 && klines && klines.length >= 5) {
-      const lastCandle = klines[klines.length - 1];
-      const prevCandle = klines[klines.length - 2];
-      const prevPrevCandle = klines[klines.length - 3];
-      
-      // Detect bearish engulfing
-      const isBearishEngulfing = lastCandle.close < lastCandle.open && 
-                                  prevCandle.close > prevCandle.open &&
-                                  lastCandle.open > prevCandle.close &&
-                                  lastCandle.close < prevCandle.open;
-      
-      // Detect RSI divergence (RSI dropping while price rising)
-      const rsiNow = indicators.rsi;
-      const priceRising = price > pos.entryPrice;
-      const rsiFalling = rsiNow < (pos.rsi || 50) - 5;
-      const rsiDivergence = priceRising && rsiFalling;
-      
-      // Detect volume spike with price rejection
-      const volumeSpike = indicators.volumeRatio > 2.0;
-      const priceRejection = (lastCandle.high - lastCandle.close) > (lastCandle.close - lastCandle.low) * 1.5;
-      const volumeRejection = volumeSpike && priceRejection;
-      
-      // If any reversal signal, tighten SL
-      if (isBearishEngulfing || rsiDivergence || volumeRejection) {
-        const reversalType = isBearishEngulfing ? "BEARISH_ENGULFING" : 
-                             rsiDivergence ? "RSI_DIVERGENCE" : "VOLUME_REJECTION";
-        
-        // Tighten SL to current price - 0.25% to 0.4%
-        const tightenedSL = pos.side === "LONG" 
-          ? price * (1 - 0.003)  // 0.3% below current price
-          : price * (1 + 0.003);
-        
-        // Only apply if it improves the SL (locks in more profit)
-        const slImproves = pos.side === "LONG" 
-          ? tightenedSL > pos.stopLoss 
-          : tightenedSL < pos.stopLoss;
-        
-        if (slImproves && rawProfitLock > 0.5) {
-          const prevSL = pos.stopLoss;
-          pos.stopLoss = tightenedSL;
-          log("WARN", `⚠️ REVERSAL DETECTED (${reversalType})! Tightening SL: ${prevSL.toFixed(8)} → ${tightenedSL.toFixed(8)}`);
-          broadcastSSE({
-            type: "reversal_protection",
-            reason: reversalType,
-            message: `Reversal signal (${reversalType}) - SL tightened`,
-            newSL: tightenedSL,
-            profitRaw: rawProfitLock.toFixed(3),
-          });
-        }
       }
     }
 

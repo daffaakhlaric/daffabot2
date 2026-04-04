@@ -211,7 +211,7 @@ select.fsel{background:var(--bg);border:1px solid var(--border2);color:var(--tex
   <span class="badge b-purple" id="phase-mini-badge">—</span>
   <div class="hdr-right">
     <span id="time-display">--:--:--</span>
-    <button class="btn btn-blue" onclick="topupQuick()">+ Top Up</button>
+    <button class="btn btn-blue" id="topup-btn" onclick="topupQuick()" style="display:none">+ Top Up</button>
     <button class="btn btn-red" onclick="resetSim()">↺ Reset</button>
     <button class="btn" id="toggle-btn" onclick="toggleBot()">⏸ Pause</button>
   </div>
@@ -258,7 +258,7 @@ select.fsel{background:var(--bg);border:1px solid var(--border2);color:var(--tex
   </div>
 
   <!-- ── ROW 2: EQUITY CHART + POSITION ── -->
-  <div class="g2 mb section-gap" style="grid-template-columns:2fr 1fr">
+  <div class="g2 mb section-gap" style="grid-template-columns:2fr 1.1fr;align-items:start">
 
     <!-- Equity Chart -->
     <div class="card">
@@ -313,6 +313,97 @@ select.fsel{background:var(--bg);border:1px solid var(--border2);color:var(--tex
       </div>
     </div>
     <div id="price-chart"></div>
+  </div>
+
+  <!-- ── ROW 3.5: SMC + CLAUDE FILTER ── -->
+  <div class="g2 mb section-gap">
+
+    <!-- SMC Analysis -->
+    <div class="card">
+      <div class="card-hd">
+        <div class="card-title">🧠 SMC Analysis</div>
+        <span id="smc2-status-badge" class="badge b-blue">Menunggu...</span>
+      </div>
+      <!-- HTF / SESSION / ATR -->
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">
+        <div style="text-align:center;padding:10px;background:var(--bg);border-radius:var(--r-sm)">
+          <div style="font-size:9px;color:var(--text3);margin-bottom:4px">HTF TREND (15m)</div>
+          <div class="fw7" id="smc2-htf" style="font-size:18px">--</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:2px" id="smc2-htf-strength"></div>
+        </div>
+        <div style="text-align:center;padding:10px;background:var(--bg);border-radius:var(--r-sm)">
+          <div style="font-size:9px;color:var(--text3);margin-bottom:4px">SESSION</div>
+          <div class="fw7" id="smc2-sess" style="font-size:12px;line-height:1.3">--</div>
+        </div>
+        <div style="text-align:center;padding:10px;background:var(--bg);border-radius:var(--r-sm)">
+          <div style="font-size:9px;color:var(--text3);margin-bottom:4px">ATR</div>
+          <div class="fw7" id="smc2-atr" style="font-size:18px">--%</div>
+          <div style="font-size:10px;margin-top:2px" id="smc2-atr-status"></div>
+        </div>
+      </div>
+      <!-- 7 SMC signal boxes -->
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-bottom:12px" id="smc2-signals">
+        <div style="text-align:center;padding:6px 4px;border-radius:5px;background:var(--bg);border:1px solid var(--border)"><div style="font-size:9px;color:var(--text3)">INDUCEMENT</div><div style="font-size:15px">⬜</div></div>
+        <div style="text-align:center;padding:6px 4px;border-radius:5px;background:var(--bg);border:1px solid var(--border)"><div style="font-size:9px;color:var(--text3)">LIQ GRAB</div><div style="font-size:15px">⬜</div></div>
+        <div style="text-align:center;padding:6px 4px;border-radius:5px;background:var(--bg);border:1px solid var(--border)"><div style="font-size:9px;color:var(--text3)">CHoCH</div><div style="font-size:15px">⬜</div></div>
+        <div style="text-align:center;padding:6px 4px;border-radius:5px;background:var(--bg);border:1px solid var(--border)"><div style="font-size:9px;color:var(--text3)">FVG</div><div style="font-size:15px">⬜</div></div>
+        <div style="text-align:center;padding:6px 4px;border-radius:5px;background:var(--bg);border:1px solid var(--border)"><div style="font-size:9px;color:var(--text3)">CANDLE</div><div style="font-size:15px">⬜</div></div>
+        <div style="text-align:center;padding:6px 4px;border-radius:5px;background:var(--bg);border:1px solid var(--border)"><div style="font-size:9px;color:var(--text3)">LIQ SWEEP</div><div style="font-size:15px">⬜</div></div>
+        <div style="text-align:center;padding:6px 4px;border-radius:5px;background:var(--bg);border:1px solid var(--border)"><div style="font-size:9px;color:var(--text3)">BOS</div><div style="font-size:15px">⬜</div></div>
+        <div style="text-align:center;padding:6px 4px;border-radius:5px;background:var(--bg);border:1px solid var(--border)"><div style="font-size:9px;color:var(--text3)">SMC READY</div><div style="font-size:15px">⬜</div></div>
+      </div>
+      <!-- Reversal Score -->
+      <div style="padding:10px;background:var(--bg);border-radius:var(--r-sm);margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+          <div style="font-size:10px;color:var(--text3)">REVERSAL SCORE</div>
+          <div style="font-size:10px;color:var(--text3)">≥60 = Claude dipanggil</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="fw7" id="smc2-rev-score" style="font-size:26px;min-width:44px;line-height:1">--</div>
+          <div style="flex:1">
+            <div class="progress-bg" style="height:8px">
+              <div class="progress-fill" id="smc2-rev-bar" style="width:0%;background:var(--accent)"></div>
+            </div>
+          </div>
+          <div style="font-size:10px;color:var(--text3)">/100</div>
+        </div>
+      </div>
+      <!-- Status / reason message -->
+      <div id="smc2-reason" style="font-size:11px;color:var(--text3);padding:7px 10px;background:var(--bg);border-radius:var(--r-sm);border-left:3px solid var(--border2);line-height:1.5">—</div>
+    </div>
+
+    <!-- Claude Filter / Last Analysis -->
+    <div class="card">
+      <div class="card-hd">
+        <div class="card-title">🤖 Claude Filter</div>
+        <span id="claude-ts" style="font-size:10px;color:var(--text3)">--</span>
+      </div>
+      <!-- Action + confidence -->
+      <div style="display:flex;gap:14px;align-items:center;margin-bottom:14px;padding:12px;background:var(--bg);border-radius:var(--r-sm)">
+        <div>
+          <div style="font-size:9px;color:var(--text3);margin-bottom:4px">ACTION</div>
+          <div class="fw7" id="claude-action" style="font-size:24px">--</div>
+        </div>
+        <div style="flex:1">
+          <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+            <div style="font-size:9px;color:var(--text3)">CONFIDENCE</div>
+            <div class="fw7" id="claude-conf" style="font-size:11px">0%</div>
+          </div>
+          <div class="progress-bg" style="height:8px">
+            <div class="progress-fill" id="claude-conf-bar" style="width:0%;background:var(--accent)"></div>
+          </div>
+        </div>
+      </div>
+      <div class="row"><div class="lbl">Sentiment</div><div class="val" id="claude-sentiment">--</div></div>
+      <div class="row"><div class="lbl">Entry Score</div><div class="val blue" id="claude-entry-score">--</div></div>
+      <div class="row"><div class="lbl">Entry Mode</div><div class="val" id="claude-entry-mode">--</div></div>
+      <div class="row"><div class="lbl">SL / TP</div><div class="val" id="claude-sltp">-- / --</div></div>
+      <div class="row"><div class="lbl">Regime</div><div class="val" id="claude-regime">--</div></div>
+      <div class="row"><div class="lbl">ATR Status</div><div class="val" id="claude-atr-status">--</div></div>
+      <div class="divider"></div>
+      <div style="font-size:10px;color:var(--text3);margin-bottom:6px">REASONING</div>
+      <div id="claude-reasoning" style="font-size:11px;color:var(--text2);line-height:1.5;padding:8px;background:var(--bg);border-radius:var(--r-sm)">--</div>
+    </div>
   </div>
 
   <!-- ── ROW 4: ANALYSIS + AI INSIGHT + BOT STATUS ── -->
@@ -611,7 +702,10 @@ function handle(d) {
       renderHeader(d);
       renderPosition();
       renderBotStatus();
-      if (d.dryRun) document.getElementById('dry-badge').style.display = '';
+      if (d.dryRun) {
+        document.getElementById('dry-badge').style.display = '';
+        document.getElementById('topup-btn').style.display = '';
+      }
       break;
     case 'trade':
       if (d.tradeLog) renderLiveTrades(d.tradeLog);
@@ -626,11 +720,26 @@ function handle(d) {
       S.phase = d.phase;
       renderPhase(d.phase);
       break;
+    case 'tick':
+      if (d.price) { const prev = S.price; S.price = d.price; updatePriceTicker(S.price, prev, d); }
+      if (d.rsi)   S.rsi = d.rsi;
+      if (d.ema9)  S.ema9 = d.ema9;
+      if (d.ema21) S.ema21 = d.ema21;
+      if (d.volumeRatio != null) S.volumeRatio = d.volumeRatio;
+      if (d.position !== undefined) { S.position = d.position; renderPosition(); }
+      if (d.smcData) { S.smcData = d.smcData; renderSMC(d.smcData); renderSMCPanel(d.smcData, d); }
+      if (d.prediction) renderPrediction(d.prediction);
+      renderIndicators();
+      break;
+    case 'log':
+      addLogLine(d.level || 'INFO', d.msg || '', d.time);
+      break;
     case 'analysis':
     case 'analysis_update':
-      if (d.analysis) S.lastAnalysis = d.analysis;
+      if (d.analysis) { S.lastAnalysis = d.analysis; renderClaudeFilter(d.analysis); }
       if (d.rsi)   { S.rsi = d.rsi; renderIndicators(); }
-      if (d.smcData) { S.smcData = d.smcData; renderSMC(d.smcData); }
+      if (d.smcData) { S.smcData = d.smcData; renderSMC(d.smcData); renderSMCPanel(d.smcData, d); }
+      if (d.position !== undefined) { S.position = d.position; renderPosition(); }
       break;
     case 'paused':
       document.getElementById('pause-badge').style.display = '';
@@ -721,46 +830,103 @@ function renderPosition() {
     return;
   }
 
-  const price    = S.price || pos.entryPrice;
+  const price     = S.price || pos.entryPrice;
+  const isPepe    = (pos.symbol||'').includes('PEPE');
+  const lev       = pos.leverage || 1;
+
+  // Raw price move %
   const rawPnlPct = pos.side === 'LONG'
     ? (price - pos.entryPrice) / pos.entryPrice * 100
     : (pos.entryPrice - price) / pos.entryPrice * 100;
-  const levPnlPct = rawPnlPct * (pos.leverage || 1);
-  const pnlUsdt   = (pos.notionalUSDT || 0) * rawPnlPct / 100 * (pos.leverage || 1) / (pos.leverage || 1);
+  const levPnlPct = rawPnlPct * lev;
+
+  // Notional = size × entryPrice (true market value)
+  // bot stores notionalUSDT as POSITION_SIZE_USDT for BTC (margin budget), fix it here
+  const trueNotional = (pos.size || 0) * (pos.entryPrice || 1);
+  const notional     = trueNotional > 0 ? trueNotional : (pos.notionalUSDT || 0);
+  const margin       = pos.marginSize != null
+    ? pos.marginSize
+    : (notional > 0 ? notional / lev : (pos.notionalUSDT || 0));
+
+  const pnlUsdt   = margin * lev * rawPnlPct / 100;  // based on real notional
   const actualPnl = pos.unrealPnL ?? pnlUsdt;
   const isLong    = pos.side === 'LONG';
+
+  // Prices
+  const fp = v => v ? (isPepe ? (+v).toFixed(8) : (+v).toFixed(2)) : '--';
+
+  // Breakeven
+  const beStatus  = pos.breakevenSet
+    ? `<span style="color:var(--green)">✅ Aktif @ 0.15% raw</span>`
+    : `<span style="color:var(--text3)">⏳ Belum (profit &lt;0.15%)</span>`;
+
+  // Lock Profit
+  const lockLabels = ['L1: 10% locked','L2: 25% locked','L3: 50% locked','L4: 70% runner'];
+  const lockStatus = pos.lockLevel != null
+    ? `<span style="color:var(--accent)">🔒 ${lockLabels[pos.lockLevel] || 'Level '+(pos.lockLevel+1)}</span>`
+    : `<span style="color:var(--text3)">⏳ Belum aktif (min 0.3%)</span>`;
+
+  // Trailing TP
+  const trailTP  = pos.trailingTP;
+  const trailPct = pos.tpTrailPct;
+  const trailStr = trailTP
+    ? `${fp(trailTP)} <span style="color:var(--text3);font-size:10px">(trail ${trailPct != null ? trailPct : '--'}%)</span>`
+    : '--';
+
+  // Runner
+  const runnerStr = pos.runnerActivated
+    ? `<span style="color:var(--purple)">🏃 Aktif</span>`
+    : `<span style="color:var(--text3)">—</span>`;
 
   card.classList.toggle('glow-green', actualPnl >= 0);
   card.classList.toggle('glow-red',   actualPnl < 0);
 
   const openDur = pos.openTime ? fmtDur(Math.round((Date.now() - new Date(pos.openTime).getTime())/1000)) : '--';
-  const isPepe  = (pos.symbol||'').includes('PEPE');
 
   el.innerHTML = `
     <div class="pos-header">
       <span class="pos-side-badge ${isLong?'pos-long':'pos-short'}">${pos.side}</span>
-      <span style="color:var(--text2);font-size:12px">${pos.symbol||'--'} · ${pos.leverage||'--'}x</span>
+      <span style="color:var(--text2);font-size:12px">${pos.symbol||'--'} · ${lev}x</span>
       <span style="margin-left:auto;font-size:10px;color:var(--text3)">${openDur} open</span>
     </div>
-    <div style="text-align:center;padding:10px 0 14px">
+    <div style="text-align:center;padding:8px 0 12px">
       <div class="pnl-big ${actualPnl>=0?'green':'red'}">${actualPnl>=0?'+':''}${(actualPnl||0).toFixed(4)} USDT</div>
-      <div style="font-size:13px;color:var(--text2);margin-top:4px">${levPnlPct>=0?'+':''}${levPnlPct.toFixed(2)}%</div>
-    </div>
-    <div class="pos-grid">
-      <div>
-        <div class="row"><div class="lbl">Entry</div><div class="val mono">${isPepe?pos.entryPrice.toFixed(8):pos.entryPrice.toFixed(2)}</div></div>
-        <div class="row"><div class="lbl">Mark</div><div class="val mono">${isPepe?(price||0).toFixed(8):(price||0).toFixed(2)}</div></div>
-        <div class="row"><div class="lbl">Stop Loss</div><div class="val mono red">${pos.stopLoss?isPepe?pos.stopLoss.toFixed(8):pos.stopLoss.toFixed(2):'--'}</div></div>
-      </div>
-      <div>
-        <div class="row"><div class="lbl">Liq</div><div class="val mono" style="color:var(--red)">${pos.liqPrice?isPepe?pos.liqPrice.toFixed(8):pos.liqPrice.toFixed(2):'--'}</div></div>
-        <div class="row"><div class="lbl">Size</div><div class="val">${isPepe?(pos.size||0).toLocaleString()+' PEPE':(pos.size||0).toFixed(4)+' BTC'}</div></div>
-        <div class="row"><div class="lbl">Notional</div><div class="val">${(pos.notionalUSDT||0).toFixed(2)} USDT</div></div>
+      <div style="font-size:13px;color:var(--text2);margin-top:3px">
+        <span class="${levPnlPct>=0?'green':'red'}">${levPnlPct>=0?'+':''}${levPnlPct.toFixed(2)}%</span>
+        <span style="color:var(--text3);font-size:11px;margin-left:6px">(raw ${rawPnlPct>=0?'+':''}${rawPnlPct.toFixed(3)}%)</span>
       </div>
     </div>
-    ${pos.breakevenSet?'<div style="margin-top:8px;padding:5px 10px;background:var(--green-bg);border:1px solid #166534;border-radius:var(--r-sm);font-size:11px;color:#4ade80;text-align:center">🎯 Breakeven aktif</div>':''}
-    ${pos.runnerActivated?'<div style="margin-top:6px;padding:5px 10px;background:#1e1245;border:1px solid #4c1d95;border-radius:var(--r-sm);font-size:11px;color:#c4b5fd;text-align:center">🏃 Runner Mode aktif</div>':''}
-    ${pos.marginSize!=null?'<div class="row" style="margin-top:4px"><div class="lbl">Margin</div><div class="val">'+(pos.marginSize||0).toFixed(4)+' USDT</div></div>':''}
+    <div>
+      <div class="row"><div class="lbl">Entry</div><div class="val mono">${fp(pos.entryPrice)}</div></div>
+      <div class="row"><div class="lbl">Mark</div><div class="val mono">${fp(price)}</div></div>
+      <div class="row"><div class="lbl">Stop Loss</div><div class="val mono red">${fp(pos.stopLoss)}</div></div>
+      <div class="row"><div class="lbl">Take Profit</div><div class="val mono green">${fp(pos.takeProfit)}</div></div>
+      <div class="row"><div class="lbl">Liq Price</div><div class="val mono" style="color:var(--red)">${fp(pos.liqPrice)}</div></div>
+      <div class="row"><div class="lbl">Size</div><div class="val">${isPepe?(pos.size||0).toLocaleString()+' PEPE':(pos.size||0).toFixed(4)+' BTC'}</div></div>
+      <div class="row"><div class="lbl">Notional</div><div class="val blue">${notional.toFixed(2)} USDT</div></div>
+      <div class="row"><div class="lbl">Margin (Modal)</div><div class="val">${margin.toFixed(4)} USDT</div></div>
+      <div class="row"><div class="lbl">PnL (USDT)</div><div class="val fw7 ${actualPnl>=0?'green':'red'}">${actualPnl>=0?'+':''}${(actualPnl||0).toFixed(4)}</div></div>
+      <div class="row"><div class="lbl">PnL (%)</div><div class="val ${levPnlPct>=0?'green':'red'}">${levPnlPct>=0?'+':''}${levPnlPct.toFixed(2)}%</div></div>
+    </div>
+    <div class="divider"></div>
+    <div>
+      <div class="row"><div class="lbl">Breakeven</div><div class="val">${beStatus}</div></div>
+      <div class="row"><div class="lbl">Lock Profit</div><div class="val">${lockStatus}</div></div>
+      <div class="row"><div class="lbl">Trailing TP</div><div class="val yellow">${trailStr}</div></div>
+      <div class="row"><div class="lbl">Runner Mode</div><div class="val">${runnerStr}</div></div>
+    </div>
+    ${(pos._entryMode || pos._entrySmcScore!=null || pos._entryRevScore!=null || pos._claudeFilter || pos._entrySession) ? `
+    <div class="divider"></div>
+    <div style="font-size:9px;color:var(--text3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">📋 SMC Entry Context</div>
+    <div>
+      ${pos._entryMode    ? `<div class="row"><div class="lbl">Entry Mode</div><div class="val">${pos._entryMode.replace(/_/g,' ')}</div></div>` : ''}
+      ${pos._entrySmcScore!=null ? `<div class="row"><div class="lbl">SMC Score</div><div class="val blue">${pos._entrySmcScore}</div></div>` : ''}
+      ${pos._entryRevScore!=null ? `<div class="row"><div class="lbl">Rev Score</div><div class="val ${pos._entryRevScore>=60?'green':'yellow'}">${pos._entryRevScore}/100</div></div>` : ''}
+      ${pos._claudeFilter?.confidence!=null ? `<div class="row"><div class="lbl">Claude Conf</div><div class="val ${pos._claudeFilter.confidence>=60?'green':'yellow'}">${pos._claudeFilter.confidence}%</div></div>` : ''}
+      ${pos._entryAtrPct!=null ? `<div class="row"><div class="lbl">ATR Entry</div><div class="val">${(+pos._entryAtrPct).toFixed(3)}%</div></div>` : ''}
+      ${pos._entrySession ? `<div class="row"><div class="lbl">Session</div><div class="val">${pos._entrySession}</div></div>` : ''}
+      ${pos._claudeFilter?.reason ? `<div style="margin-top:6px;font-size:10px;color:var(--text3);padding:6px 8px;background:var(--bg);border-radius:var(--r-sm);line-height:1.5">${escHtml(pos._claudeFilter.reason)}</div>` : ''}
+    </div>` : ''}
   `;
 }
 
@@ -1287,6 +1453,166 @@ function renderAIInsights(trades, { avgWin, avgLoss, pf, wr }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// SMC PANEL (full card)
+// ═══════════════════════════════════════════════════════════════
+function renderSMCPanel(sc, d) {
+  if (!sc) return;
+
+  // Badge
+  const badge = document.getElementById('smc2-status-badge');
+  if (badge) {
+    if (sc.flat)       { badge.textContent='⏸ Market Flat'; badge.className='badge b-yellow'; }
+    else if (!sc.active && sc.noEntryReason) { badge.textContent='⚫ No Entry'; badge.className='badge b-orange'; }
+    else if (sc.smcReady)  { badge.textContent='✅ SMC Ready'; badge.className='badge b-green'; }
+    else                   { badge.textContent='⏳ Scanning…'; badge.className='badge b-blue'; }
+  }
+
+  // HTF Trend
+  const htf = sc.htfTrend || '--';
+  const htfEl = document.getElementById('smc2-htf');
+  if (htfEl) {
+    htfEl.textContent = htf;
+    htfEl.style.color = htf==='BULLISH'?'var(--green)':htf==='BEARISH'?'var(--red)':'var(--text3)';
+  }
+  const strEl = document.getElementById('smc2-htf-strength');
+  if (strEl) {
+    strEl.textContent = sc.htfStrength || '';
+    strEl.style.color = sc.htfStrength==='WEAK'?'var(--yellow)':'var(--text3)';
+  }
+
+  // Session
+  const sessEl = document.getElementById('smc2-sess');
+  if (sessEl) {
+    sessEl.textContent = (sc.session||'--').replace(/_/g,' ');
+    sessEl.style.color = sc.session==='LONDON'?'var(--accent)':sc.session==='NEW_YORK'?'var(--yellow)':sc.session==='ASIA'?'var(--purple)':'var(--text2)';
+  }
+
+  // ATR
+  const atrEl = document.getElementById('smc2-atr');
+  if (atrEl) {
+    atrEl.textContent = sc.atrPct!=null ? sc.atrPct.toFixed(3)+'%' : '--%';
+    atrEl.style.color = sc.atrPct!=null && sc.atrPct < 0.15 ? 'var(--red)' : sc.atrPct > 0.5 ? 'var(--green)' : 'var(--text)';
+  }
+  const atrSEl = document.getElementById('smc2-atr-status');
+  if (atrSEl) {
+    if (sc.flat || (sc.atrPct!=null && sc.atrPct < 0.15)) { atrSEl.textContent='FLAT'; atrSEl.style.color='var(--red)'; }
+    else if (sc.atrPct!=null && sc.atrPct > 0.5) { atrSEl.textContent='HIGH VOL'; atrSEl.style.color='var(--green)'; }
+    else { atrSEl.textContent='NORMAL'; atrSEl.style.color='var(--text3)'; }
+  }
+
+  // 8 SMC signals
+  const signals = [
+    { label:'INDUCEMENT', v: sc.inducement?.valid },
+    { label:'LIQ GRAB',   v: sc.liquidityGrab?.detected },
+    { label:'CHoCH',      v: sc.choch?.detected },
+    { label:'FVG',        v: sc.inFVG?.inFVG || sc.fvgData?.bullFVGs?.length > 0 || sc.fvgData?.bearFVGs?.length > 0 },
+    { label:'CANDLE',     v: sc.candleOK },
+    { label:'LIQ SWEEP',  v: sc.sweep?.detected },
+    { label:'BOS',        v: sc.bos?.detected },
+    { label:'SMC READY',  v: sc.smcReady },
+  ];
+  const sigEl = document.getElementById('smc2-signals');
+  if (sigEl) {
+    sigEl.innerHTML = signals.map(s => {
+      const ok = !!s.v;
+      return `<div style="text-align:center;padding:6px 4px;border-radius:5px;background:${ok?'var(--green-bg)':'var(--bg)'};border:1px solid ${ok?'#166534':'var(--border)'}">
+        <div style="font-size:9px;color:${ok?'#4ade80':'var(--text3)'};margin-bottom:2px">${s.label}</div>
+        <div style="font-size:15px">${ok?'✅':'❌'}</div>
+      </div>`;
+    }).join('');
+  }
+
+  // Reversal score
+  const rev = sc.revScore ?? sc.reversalScore ?? null;
+  const revEl = document.getElementById('smc2-rev-score');
+  const revBar = document.getElementById('smc2-rev-bar');
+  if (revEl) {
+    revEl.textContent = rev!=null ? rev : '--';
+    revEl.style.color = rev>=60?'var(--green)':rev>=40?'var(--yellow)':'var(--red)';
+  }
+  if (revBar && rev!=null) {
+    revBar.style.width = Math.min(rev,100)+'%';
+    revBar.style.background = rev>=60?'var(--green)':rev>=40?'var(--yellow)':'var(--red)';
+  }
+
+  // Status / reason
+  const reasonEl = document.getElementById('smc2-reason');
+  if (reasonEl) {
+    let msg = '';
+    if (sc.flat)         msg = `⏸ Market flat (ATR ${sc.atrPct?.toFixed(3)||'?'}%) — menunggu volatilitas`;
+    else if (sc.cooldown) msg = `⏳ Cooldown entry — tunggu ${sc.cooldown}s lagi`;
+    else if (sc.noEntryReason) msg = `⚫ ${sc.noEntryReason}`;
+    else if (sc.smcReady) msg = `✅ SMC setup lengkap — RevScore ${rev} ≥ 60 → Claude dipanggil`;
+    else msg = `🔍 Scanning — RevScore ${rev!=null?rev:'?'}/100 (butuh ≥60)`;
+    reasonEl.textContent = msg;
+    reasonEl.style.borderLeftColor = sc.smcReady?'var(--green)':sc.flat?'var(--yellow)':'var(--border2)';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CLAUDE FILTER PANEL
+// ═══════════════════════════════════════════════════════════════
+function renderClaudeFilter(a) {
+  if (!a) return;
+
+  const action = a.action || '--';
+  const conf   = a.confidence || 0;
+  const actionEl = document.getElementById('claude-action');
+  if (actionEl) {
+    actionEl.textContent = action;
+    actionEl.style.color = action==='LONG'?'var(--green)':action==='SHORT'?'var(--red)':action==='HOLD'?'var(--text3)':'var(--yellow)';
+  }
+  const confBar = document.getElementById('claude-conf-bar');
+  if (confBar) {
+    confBar.style.width = Math.min(conf,100)+'%';
+    confBar.style.background = conf>=60?'var(--green)':conf>=40?'var(--accent)':'var(--red)';
+  }
+  set('claude-conf', conf+'%');
+  set('claude-sentiment', a.sentiment||'--', a.sentiment==='BULLISH'?'green':a.sentiment==='BEARISH'?'red':'');
+  set('claude-entry-score', a.entryScore!=null?a.entryScore+'/100':'--');
+  set('claude-entry-mode', a.entryMode?a.entryMode.replace(/_/g,' '):'--');
+  set('claude-sltp', (a.stop_loss_pct!=null?a.stop_loss_pct+'%':'--') + ' / ' + (a.take_profit_pct!=null?a.take_profit_pct+'%':'--'));
+  set('claude-regime', a.regime||'--', a.regime==='TREND'?'blue':a.regime==='RANGE'?'yellow':'');
+  set('claude-atr-status', a.atrStatus||'--', a.atrStatus==='LOW'?'red':a.atrStatus==='HIGH'?'green':'');
+  const rsn = document.getElementById('claude-reasoning');
+  if (rsn) rsn.textContent = a.reasoning || '--';
+  const tsEl = document.getElementById('claude-ts');
+  if (tsEl) tsEl.textContent = new Date().toLocaleTimeString('id-ID');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PREDICTION PANEL (re-used from old dashboard)
+// ═══════════════════════════════════════════════════════════════
+function renderPrediction(p) {
+  // Prediction data is available but we don't have a dedicated panel yet;
+  // store for future use
+  S.prediction = p;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// REAL-TIME LOG (from SSE log events)
+// ═══════════════════════════════════════════════════════════════
+const MAX_LOG_LINES = 200;
+let _logLines = [];
+
+function addLogLine(level, msg, time) {
+  const ts  = time || new Date().toLocaleTimeString('id-ID', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const cls = level==='TRADE'?'log-TRADE':level==='AI'?'log-AI':level==='ERROR'?'log-ERROR':level==='WARN'?'log-WARN':level==='FILTER'?'log-AI':'log-INFO';
+  const line = `<div class="log-line ${cls}">[${ts}] [${level}] ${escHtml(msg)}</div>`;
+  _logLines.push(line);
+  if (_logLines.length > MAX_LOG_LINES) _logLines.shift();
+  const box = document.getElementById('log-box');
+  if (box) {
+    box.innerHTML = _logLines.join('');
+    box.scrollTop = box.scrollHeight;
+  }
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ═══════════════════════════════════════════════════════════════
 // ORDER BOOK + MARKET TRADES
 // ═══════════════════════════════════════════════════════════════
 let _obInterval = null;
@@ -1389,11 +1715,13 @@ async function pollTicker() {
       S.price = d.state.lastPrice;
       updatePriceTicker(S.price, prev, d.state);
     }
-    if (d.state?.activePosition) {
+    if (d.state?.activePosition !== undefined) {
       S.position = d.state.activePosition;
       renderPosition();
     }
     if (d.stats) applyStats(d.stats);
+    if (d.state?.lastAnalysis) renderClaudeFilter(d.state.lastAnalysis);
+    if (d.state?.smcData) { S.smcData = d.state.smcData; renderSMCPanel(d.state.smcData, {}); }
   } catch(e){}
 }
 

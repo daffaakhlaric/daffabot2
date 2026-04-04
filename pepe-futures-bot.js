@@ -62,7 +62,7 @@ const CONFIG = {
   MAX_LEVERAGE:     7,
 
   // Ukuran posisi
-  POSITION_SIZE_USDT: 2,   // USDT per trade
+  POSITION_SIZE_USDT: 15,  // USDT margin per trade (notional = margin × leverage)
   MAX_POSITIONS:       1,
 
   // Risk management — SL disesuaikan untuk PEPE (spread ~0.2% + fee 0.12% = cost 0.32%)
@@ -190,7 +190,7 @@ const CONFIG = {
     STOP_LOSS_PCT:    2.5,    // SL lebih besar untuk PEPE (volatil)
     TAKE_PROFIT_PCT:  5.0,
     TRAILING_OFFSET:  0.8,
-    POSITION_SIZE_USDT: 2,
+    POSITION_SIZE_USDT: 15,  // 15 USDT margin → notional ~75 USDT @ 5x, ~105 USDT @ 7x
     MIN_SL_PCT:       0.5,
     MAX_SL_PCT:       3.5,
   },
@@ -3607,37 +3607,50 @@ async function tradingLoop() {
         log("INFO", `[FEE GATE] Hold — profit ${rawProfitPct.toFixed(3)}% < min ${MIN_PROFIT_PCT}% (fee protection, reversal score ${reversalScore}/3)`);
     }
 
-    // ── 7. TIMEOUT EXITS (Rules 4 + 6) ───────────────────────────────────────
-    // Detect dead trade signals (Rule 6): volume dying + sideways
+    // ── 7. SMART HOLD — Market-Condition Exit Only ───────────────────────────
+    // Time is NEVER a close trigger. Only market conditions drive exit.
+    // Rule 6: time used as WARNING only — to trigger a condition check.
+
     const volumeDying  = volRatioNow < 0.5;
     const sidewaysNow  = klines.length >= 5 && (() => {
       const slice = klines.slice(-5);
       const hi    = Math.max(...slice.map(c => c.high));
       const lo    = Math.min(...slice.map(c => c.low));
-      return (hi - lo) / price * 100 < 0.10; // < 0.10% range = sideways
+      return (hi - lo) / price * 100 < 0.10; // < 0.10% range = tight (no new highs/lows)
     })();
 
-    // Dead trade: >60 min, profit < 0.2% — HOLD if profit still covers fees (Rule 4)
-    if (!pos._timeoutDisabled && holdMinutes >= 60 && rawProfitPct < 0.2) {
+    // Time warning logs (Rule 6) — check conditions, do NOT close
+    if (holdMinutes >= 120 && state.tickCount % 12 === 0) {
+      const trendOK = pos.side === "LONG" ? (price > ema9Now && price > ema21Now) : (price < ema9Now && price < ema21Now);
+      log("INFO",
+        `⏱️ LONG HOLD ${holdMinutes.toFixed(0)}min — ` +
+        `profit=${rawProfitPct.toFixed(3)}% | trend=${trendOK ? "✅" : "⚠️"} ` +
+        `vol=${volRatioNow.toFixed(2)} sideways=${sidewaysNow} | action=HOLD (no time-based exit)`
+      );
+    } else if (holdMinutes >= 60 && state.tickCount % 6 === 0) {
+      log("INFO",
+        `⏱️ Trade ${holdMinutes.toFixed(0)}min | ` +
+        `profit=${rawProfitPct.toFixed(3)}% vol=${volRatioNow.toFixed(2)} sideways=${sidewaysNow} deadTrade=${volumeDying && sidewaysNow}`
+      );
+    }
+
+    // Rule 4 — DEAD TRADE detection: no volume + price stuck in tight range
+    // Only exit if profit ≥ fee minimum. Otherwise HOLD per Rule 5.
+    const isDeadTrade = volumeDying && sidewaysNow;
+    if (isDeadTrade) {
       if (rawProfitPct >= min_profit_required) {
-        log("TRADE", `⏰ DEAD TRADE (profit OK): ${holdMinutes.toFixed(0)}min | profit=${rawProfitPct.toFixed(3)}% → close`);
-        await closePosition("DEAD_TRADE_TIMEOUT", price);
-        return;
-      } else if (volumeDying && sidewaysNow) {
-        // Truly dead: no vol, no move — cut even at small loss
-        log("TRADE", `⏰ DEAD TRADE (no vol + sideways): ${holdMinutes.toFixed(0)}min | profit=${rawProfitPct.toFixed(3)}% → close`);
-        await closePosition("DEAD_TRADE_TIMEOUT", price);
+        log("TRADE",
+          `[DEAD TRADE] vol=${volRatioNow.toFixed(2)} sideways=true + profit ${rawProfitPct.toFixed(3)}% ≥ fee min ${min_profit_required.toFixed(2)}% → close`
+        );
+        await closePosition("DEAD_TRADE_EXIT", price);
         return;
       } else {
+        // Rule 5 — Never close if profit < min_profit_required
         if (state.tickCount % 6 === 0)
-          log("INFO", `⏰ TIMEOUT extend — profit ${rawProfitPct.toFixed(3)}% < fee min ${min_profit_required.toFixed(2)}% → hold`);
+          log("INFO",
+            `[DEAD TRADE] Detected but profit ${rawProfitPct.toFixed(3)}% < fee min ${min_profit_required.toFixed(2)}% → HOLD (Rule 5 min-profit protection)`
+          );
       }
-    }
-    // Normal timeout: >45 min, not runner — only if profit > 0.4% (Rule 4)
-    if (!pos.runnerActivated && !pos._timeoutDisabled && holdMinutes >= 45 && rawProfitPct >= 0.4) {
-      log("TRADE", `⏰ TIMEOUT EXIT: ${holdMinutes.toFixed(0)}min | profit=${rawProfitPct.toFixed(3)}% → close`);
-      await closePosition("TIMEOUT_EXIT", price);
-      return;
     }
 
     // ── 8. RUNNER MODE (Phases 3 + 6) ────────────────────────────────────────
@@ -3675,7 +3688,7 @@ async function tradingLoop() {
     ];
     if (rawProfitLock >= 0.8 && !pos._timeoutDisabled) {
       pos._timeoutDisabled = true;
-      log("INFO", `[LOCK] Profit ≥0.8% → timeout DINONAKTIFKAN`);
+      log("INFO", `[LOCK] Profit ≥0.8% → runner lock active`);
     }
     for (let i = V2_LEVELS.length - 1; i >= 0; i--) {
       const lv = V2_LEVELS[i];
@@ -4903,13 +4916,16 @@ async function tradingLoop() {
         else if (balNow < 100) riskPct = 0.06;
         else if (balNow < 200) riskPct = 0.07;
         else                   riskPct = 0.09; // 8–10%, use 9% average
-        const maxLossPerTrade = balNow * 0.02; // Mode 3: max loss = 2% balance
+        const maxLossPerTrade = balNow * 0.03; // Mode 3: max loss = 3% balance
         let sniperMarginUSDT = balNow * riskPct * state.capitalGrowthFactor * entryQualityFactor;
-        // Cap so max loss doesn't exceed 2% (SL covers the stop)
+        // Cap by risk budget (SL × leverage must not exceed maxLoss)
         const slFraction = (slPct || CONFIG.STOP_LOSS_PCT) / 100;
         const maxMarginFromRisk = maxLossPerTrade / (slFraction * leverage);
-        sniperMarginUSDT = Math.min(sniperMarginUSDT, maxMarginFromRisk, balNow * 0.15);
-        sniperMarginUSDT = Math.max(sniperMarginUSDT, 2); // minimum 2 USDT
+        sniperMarginUSDT = Math.min(sniperMarginUSDT, maxMarginFromRisk);
+        // Hard range: 15–20 USDT margin (notional = margin × leverage)
+        // @5x: 75–100 USDT notional | @7x: 105–140 USDT notional
+        sniperMarginUSDT = Math.max(sniperMarginUSDT, 15); // floor 15 USDT
+        sniperMarginUSDT = Math.min(sniperMarginUSDT, 20); // cap  20 USDT
 
         // Recalculate qty from sniper margin
         const isPepeEntry = (state.currentPair || CONFIG.SYMBOL).includes("PEPE");

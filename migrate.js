@@ -113,11 +113,21 @@ async function migrateTrades(supabase) {
   console.log(`  → ${pairs.filter(p => !p.open).length} CLOSE tanpa OPEN (pakai fallback)`);
 
   if (DRY_PREVIEW) {
-    console.log("  [DRY PREVIEW] Contoh 3 baris pertama:");
-    pairs.slice(0, 3).forEach(({ open: o, close: c }, i) => {
-      const entry = o ? o.price : c.price;
-      console.log(`    [${i+1}] ${c.side} entry=${entry} exit=${c.price} | PnL: ${c.pnlUSDT} USDT | Reason: ${c.reason || "?"}`);
+    console.log("  [DRY PREVIEW] Contoh 5 baris pertama:");
+    pairs.slice(0, 5).forEach(({ open: o, close: c }, i) => {
+      const entry    = o ? o.price : c.price;
+      const refPrice = entry || c.price || 0;
+      const sym      = c.symbol || o?.symbol || (refPrice > 1000 ? "BTCUSDT" : refPrice < 0.001 ? "PEPEUSDT" : "BTCUSDT");
+      console.log(`    [${i+1}] ${sym} ${c.side} entry=${entry} exit=${c.price} size=${c.size} | PnL: ${c.pnlUSDT} USDT | Reason: ${c.reason || "?"}`);
     });
+    console.log("\n  Semua symbol yang akan di-import:");
+    const symCount = {};
+    pairs.forEach(({ open: o, close: c }) => {
+      const refP = (o?.price || c.price || 0);
+      const sym  = c.symbol || o?.symbol || (refP > 1000 ? "BTCUSDT" : "PEPEUSDT");
+      symCount[sym] = (symCount[sym] || 0) + 1;
+    });
+    Object.entries(symCount).forEach(([s, n]) => console.log(`    ${s}: ${n} trade`));
     return { inserted: 0, skipped: 0, preview: true };
   }
 
@@ -129,9 +139,23 @@ async function migrateTrades(supabase) {
 
       const openTime    = matchedOpen?.time || close.openTime || close.time;
       const entryPrice  = matchedOpen?.price || close.entryPrice || close.price;
+
+      // ── Auto-detect symbol ────────────────────────────────────
+      // Priority: explicit field → detect from price (BTC ~10k+, PEPE ~0.000001)
+      const detectedSymbol = (() => {
+        if (close.symbol)         return close.symbol;
+        if (matchedOpen?.symbol)  return matchedOpen.symbol;
+        // BTC price range: typically > 1000 USDT
+        // PEPE price range: typically < 0.001 USDT
+        const refPrice = entryPrice || close.price || 0;
+        if (refPrice > 1000)  return "BTCUSDT";
+        if (refPrice < 0.001) return "PEPEUSDT";
+        return "BTCUSDT"; // fallback jika tidak bisa deteksi
+      })();
+
       // tradeId: use openTime as primary key. If two CLOSEs somehow
       // map to the same openTime (orphan), append closeTime ms as suffix.
-      const baseId  = db.makeTradeId(close.symbol || "PEPEUSDT", openTime);
+      const baseId  = db.makeTradeId(detectedSymbol, openTime);
       const tradeId = matchedOpen ? baseId : baseId + "_c" + new Date(close.time).getTime();
       const feeUsdt     = db.estimateFee(close.notionalUSDT || (close.size * close.price) || 0);
       const netProfit   = fmt((close.pnlUSDT || 0) - feeUsdt, 6);
@@ -142,7 +166,7 @@ async function migrateTrades(supabase) {
         ? Math.round((closeTs - new Date(matchedOpen.time)) / 1000)
         : null;
 
-      const symbol   = close.symbol || "PEPEUSDT";
+      const symbol   = detectedSymbol;
       const isPepe   = symbol.includes("PEPE");
       const leverage = parseInt(close.leverage) || 5;
       const pnlPct   = close.pnlUSDT != null && close.notionalUSDT

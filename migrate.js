@@ -14,6 +14,7 @@
  *   node migrate.js --stats     → hanya stats.json
  *   node migrate.js --equity    → hanya state.json (balance history)
  *   node migrate.js --dry       → preview saja, tidak insert
+ *   node migrate.js --clean     → hapus semua data di Supabase dulu, lalu migrate ulang (fresh)
  *
  * Aman dijalankan berkali-kali — upsert by trade_id, tidak duplikat.
  */
@@ -31,6 +32,7 @@ const DRY_PREVIEW = args.includes("--dry");
 const ONLY_TRADES = args.includes("--trades");
 const ONLY_STATS  = args.includes("--stats");
 const ONLY_EQUITY = args.includes("--equity");
+const CLEAN_FIRST = args.includes("--clean");
 const ALL         = !ONLY_TRADES && !ONLY_STATS && !ONLY_EQUITY;
 
 // ── File paths ────────────────────────────────────────────────
@@ -86,50 +88,51 @@ async function migrateTrades(supabase) {
     return { inserted: 0, skipped: 0 };
   }
 
-  // Build a map: openTime+side → OPEN entry (to match entry prices)
-  const openMap = {};
+  // ── FIFO pairing: pair OPENs with CLOSEs in sequential order ──
+  // Walk the log in chronological order.
+  // Each OPEN pushes onto a queue per side.
+  // Each CLOSE pops the oldest unmatched OPEN with the same side.
+  // This prevents the same OPEN from being used for multiple CLOSEs.
+  const openQueues = {}; // side → [ openEntry, ... ]
+  const pairs = [];      // [ { open, close }, ... ]
+
   for (const t of raw) {
     if (t.type === "OPEN") {
-      const key = `${t.side}_${new Date(t.time).getTime()}`;
-      openMap[key] = t;
+      if (!openQueues[t.side]) openQueues[t.side] = [];
+      openQueues[t.side].push(t);
+    } else if (t.type === "CLOSE") {
+      const queue = openQueues[t.side] || [];
+      const matchedOpen = queue.length > 0 ? queue.shift() : null;
+      pairs.push({ open: matchedOpen, close: t });
     }
   }
 
-  // Get all CLOSE entries + pair them with their OPEN
-  const closes = raw.filter(t => t.type === "CLOSE");
+  const closes = pairs.map(p => p.close);
   console.log(`  → ${closes.length} CLOSE trade ditemukan`);
+  console.log(`  → ${pairs.filter(p => p.open).length} pasangan OPEN/CLOSE berhasil`);
+  console.log(`  → ${pairs.filter(p => !p.open).length} CLOSE tanpa OPEN (pakai fallback)`);
 
   if (DRY_PREVIEW) {
     console.log("  [DRY PREVIEW] Contoh 3 baris pertama:");
-    closes.slice(0, 3).forEach((t, i) => {
-      console.log(`    [${i+1}] ${t.side} @ ${t.price} | PnL: ${t.pnlUSDT} USDT | Reason: ${t.reason || "?"}`);
+    pairs.slice(0, 3).forEach(({ open: o, close: c }, i) => {
+      const entry = o ? o.price : c.price;
+      console.log(`    [${i+1}] ${c.side} entry=${entry} exit=${c.price} | PnL: ${c.pnlUSDT} USDT | Reason: ${c.reason || "?"}`);
     });
     return { inserted: 0, skipped: 0, preview: true };
   }
 
-  // Find matching OPEN for each CLOSE by scanning backwards in time
-  const opensSorted = raw.filter(t => t.type === "OPEN")
-    .sort((a, b) => new Date(a.time) - new Date(b.time));
-
   let inserted = 0, skipped = 0;
 
-  for (const close of closes) {
+  for (const { open: matchedOpen, close } of pairs) {
     try {
       const closeTs = new Date(close.time);
 
-      // Find the most recent OPEN before this CLOSE with same side
-      let matchedOpen = null;
-      for (let i = opensSorted.length - 1; i >= 0; i--) {
-        const o = opensSorted[i];
-        if (o.side === close.side && new Date(o.time) <= closeTs) {
-          matchedOpen = o;
-          break;
-        }
-      }
-
       const openTime    = matchedOpen?.time || close.openTime || close.time;
       const entryPrice  = matchedOpen?.price || close.entryPrice || close.price;
-      const tradeId     = db.makeTradeId(close.symbol || "PEPEUSDT", openTime);
+      // tradeId: use openTime as primary key. If two CLOSEs somehow
+      // map to the same openTime (orphan), append closeTime ms as suffix.
+      const baseId  = db.makeTradeId(close.symbol || "PEPEUSDT", openTime);
+      const tradeId = matchedOpen ? baseId : baseId + "_c" + new Date(close.time).getTime();
       const feeUsdt     = db.estimateFee(close.notionalUSDT || (close.size * close.price) || 0);
       const netProfit   = fmt((close.pnlUSDT || 0) - feeUsdt, 6);
       const pnlUSDT     = close.pnlUSDT || 0;
@@ -367,6 +370,27 @@ async function migrateEquity(supabase) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// CLEAN TABLES (--clean flag)
+// ─────────────────────────────────────────────────────────────
+async function cleanTables(supabase) {
+  console.log("\n🗑  --clean: Menghapus semua data lama di Supabase...");
+  const tables = ["ai_learning", "trades", "equity_history"];
+  for (const tbl of tables) {
+    // DELETE WHERE id IS NOT NULL = delete all rows
+    const { error, count } = await supabase
+      .from(tbl)
+      .delete()
+      .not("id", "is", null);
+    if (error) {
+      console.warn(`  ⚠  Gagal clean ${tbl}: ${error.message}`);
+    } else {
+      console.log(`  ✓  ${tbl}: semua baris dihapus`);
+    }
+  }
+  console.log("  ✅ Clean selesai — siap import ulang\n");
+}
+
+// ─────────────────────────────────────────────────────────────
 // MAIN
 // ─────────────────────────────────────────────────────────────
 async function main() {
@@ -383,6 +407,9 @@ async function main() {
   if (DRY_PREVIEW) {
     console.log("  ⚠  DRY PREVIEW mode — tidak ada data yang di-insert");
   }
+  if (CLEAN_FIRST && !DRY_PREVIEW) {
+    console.log("  ⚠  --clean: data lama akan DIHAPUS sebelum import ulang");
+  }
 
   db.initSupabase();
 
@@ -393,6 +420,11 @@ async function main() {
     process.env.SUPABASE_SERVICE_KEY,
     { auth: { persistSession: false } }
   );
+
+  // Clean dulu kalau --clean
+  if (CLEAN_FIRST && !DRY_PREVIEW) {
+    await cleanTables(supabase);
+  }
 
   if (ALL || ONLY_TRADES) await migrateTrades(supabase);
   if (ALL || ONLY_STATS)  await migrateStats(supabase);

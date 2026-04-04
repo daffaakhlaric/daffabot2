@@ -9,6 +9,7 @@
     "live": "node -e \"process.env.FORCE_LIVE=1\" pepe-futures-bot.js",
     "migrate": "node migrate.js",
     "migrate:dry": "node migrate.js --dry",
+    "migrate:clean": "node migrate.js --clean",
     "migrate:trades": "node migrate.js --trades",
     "migrate:stats": "node migrate.js --stats",
     "migrate:equity": "node migrate.js --equity"

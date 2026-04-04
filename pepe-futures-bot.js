@@ -841,11 +841,10 @@ async function getAllAccountBalances() {
  * Balance  ~$150 → $8-10
  */
 function calculateAutoPositionSize(balance) {
-  if (balance < 60) return 4;
-  if (balance < 80) return 5;
-  if (balance < 100) return 6;
-  if (balance < 150) return 8;
-  return Math.min(10, Math.floor(balance * 0.07)); // Max 10% of balance
+  // Minimum margin 15 USDT per trade regardless of balance
+  // Scales up with balance but never below 15
+  if (balance < 150) return 15;
+  return Math.min(20, Math.floor(balance * 0.10)); // 10% balance, max 20 USDT
 }
 
 async function getActivePosition() {
@@ -996,46 +995,39 @@ function calcDynamicPositionSize(balance, phase, confidence, lossStreak) {
   let notional = baseNotional * phaseMultiplier * confidenceMultiplier;
 
   // STEP 5: SAFETY CAP (MANDATORY)
-  if (notional > balance * 0.15) {
-    notional = balance * 0.15;
+  if (notional > balance * 0.20) {
+    notional = balance * 0.20;
   }
-  if (notional < 2) {
-    notional = 2;
+  if (notional < 15) {
+    notional = 15; // minimum margin 15 USDT
   }
 
-  // STEP 6: DYNAMIC LEVERAGE SYSTEM
-  let leverage = 5; // default
-  
+  // STEP 6: DYNAMIC LEVERAGE SYSTEM — SMC rules: 7–10x
+  let leverage = CONFIG.DEFAULT_LEVERAGE || 7; // default 7x
+
   // Base leverage by phase
   switch (phase) {
-    case 'MARKET_BAD': leverage = 3; break;
-    case 'TRAINING': leverage = 4; break;
-    case 'STABLE': leverage = 5; break;
-    case 'PROFIT': leverage = 6; break;
-    default: leverage = 5;
+    case 'MARKET_BAD': leverage = 7; break;  // min tetap 7x
+    case 'TRAINING':   leverage = 7; break;
+    case 'STABLE':     leverage = 7; break;
+    case 'PROFIT':     leverage = 8; break;
+    default:           leverage = 7;
   }
 
   // STEP 7: CONFIDENCE ADJUSTMENT (LEVERAGE)
-  if (confidence < 50) leverage -= 1;
-  if (confidence > 75) leverage += 1;
+  if (confidence > 80) leverage = Math.min(leverage + 1, 10);
 
-  // Clamp leverage
-  if (leverage < 2) leverage = 2;
-  if (leverage > 7) leverage = 7;
-
-  // STEP 8: LOSS STREAK PROTECTION
+  // STEP 8: LOSS STREAK PROTECTION — kurangi notional, bukan leverage
   if (lossStreak >= 2) {
-    notional *= 0.7;
-    leverage -= 1;
+    notional = Math.max(notional * 0.80, 15); // turunkan size, tetap ≥15
   }
   if (lossStreak >= 3) {
-    notional *= 0.5;
-    leverage = 2;
+    notional = Math.max(notional * 0.60, 15); // lebih kecil, tetap ≥15
   }
 
-  // Final clamp
-  if (leverage < 2) leverage = 2;
-  if (leverage > 7) leverage = 7;
+  // Final clamp leverage 7–10x
+  if (leverage < 7)  leverage = 7;
+  if (leverage > 10) leverage = 10;
 
   // Determine risk level
   let riskLevel = 'MEDIUM';
@@ -4647,21 +4639,22 @@ async function tradingLoop() {
         orderQty = Math.floor(qty / CONTRACT_SIZE) * CONTRACT_SIZE;
         if (orderQty < CONTRACT_SIZE) orderQty = CONTRACT_SIZE;
       } else {
-        // BTC USDT-M: cap margin ke 80% saldo live agar tidak exceed balance
-        const availBalance = state.totalAccountBalance > 0
-          ? state.totalAccountBalance * 0.8
-          : CONFIG.POSITION_SIZE_USDT;
-        const marginUsdt = Math.min(CONFIG.POSITION_SIZE_USDT, availBalance);
+        // BTC USDT-M: margin fixed 15–20 USDT (tidak boleh di-override oleh auto-sizing)
+        const TARGET_MARGIN = Math.max(CONFIG.BTC_SPECIFIC_CONFIG.POSITION_SIZE_USDT, 15); // 15 USDT minimum
+        const availBalance  = state.totalAccountBalance > 0
+          ? state.totalAccountBalance * 0.9
+          : TARGET_MARGIN;
+        const marginUsdt = Math.min(TARGET_MARGIN, availBalance); // tidak exceed available
         const minQty = 0.001;
         const minLevNeeded = Math.ceil((minQty * price) / marginUsdt);
-        leverage = Math.min(Math.max(leverage, minLevNeeded, 3), CONFIG.MAX_LEVERAGE);
+        leverage = Math.min(Math.max(leverage, minLevNeeded, CONFIG.DEFAULT_LEVERAGE), CONFIG.MAX_LEVERAGE);
         let qty = (marginUsdt * leverage) / price;
         qty = Math.round(qty * 1000) / 1000;
         if (qty < minQty) qty = minQty;
         orderQty = qty;
       }
 
-      log("INFO", `📊 BTC Trend Order: Qty=${orderQty} BTC | Lev=${leverage}x | Margin≈${(orderQty * price / leverage).toFixed(2)} USDT`);
+      log("INFO", `📊 BTC Order: Qty=${orderQty} BTC | Lev=${leverage}x | Margin≈${(orderQty * price / leverage).toFixed(2)} USDT`);
 
       const fvg = tradeSide === "BULLISH" ? fvgData.lastBullFVG : fvgData.lastBearFVG;
       const smcSetup = {

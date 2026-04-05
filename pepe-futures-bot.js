@@ -82,7 +82,9 @@ const CONFIG = {
 
   // SMC Daily Loss Limit
   DAILY_LOSS_LIMIT_PCT: 3.0,   // stop trading hari ini jika rugi > 3% equity
-  MAX_CONSEC_LOSSES:    3,      // pause setelah 3 loss berturut
+  DAILY_STOP_USDT:      0.30,  // hard halt: -0.30 USDT loss today → no new entries
+  DAILY_TARGET_USDT:    0.80,  // daily profit target (informational)
+  MAX_CONSEC_LOSSES:    2,      // pause setelah 2 loss berturut (was 3)
 
   // SMC Entry Filters
   REQUIRE_LIQ_SWEEP:    true,   // wajib ada liquidity sweep sebelum entry
@@ -115,12 +117,22 @@ const CONFIG = {
   ATR_LOW_THRESHOLD:  0.15,
   ATR_HIGH_THRESHOLD: 0.50,
 
+  // Candle quality filter
+  MIN_CANDLE_BODY_PCT: 0.10, // reject doji/micro candles (body < 0.10% of price)
+  MIN_EXPECTED_MOVE_ENTRY: 0.15, // reject if expected move < 0.15%
+
+  // Trade setup scoring (1–10, require ≥ 7)
+  TRADE_SCORE_MIN: 7,
+
   // Entry Quality Score (Mode 1)
   ENTRY_SCORE_MIN: 70,    // Min score ≥ 70
 
-  // Mode 8: Daily trade limit
-  MAX_TRADES_PER_DAY: 5,    // normal mode
-  MAX_SNIPER_TRADES:  3,    // sniper mode
+  // Mode 8: Daily / hourly trade limit
+  MAX_TRADES_PER_DAY:  5,    // normal mode
+  MAX_SNIPER_TRADES:   3,    // sniper mode
+  MAX_TRADES_PER_HOUR: 3,    // max 3 trades per rolling hour
+  MIN_NET_PROFIT_USDT: 0.005, // never close a position for < this net USDT
+  TRADE_COOLDOWN_MIN:  15,   // minimum 15 min between trades
 
   // Hemat kredit AI: skip panggilan kalau tidak ada sinyal kuat
   CLAUDE_SMART_FILTER: false,   // SMC: Claude hanya dipanggil saat setup lengkap
@@ -149,9 +161,9 @@ const CONFIG = {
   // ── Fitur #3: VWAP ────────────────────────────────────────
   VWAP_BIAS_THRESHOLD: 0.5,   // % di atas/bawah VWAP untuk bias
 
-  // ── Fitur #5: Partial Close (SMC TP1) ───────────────────────
+  // ── Fitur #5: Partial Close (Smart Exit Weak Mom: 60% at TP1) ───
   PARTIAL_CLOSE_ENABLED: true,
-  PARTIAL_CLOSE_PCT:     50,    // SMC TP1: close 50% posisi saat TP1 hit
+  PARTIAL_CLOSE_PCT:     60,    // Smart Exit: close 60% at TP1 (was 50%) — hold 40% for TP2
   PARTIAL_CLOSE_TRIGGER: 0.5,   // SMC TP1: trigger at 0.5% raw profit, trailing aktif setelahnya
 
   // ── Fitur #6: Auto Compound ───────────────────────────────
@@ -200,6 +212,10 @@ const CONFIG = {
     POSITION_SIZE_USDT: 15,
     MIN_SL_PCT:       0.3,
     MAX_SL_PCT:       2.0,
+    // Fixed BTC qty tiers (leverage 7x fixed)
+    BTC_STD_QTY:      0.0020, // standard position
+    BTC_HIGH_QTY:     0.0030, // high-confidence: HTF aligned + liq swept
+    BTC_LOW_QTY:      0.0010, // uncertain: weekend / major news
   },
   PEPE_SPECIFIC_CONFIG: {
     STOP_LOSS_PCT:    3.0,    // PEPE: lebih volatile, SL lebih longgar
@@ -264,6 +280,8 @@ let state = {
   dailyLossPaused:      false,        // SMC: stop trading — daily loss limit hit
   lastTradeWasLoss:     false,        // SMC: require 1 confirmed setup after loss before re-entry
   lastSetupConfirmed:   false,        // SMC: tracks if 1 valid setup was seen after last loss
+  lastTradeTime:        0,            // timestamp of last close — used for 15-min cooldown gate
+  hourlyTrades:         [],           // timestamps of trades this rolling hour
 
   // Mode 5: Scale-in tracking
   scaleInDone:          false,        // whether we've scaled in this trade
@@ -1391,6 +1409,9 @@ async function closePosition(reason, currentPrice, symbol = null) {
   } else {
     log("INFO", `[DRY RUN] Simulasi close berhasil`);
   }
+
+  // Track last close time for trade cooldown (15-min gate)
+  state.lastTradeTime = Date.now();
 
   // Update stats
   stats.totalTrades++;
@@ -3553,8 +3574,19 @@ async function tradingLoop() {
     if (pos.stopLoss) {
       const slHit = pos.side === "LONG" ? price <= pos.stopLoss : price >= pos.stopLoss;
       if (slHit) {
-        log("TRADE", `[RISK] SL kena: ${price.toFixed(8)} vs SL ${pos.stopLoss.toFixed(8)}`);
-        await closePosition("STOP_LOSS", price);
+        // Tentukan label berdasarkan posisi SL relatif terhadap entry
+        const slAboveEntry = pos.side === "LONG"
+          ? pos.stopLoss > pos.entryPrice      // SL di atas entry = lock profit
+          : pos.stopLoss < pos.entryPrice;
+        const slAtEntry = Math.abs(pos.stopLoss - pos.entryPrice) / pos.entryPrice < 0.0005; // ±0.05% = breakeven
+        let slReason;
+        if (pos.runnerActivated && slAboveEntry)       slReason = "TRAILING_STOP_PROFIT";
+        else if (pos.lockLevel != null && slAboveEntry) slReason = "LOCK_PROFIT_STOP";
+        else if (pos.breakevenSet && slAtEntry)         slReason = "BREAKEVEN_STOP";
+        else if (slAboveEntry)                          slReason = "TRAILING_STOP_PROFIT";
+        else                                            slReason = "STOP_LOSS";
+        log("TRADE", `[RISK] SL kena: ${price.toFixed(8)} vs SL ${pos.stopLoss.toFixed(8)} → ${slReason}`);
+        await closePosition(slReason, price);
         return;
       }
     }
@@ -3607,99 +3639,164 @@ async function tradingLoop() {
       return;
     }
 
-    // ── 6. MICRO PROFIT BLOCKER (Rules 1 + 2) ─────────────────────────────────
-    // HOLD profit < MIN unless ALL 3 reversal signals fire + profit ≥ MIN_PROFIT_USDT
+    // ── 6. MICRO PROFIT REVERSAL — DISABLED ───────────────────────
+    // Removed: this signal type consistently produced sub-0.05 USDT trades
+    // Any move < 0.15% is noise — use DEAD TRADE EXIT instead when momentum dies.
+    // FEE GATE still applies: hold if rawProfitPct < MIN_PROFIT_PCT.
     if (rawProfitPct > 0 && rawProfitPct < MIN_PROFIT_PCT) {
-      const last3   = klines.slice(-3);
-      const lastC   = last3[last3.length - 1];
-      const prevC   = last3[last3.length - 2] || lastC;
-      // Bearish engulfing for LONG / bullish engulfing for SHORT
-      const engulfing = pos.side === "LONG"
-        ? lastC && prevC && lastC.close < lastC.open
-            && lastC.open >= prevC.close && lastC.close <= prevC.open  // bear engulf
-        : lastC && prevC && lastC.close > lastC.open
-            && lastC.open <= prevC.close && lastC.close >= prevC.open; // bull engulf
-      // Volume spike against position direction (raised 1.5 → 2.0 — only genuine vol surge)
-      const volSpike     = volRatioNow > 2.0;
-      // RSI extreme divergence (tighter threshold)
-      const rsiDivergence = pos.side === "LONG" ? rsiNow < 35 : rsiNow > 65;
-      const reversalScore  = (engulfing ? 1 : 0) + (volSpike ? 1 : 0) + (rsiDivergence ? 1 : 0);
-      // Require ALL 3 signals (was ≥2) AND profit in USDT ≥ MIN_PROFIT_USDT
-      const strongReversal = reversalScore >= 3;
-      const profitUsdtOK   = profitUsdt >= MIN_PROFIT_USDT;
-
-      if (strongReversal && momentumWeak && profitUsdtOK) {
-        log("TRADE",
-          `[PROFIT] Micro profit + full reversal (engulf=${engulfing} volSpike=${volSpike} rsiDiv=${rsiDivergence}) → close ${rawProfitPct.toFixed(3)}% / ${profitUsdt.toFixed(4)} USDT`
-        );
-        await closePosition("MICRO_PROFIT_REVERSAL", price);
-        return;
-      }
-      // Otherwise HOLD — fee protection active
       if (state.tickCount % 5 === 0)
-        log("INFO", `[FEE GATE] Hold — profit ${rawProfitPct.toFixed(3)}% (${profitUsdt.toFixed(4)} USDT) < min ${MIN_PROFIT_PCT}% / ${MIN_PROFIT_USDT} USDT | rev=${reversalScore}/3`);
+        log("INFO", `[FEE GATE] Hold — profit ${rawProfitPct.toFixed(3)}% (${profitUsdt.toFixed(4)} USDT) < min ${MIN_PROFIT_PCT}% → wait for structure`);
     }
 
-    // ── 7. SMART HOLD — Market-Condition Exit Only ───────────────────────────
-    // Time is NEVER a close trigger. Only market conditions drive exit.
-    // Rule 6: time used as WARNING only — to trigger a condition check.
+    // ── 7. SMART DEAD TRADE MANAGEMENT ───────────────────────────
+    // PRIMARY: 3+ consecutive small candles with no directional momentum
+    // SECONDARY: volume + structure + volatility composite (2/3)
+    // Time is NEVER primary.
 
-    const volumeDying  = volRatioNow < 0.5;
-    const sidewaysNow  = klines.length >= 5 && (() => {
-      const slice = klines.slice(-5);
-      const hi    = Math.max(...slice.map(c => c.high));
-      const lo    = Math.min(...slice.map(c => c.low));
-      return (hi - lo) / price * 100 < 0.10; // < 0.10% range = tight (no new highs/lows)
+    // ── STEP 1a: PRIMARY — 3+ Consecutive Small Candles ─────────
+    // A "small" candle = body < 0.05% raw. 3+ in a row after entry = dead momentum.
+    const SMALL_CANDLE_BODY_PCT = 0.05; // < 0.05% body = small candle
+    const SMALL_CANDLE_COUNT    = 3;    // require 3+ consecutive
+    const recentFor3 = klines.slice(-5); // look at last 5 to find 3 consecutive
+    let consecutiveSmall = 0;
+    for (let i = recentFor3.length - 1; i >= 0; i--) {
+      const c = recentFor3[i];
+      const bodyPct3 = c.open > 0 ? Math.abs(c.close - c.open) / c.open * 100 : 0;
+      if (bodyPct3 < SMALL_CANDLE_BODY_PCT) consecutiveSmall++;
+      else break;
+    }
+    const primaryDead = consecutiveSmall >= SMALL_CANDLE_COUNT;
+
+    // ── STEP 1b: SECONDARY — Volume + Range + Structure ──────────
+    // Condition A — Volume dying
+    const volumeDying = volRatioNow < 0.5;
+
+    // Condition B — Price stuck in tight range (no new highs/lows), last 6 candles
+    const rangeSlice   = klines.slice(-6);
+    const rangeHi      = Math.max(...rangeSlice.map(c => c.high));
+    const rangeLo      = Math.min(...rangeSlice.map(c => c.low));
+    const rangeWidth   = rangeHi > 0 ? (rangeHi - rangeLo) / price * 100 : 1;
+    const tightRange   = rangeWidth < 0.12; // < 0.12% over 6 candles = no expansion
+
+    // Condition C — No structural break (no higher high for LONG / no lower low for SHORT)
+    const noNewExtreme = (() => {
+      if (klines.length < 4) return false;
+      const recent = klines.slice(-4);
+      if (pos.side === "LONG") {
+        const maxHigh = Math.max(...recent.slice(0, -1).map(c => c.high));
+        return recent[recent.length - 1].high <= maxHigh;
+      } else {
+        const minLow = Math.min(...recent.slice(0, -1).map(c => c.low));
+        return recent[recent.length - 1].low >= minLow;
+      }
     })();
 
-    // Time warning logs (Rule 6) — check conditions, do NOT close
+    // DEAD = primary OR (2 of 3 secondary)
+    const deadScore   = (volumeDying ? 1 : 0) + (tightRange ? 1 : 0) + (noNewExtreme ? 1 : 0);
+    const isDeadTrade = primaryDead || deadScore >= 2;
+
+    // ── STEP 3: BLOCK BAD EXIT ───────────────────────────────────
+    // Do NOT close dead trade if any runner potential detected
+    const nearBreakout   = rangeWidth >= 0.08 && volRatioNow >= 0.4; // range expanding or vol recovering
+    const volRecovering  = volRatioNow >= 0.4 && volRatioNow > (klines.slice(-3).reduce((a,c) => a + c.volume, 0) / 3 / (klines.slice(-6,-3).reduce((a,c) => a + c.volume, 0) / 3 || 1) * 0.8);
+    const trendValid     = pos.side === "LONG"
+      ? (price >= ema9Now * 0.999 || price >= ema21Now * 0.999) // within 0.1% of EMA
+      : (price <= ema9Now * 1.001 || price <= ema21Now * 1.001);
+    const runnerPotential = pos.runnerActivated || momentumStrong || nearBreakout || volRecovering;
+
+    // ── STEP 2: EXIT DECISION ────────────────────────────────────
+    if (isDeadTrade && !runnerPotential) {
+      const DEAD_PROFIT_THRESHOLD = 0.25; // CASE 1: close if profit ≥ 0.25%
+      const DEAD_LOSS_THRESHOLD   = 0.20; // CASE 2: cut small loss if < 0.2%
+
+      if (rawProfitPct >= DEAD_PROFIT_THRESHOLD) {
+        // CASE 1 — PROFIT AVAILABLE: take it, don't waste time
+        const deadTrigger = primaryDead ? `CONSEC_SMALL_CANDLES(${consecutiveSmall})` : `score=${deadScore}/3`;
+        log("TRADE",
+          `💀 [DEAD TRADE] PROFIT CASE — ${deadTrigger} ` +
+          `(vol=${volRatioNow.toFixed(2)} range=${rangeWidth.toFixed(3)}% noNew=${noNewExtreme}) ` +
+          `profit=${rawProfitPct.toFixed(3)}% ≥ ${DEAD_PROFIT_THRESHOLD}% → CLOSE`
+        );
+        await closePosition("DEAD_TRADE_PROFIT", price);
+        return;
+
+      } else if (rawProfitPct < 0 && Math.abs(rawProfitPct) < DEAD_LOSS_THRESHOLD && !trendValid) {
+        // CASE 2 — SMALL LOSS + no trend: cut now before it gets worse
+        log("TRADE",
+          `💀 [DEAD TRADE] SMALL LOSS CUT — loss=${rawProfitPct.toFixed(3)}% < ${DEAD_LOSS_THRESHOLD}% ` +
+          `+ trend invalid + no momentum → CLOSE`
+        );
+        await closePosition("DEAD_TRADE_CUT", price);
+        return;
+
+      } else {
+        // CASE 3 — not enough profit to take, not enough loss to cut → HOLD
+        if (state.tickCount % 6 === 0)
+          log("INFO",
+            `💀 [DEAD TRADE] HOLD — score=${deadScore}/3 profit=${rawProfitPct.toFixed(3)}% ` +
+            `| need ≥${DEAD_PROFIT_THRESHOLD}% to exit or trend break → wait`
+          );
+      }
+    } else if (isDeadTrade && runnerPotential) {
+      // STEP 3 — block: dead signals but runner/breakout potential exists
+      if (state.tickCount % 6 === 0)
+        log("INFO",
+          `💀 [DEAD TRADE] BLOCKED — runner=${pos.runnerActivated} nearBreakout=${nearBreakout} volRecovering=${volRecovering} → HOLD`
+        );
+    }
+
+    // ── STEP 4: TIME WARNING (secondary, never trigger close) ────
     if (holdMinutes >= 120 && state.tickCount % 12 === 0) {
       const trendOK = pos.side === "LONG" ? (price > ema9Now && price > ema21Now) : (price < ema9Now && price < ema21Now);
       log("INFO",
         `⏱️ LONG HOLD ${holdMinutes.toFixed(0)}min — ` +
-        `profit=${rawProfitPct.toFixed(3)}% | trend=${trendOK ? "✅" : "⚠️"} ` +
-        `vol=${volRatioNow.toFixed(2)} sideways=${sidewaysNow} | action=HOLD (no time-based exit)`
+        `profit=${rawProfitPct.toFixed(3)}% | dead=${isDeadTrade}(${deadScore}/3) trend=${trendOK?"✅":"⚠️"} ` +
+        `vol=${volRatioNow.toFixed(2)} range=${rangeWidth.toFixed(3)}%`
       );
     } else if (holdMinutes >= 60 && state.tickCount % 6 === 0) {
       log("INFO",
-        `⏱️ Trade ${holdMinutes.toFixed(0)}min | ` +
-        `profit=${rawProfitPct.toFixed(3)}% vol=${volRatioNow.toFixed(2)} sideways=${sidewaysNow} deadTrade=${volumeDying && sidewaysNow}`
+        `⏱️ Hold ${holdMinutes.toFixed(0)}min | profit=${rawProfitPct.toFixed(3)}% ` +
+        `dead=${isDeadTrade}(${deadScore}/3) vol=${volRatioNow.toFixed(2)} range=${rangeWidth.toFixed(3)}%`
       );
     }
 
-    // Rule 4 — DEAD TRADE detection: no volume + price stuck in tight range
-    // Only exit if profit ≥ fee minimum. Otherwise HOLD per Rule 5.
-    const isDeadTrade = volumeDying && sidewaysNow;
-    if (isDeadTrade) {
-      if (rawProfitPct >= min_profit_required) {
-        log("TRADE",
-          `[DEAD TRADE] vol=${volRatioNow.toFixed(2)} sideways=true + profit ${rawProfitPct.toFixed(3)}% ≥ fee min ${min_profit_required.toFixed(2)}% → close`
-        );
-        await closePosition("DEAD_TRADE_EXIT", price);
-        return;
-      } else {
-        // Rule 5 — Never close if profit < min_profit_required
-        if (state.tickCount % 6 === 0)
-          log("INFO",
-            `[DEAD TRADE] Detected but profit ${rawProfitPct.toFixed(3)}% < fee min ${min_profit_required.toFixed(2)}% → HOLD (Rule 5 min-profit protection)`
-          );
-      }
-    }
+    // ── 8. RUNNER MODE ───────────────────────────────────────────────────────
+    // Threshold: 0.3% raw (BTC @ 7x = ~2.1% leveraged) — realistis untuk scalp
+    // momentumStrong = ≥3/4 kondisi (vol, RSI, EMA, consecutive candles)
+    const RUNNER_THRESHOLD     = 0.30; // raw price move minimum untuk jadi runner
+    const RUNNER_REVERT_THRESH = 0.15; // anti-fake: revert jika profit turun ke sini
 
-    // ── 8. RUNNER MODE (Phases 3 + 6) ────────────────────────────────────────
-    // Phase 6: Anti-fake runner — revert if profit drops < 0.8% AND momentum gone
-    if (pos.runnerActivated && rawProfitPct < 0.8 && momentumWeak) {
+    // Phase 6: Anti-fake runner — revert jika profit turun + momentum habis
+    if (pos.runnerActivated && rawProfitPct < RUNNER_REVERT_THRESH && momentumWeak) {
       pos.runnerActivated  = false;
       pos._timeoutDisabled = false;
       pos.tpTrailPct       = null;
-      log("TRADE", `[RUNNER] Phase 6 anti-fake: profit ${rawProfitPct.toFixed(3)}% < 0.8% + weak momentum → revert to NORMAL`);
+      log("TRADE", `[RUNNER] Anti-fake: profit ${rawProfitPct.toFixed(3)}% < ${RUNNER_REVERT_THRESH}% + weak momentum → revert ke NORMAL`);
     }
-    // Phase 3: Promote to RUNNER — profit > 0.8%, momentum strong, no rejection
-    if (rawProfitPct >= 0.8 && momentumStrong && !pos.runnerActivated) {
+
+    // Phase 3: Promote ke RUNNER
+    // Syarat: profit ≥ 0.30% raw DAN momentum kuat (≥3/4 kondisi)
+    if (!pos.runnerActivated && rawProfitPct >= RUNNER_THRESHOLD && momentumStrong) {
       pos.runnerActivated  = true;
       pos._timeoutDisabled = true;
-      pos.tpTrailPct       = 0.35; // Phase 4 baseline trailing (20% lock)
-      log("TRADE", `[RUNNER] Phase 3 confirmed → RUNNER mode | profit=${rawProfitPct.toFixed(3)}% Vol=${volRatioNow.toFixed(2)} RSI=${rsiNow.toFixed(1)} conds=${momentumCondCount}/4`);
+      pos.tpTrailPct       = 0.35;
+      log("TRADE",
+        `🚀 [RUNNER] AKTIF | profit=${rawProfitPct.toFixed(3)}% (raw) ` +
+        `Vol=${volRatioNow.toFixed(2)}x RSI=${rsiNow.toFixed(1)} EMA=${price > ema9Now ? "✅" : "❌"} Consec=${consec3 ? "✅" : "❌"} ` +
+        `conds=${momentumCondCount}/4 → trailing aktif`
+      );
+    }
+
+    // Log momentum status setiap 3 tick saat posisi terbuka (bantu debug)
+    if (state.tickCount % 3 === 0 && !pos.runnerActivated) {
+      log("INFO",
+        `[RUNNER?] profit=${rawProfitPct.toFixed(3)}% (need ≥${RUNNER_THRESHOLD}%) | ` +
+        `momentum ${momentumCondCount}/4: ` +
+        `vol=${volRatioNow.toFixed(2)}x${volRatioNow > 1.3 ? "✅" : "❌"} ` +
+        `RSI=${rsiNow.toFixed(1)}${(pos.side === "LONG" ? rsiNow >= 55 && rsiNow <= 70 : rsiNow >= 30 && rsiNow <= 45) ? "✅" : "❌"} ` +
+        `EMA=${price > ema9Now && price > ema21Now ? "✅" : "❌"} ` +
+        `3c=${consec3 ? "✅" : "❌"}`
+      );
     }
 
     // ── 9. DYNAMIC LOCK V2 ────────────────────────────────────────
@@ -3765,11 +3862,26 @@ async function tradingLoop() {
     }
 
     // ── FITUR #2: TRAILING TP DINAMIS (Regime-based) ─────────────
-    // RANGE: trailing distance = 0.35% | TREND: existing (0.5 * TP)
+    // RULES:
+    //  1. Trailing ONLY activates after price moves ≥ 0.15% raw in profit
+    //  2. Trail distance minimum 0.10% raw
+    //  3. Min hold 8 minutes before trailing can trigger a close
+    //  4. Never close for < MIN_NET_PROFIT_USDT (0.005 USDT)
+    const TRAIL_ACTIVATION_PCT = 0.15; // trailing requires ≥ 0.15% profit first
+    const TRAIL_MIN_DIST_PCT   = 0.10; // minimum trail distance (raw %)
+    const TRAIL_MIN_HOLD_MIN   = 8;    // min minutes before trailing can close
+
+    const holdMinutesForTrail = (Date.now() - pos.openTime) / 60000;
+    const trailActivationOK = rawProfitPct >= TRAIL_ACTIVATION_PCT;
+    const trailHoldOK = holdMinutesForTrail >= TRAIL_MIN_HOLD_MIN;
+
     if (!pos.trailingTP) pos.trailingTP = pos.takeProfit;
     if (!pos.tpTrailPct) {
-      // Use regime-based trailing distance
-      pos.tpTrailPct = positionRegime === "RANGE" ? 0.35 : CONFIG.TAKE_PROFIT_PCT * 0.5;
+      // Use regime-based trailing distance, minimum 0.10%
+      pos.tpTrailPct = Math.max(
+        positionRegime === "RANGE" ? 0.35 : CONFIG.TAKE_PROFIT_PCT * 0.5,
+        TRAIL_MIN_DIST_PCT
+      );
     }
     
     // Phase 4: Runner trailing — dynamic based on profit level (let winner run)
@@ -3786,9 +3898,9 @@ async function tradingLoop() {
 
     if (pos.side === "LONG") {
       // Update trailing TP ke atas saat harga naik melewati TP lama
-      if (price > pos.trailingTP) {
+      // Only track the trail if activation threshold met (≥ 0.15% profit)
+      if (trailActivationOK && price > pos.trailingTP) {
         const newTP = price * (1 + pos.tpTrailPct / 100 / pos.leverage);
-        // Jangan update kalau perbedaannya kecil (< 0.05% dari harga)
         if (newTP - pos.trailingTP > price * 0.0005) {
           pos.trailingTP = newTP;
           log("TRADE",
@@ -3797,22 +3909,31 @@ async function tradingLoop() {
           );
         }
       }
-      // Close saat harga turun dari trailing TP
-      // (harga sudah melewati TP lama dan sekarang turun)
-      const tpTriggered = price >= pos.takeProfit  // TP awal tercapai
+      const tpTriggered = price >= pos.takeProfit
         && price <= pos.trailingTP * (1 - pos.tpTrailPct / 100 / pos.leverage / 2);
-      if (tpTriggered || price >= pos.trailingTP) {
-        // STEP 3: FEE GATE - Don't close if profit < minProfitPercent
-        if (rawProfitPct > 0 && rawProfitPct < MIN_PROFIT_PCT) {
+      if ((tpTriggered || price >= pos.trailingTP) && trailActivationOK) {
+        // Gate 1: profit < 0.10% + momentum dead → use DEAD TRADE EXIT instead
+        if (rawProfitPct < 0.10 && momentumWeak) {
+          log("TRADE", `[TRAIL GATE] profit ${rawProfitPct.toFixed(3)}% < 0.10% + momentum weak → route to DEAD TRADE EXIT`);
+          // fall through to dead trade section
+        // Gate 2: fee threshold
+        } else if (profitUsdt < CONFIG.MIN_NET_PROFIT_USDT) {
+          log("FEE", `[FEE GATE] Trailing TP — net profit ${profitUsdt.toFixed(5)} USDT < ${CONFIG.MIN_NET_PROFIT_USDT} USDT → HOLD`);
+        // Gate 3: min hold time
+        } else if (!trailHoldOK) {
+          log("FEE", `[TRAIL GATE] Hold ${holdMinutesForTrail.toFixed(1)}min < ${TRAIL_MIN_HOLD_MIN}min minimum → HOLD`);
+        } else if (rawProfitPct > 0 && rawProfitPct < MIN_PROFIT_PCT) {
           log("FEE", `[FEE GATE] Trailing TP hit but profit ${rawProfitPct.toFixed(2)}% < min ${MIN_PROFIT_PCT}% → HOLD`);
         } else {
           log("TRADE", `${C.green}TAKE PROFIT (trailing TP=${pos.trailingTP.toFixed(8)})${C.reset}`);
           await closePosition("TAKE_PROFIT_TRAILING", price);
           return;
         }
+      } else if (!trailActivationOK && state.tickCount % 6 === 0) {
+        log("INFO", `[TRAIL] Locked — profit ${rawProfitPct.toFixed(3)}% < ${TRAIL_ACTIVATION_PCT}% activation threshold`);
       }
     } else { // SHORT
-      if (price < pos.trailingTP) {
+      if (trailActivationOK && price < pos.trailingTP) {
         const newTP = price * (1 - pos.tpTrailPct / 100 / pos.leverage);
         if (pos.trailingTP - newTP > price * 0.0005) {
           pos.trailingTP = newTP;
@@ -3824,26 +3945,45 @@ async function tradingLoop() {
       }
       const tpTriggered = price <= pos.takeProfit
         && price >= pos.trailingTP * (1 + pos.tpTrailPct / 100 / pos.leverage / 2);
-      if (tpTriggered || price <= pos.trailingTP) {
-        // STEP 3: FEE GATE - Don't close if profit < minProfitPercent
-        if (rawProfitPct > 0 && rawProfitPct < MIN_PROFIT_PCT) {
+      if ((tpTriggered || price <= pos.trailingTP) && trailActivationOK) {
+        if (rawProfitPct < 0.10 && momentumWeak) {
+          log("TRADE", `[TRAIL GATE] profit ${rawProfitPct.toFixed(3)}% < 0.10% + momentum weak → route to DEAD TRADE EXIT`);
+        } else if (profitUsdt < CONFIG.MIN_NET_PROFIT_USDT) {
+          log("FEE", `[FEE GATE] Trailing TP — net profit ${profitUsdt.toFixed(5)} USDT < ${CONFIG.MIN_NET_PROFIT_USDT} USDT → HOLD`);
+        } else if (!trailHoldOK) {
+          log("FEE", `[TRAIL GATE] Hold ${holdMinutesForTrail.toFixed(1)}min < ${TRAIL_MIN_HOLD_MIN}min minimum → HOLD`);
+        } else if (rawProfitPct > 0 && rawProfitPct < MIN_PROFIT_PCT) {
           log("FEE", `[FEE GATE] Trailing TP hit but profit ${rawProfitPct.toFixed(2)}% < min ${MIN_PROFIT_PCT}% → HOLD`);
         } else {
           log("TRADE", `${C.green}TAKE PROFIT (trailing TP=${pos.trailingTP.toFixed(8)})${C.reset}`);
           await closePosition("TAKE_PROFIT_TRAILING", price);
           return;
         }
+      } else if (!trailActivationOK && state.tickCount % 6 === 0) {
+        log("INFO", `[TRAIL] Locked — profit ${rawProfitPct.toFixed(3)}% < ${TRAIL_ACTIVATION_PCT}% activation threshold`);
       }
     }
 
     // Stop Loss
     if ((pos.side === "LONG" && price <= pos.stopLoss) ||
         (pos.side === "SHORT" && price >= pos.stopLoss)) {
-      log("TRADE", `${C.yellow}STOP LOSS tercapai!${C.reset}`);
-      await closePosition("STOP_LOSS", price);
-      // [4] Mulai post-SL cooldown
-      smcState.lastSLTime      = Date.now();
-      smcState.slCooldownCount = 0;
+      const slAboveEntry2 = pos.side === "LONG"
+        ? pos.stopLoss > pos.entryPrice
+        : pos.stopLoss < pos.entryPrice;
+      const slAtEntry2 = Math.abs(pos.stopLoss - pos.entryPrice) / pos.entryPrice < 0.0005;
+      let slReason2;
+      if (pos.runnerActivated && slAboveEntry2)        slReason2 = "TRAILING_STOP_PROFIT";
+      else if (pos.lockLevel != null && slAboveEntry2) slReason2 = "LOCK_PROFIT_STOP";
+      else if (pos.breakevenSet && slAtEntry2)         slReason2 = "BREAKEVEN_STOP";
+      else if (slAboveEntry2)                          slReason2 = "TRAILING_STOP_PROFIT";
+      else                                             slReason2 = "STOP_LOSS";
+      log("TRADE", `${C.yellow}SL tercapai → ${slReason2} | SL=${pos.stopLoss.toFixed(8)} vs harga=${price.toFixed(8)}${C.reset}`);
+      await closePosition(slReason2, price);
+      // [4] Post-SL cooldown hanya untuk actual stop loss (bukan profit stop)
+      if (slReason2 === "STOP_LOSS") {
+        smcState.lastSLTime      = Date.now();
+        smcState.slCooldownCount = 0;
+      }
       return;
     }
 
@@ -4639,19 +4779,20 @@ async function tradingLoop() {
         orderQty = Math.floor(qty / CONTRACT_SIZE) * CONTRACT_SIZE;
         if (orderQty < CONTRACT_SIZE) orderQty = CONTRACT_SIZE;
       } else {
-        // BTC USDT-M: margin fixed 15–20 USDT (tidak boleh di-override oleh auto-sizing)
-        const TARGET_MARGIN = Math.max(CONFIG.BTC_SPECIFIC_CONFIG.POSITION_SIZE_USDT, 15); // 15 USDT minimum
-        const availBalance  = state.totalAccountBalance > 0
-          ? state.totalAccountBalance * 0.9
-          : TARGET_MARGIN;
-        const marginUsdt = Math.min(TARGET_MARGIN, availBalance); // tidak exceed available
-        const minQty = 0.001;
-        const minLevNeeded = Math.ceil((minQty * price) / marginUsdt);
-        leverage = Math.min(Math.max(leverage, minLevNeeded, CONFIG.DEFAULT_LEVERAGE), CONFIG.MAX_LEVERAGE);
-        let qty = (marginUsdt * leverage) / price;
-        qty = Math.round(qty * 1000) / 1000;
-        if (qty < minQty) qty = minQty;
-        orderQty = qty;
+        // BTC USDT-M: FIXED QTY TIERS — leverage locked at 7x
+        // High-confidence (HTF aligned + liq swept + PERFECT score) → 0.0030 BTC
+        // Standard (GOOD score)                                       → 0.0020 BTC
+        // Uncertain (weekend / major news / WEAK signal)              → 0.0010 BTC
+        leverage = 7; // 7x fixed, no dynamic adjustment for BTC
+        const btcCfg = CONFIG.BTC_SPECIFIC_CONFIG;
+        const isHighConf = (htf.trend === tradeSide || htf.trend === "BULLISH" || htf.trend === "BEARISH")
+          && sweep.detected
+          && entryQuality === "PERFECT";
+        const isWeekend = (() => { const d = new Date().getUTCDay(); return d === 0 || d === 6; })();
+        const isUncertain = isWeekend || (stats.lossStreak || 0) >= 2;
+        orderQty = isUncertain ? btcCfg.BTC_LOW_QTY
+                 : isHighConf  ? btcCfg.BTC_HIGH_QTY
+                               : btcCfg.BTC_STD_QTY;
       }
 
       log("INFO", `📊 BTC Order: Qty=${orderQty} BTC | Lev=${leverage}x | Margin≈${(orderQty * price / leverage).toFixed(2)} USDT`);
@@ -4791,19 +4932,33 @@ async function tradingLoop() {
       // AI agrees
       const aiAgrees = claudeFilter.approve;
       
-      // Calculate score
+      // ═══════════════════════════════════════════════════════════════
+      // ENTRY SCORE — with Self-Learning Weight Injection
+      // When learning engine is ACTIVE (≥50 trades), each component's
+      // weight is adjusted ±10% based on historical win-rate patterns.
+      // ═══════════════════════════════════════════════════════════════
+      const lw = learningEngine.getLearnedWeights();
+      const lwStatus = learningEngine.getLearningStatus();
+      const lwActive = lwStatus.self_learning === true;
+
       let entryScore = 0;
-      if (trendAligned) entryScore += 30;
-      if (rsiPullback) entryScore += 25;
-      if (volumeConfirmed) entryScore += 20;
-      if (atrValid) entryScore += 15;
-      if (aiAgrees) entryScore += 10;
-      
+      if (trendAligned)    entryScore += Math.round(30 * (1 + (lwActive ? lw.trend    / 100 : 0)));
+      if (rsiPullback)     entryScore += Math.round(25 * (1 + (lwActive ? lw.rsi      / 100 : 0)));
+      if (volumeConfirmed) entryScore += Math.round(20 * (1 + (lwActive ? lw.volume   / 100 : 0)));
+      if (atrValid)        entryScore += Math.round(15 * (1 + (lwActive ? lw.momentum / 100 : 0)));
+      if (aiAgrees)        entryScore += 10;
+      // Session modifier: flat ±10 pt bonus from learning (session quality)
+      if (lwActive && lw.session !== 0) entryScore += Math.round(lw.session);
+      entryScore = Math.min(100, Math.max(0, entryScore));
+
       // Entry mode label
       const entryMode = (trendAligned && rsiPullback) ? "TREND_PULLBACK" : "MOMENTUM";
-      
+
+      const lwTag = lwActive
+        ? ` [LEARN: T${lw.trend>=0?'+':''}${lw.trend} R${lw.rsi>=0?'+':''}${lw.rsi} V${lw.volume>=0?'+':''}${lw.volume} M${lw.momentum>=0?'+':''}${lw.momentum} S${lw.session>=0?'+':''}${lw.session}]`
+        : ` [LEARN: LOCKED (need ≥50 trades)]`;
       log("ENTRY", `[ENTRY SCORE] ${entryScore}/100 → ${entryScore >= CONFIG.ENTRY_SCORE_MIN ? 'VALID' : 'INVALID'} | ` +
-        `Trend:${trendAligned?'✅':'❌'}(${tradeSide}) RSI:${rsiPullback?'✅':'❌'} Vol:${volumeConfirmed?'✅':'❌'} ATR:${atrValid?'✅':'❌'} AI:${aiAgrees?'✅':'❌'}`);
+        `Trend:${trendAligned?'✅':'❌'}(${tradeSide}) RSI:${rsiPullback?'✅':'❌'} Vol:${volumeConfirmed?'✅':'❌'} ATR:${atrValid?'✅':'❌'} AI:${aiAgrees?'✅':'❌'}${lwTag}`);
       
       log("ENTRY", `[ENTRY CHECK] AI confidence ${claudeFilter.confidence}% / Required ${CONFIG.OPEN_CONFIDENCE}%`);
 
@@ -4856,12 +5011,35 @@ async function tradingLoop() {
       }
 
       // ════════════════════════════════════════════════════════════
+      // DAILY HARD STOP — -0.30 USDT absolute USDT loss → halt today
+      // ════════════════════════════════════════════════════════════
+      if ((state.dailyLossUsdt || 0) >= CONFIG.DAILY_STOP_USDT) {
+        if (state.tickCount % 18 === 0)
+          log("FILTER", `🛑 [DAILY STOP] -${(state.dailyLossUsdt || 0).toFixed(3)} USDT loss ≥ -${CONFIG.DAILY_STOP_USDT} USDT → halting all entries today`);
+        return;
+      }
+
+      // ════════════════════════════════════════════════════════════
       // SMC: DAILY LOSS LIMIT — 3% equity → stop trading today
       // ════════════════════════════════════════════════════════════
       if (state.dailyLossPaused) {
         if (state.tickCount % 18 === 0)
-          log("FILTER", `🛑 [SMC] Daily loss limit reached (${state.dailyLossUsdt?.toFixed(2)} USDT) → NO new entries today`);
+          log("FILTER", `🛑 [SMC] Daily loss limit ${state.dailyLossUsdt?.toFixed(2)} USDT → NO new entries today`);
         return;
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // HOURLY TRADE LIMIT — max 3 trades per rolling 60 min
+      // ════════════════════════════════════════════════════════════
+      {
+        const now = Date.now();
+        state.hourlyTrades = (state.hourlyTrades || []).filter(t => now - t < 60 * 60 * 1000);
+        if (state.hourlyTrades.length >= CONFIG.MAX_TRADES_PER_HOUR) {
+          const oldestMin = ((now - Math.min(...state.hourlyTrades)) / 60000).toFixed(0);
+          if (state.tickCount % 12 === 0)
+            log("FILTER", `[HOURLY LIMIT] ${state.hourlyTrades.length}/${CONFIG.MAX_TRADES_PER_HOUR} trades in last 60min — oldest ${oldestMin}min ago → SKIP`);
+          return;
+        }
       }
 
       // ════════════════════════════════════════════════════════════
@@ -4874,6 +5052,56 @@ async function tradingLoop() {
         state.lastSetupConfirmed = true;
         log("FILTER", `[SMC] Post-loss: 1 confirmed setup observed → next valid signal will be traded`);
         return;
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // TRADE COOLDOWN — 15 min minimum between trades
+      // ════════════════════════════════════════════════════════════
+      if (state.lastTradeTime > 0) {
+        const minSinceLastTrade = (Date.now() - state.lastTradeTime) / 60000;
+        if (minSinceLastTrade < CONFIG.TRADE_COOLDOWN_MIN) {
+          if (state.tickCount % 9 === 0)
+            log("FILTER", `[COOLDOWN] Last trade ${minSinceLastTrade.toFixed(1)}min ago — need ${CONFIG.TRADE_COOLDOWN_MIN}min → SKIP`);
+          return;
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // CONSECUTIVE LOSS PAUSE — stop after 2 losses, require fresh structure
+      // ════════════════════════════════════════════════════════════
+      if ((stats.lossStreak || 0) >= CONFIG.MAX_CONSEC_LOSSES) {
+        if (state.tickCount % 12 === 0)
+          log("FILTER", `[LOSS PAUSE] ${stats.lossStreak} consecutive losses ≥ ${CONFIG.MAX_CONSEC_LOSSES} → waiting for streak reset`);
+        return;
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // CANDLE QUALITY — reject doji/micro candles (body < 0.10%)
+      // ════════════════════════════════════════════════════════════
+      const lastCandle = klines[klines.length - 1];
+      if (lastCandle) {
+        const bodySize = Math.abs(lastCandle.close - lastCandle.open);
+        const bodyPct  = lastCandle.open > 0 ? bodySize / lastCandle.open * 100 : 0;
+        if (bodyPct < CONFIG.MIN_CANDLE_BODY_PCT) {
+          if (state.tickCount % 6 === 0)
+            log("FILTER", `[QUALITY] Doji/micro candle — body ${bodyPct.toFixed(3)}% < ${CONFIG.MIN_CANDLE_BODY_PCT}% → SKIP`);
+          return;
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // ATR CONSOLIDATION GUARD — reject if ATR < 20-period average
+      // Price in compression → low expected move → skip
+      // ════════════════════════════════════════════════════════════
+      if (klines.length >= 20) {
+        const atrValues = klines.slice(-20).map(c => c.high - c.low);
+        const atr20Avg  = atrValues.reduce((a, b) => a + b, 0) / atrValues.length;
+        const currentHL = lastCandle ? (lastCandle.high - lastCandle.low) : 0;
+        if (currentHL < atr20Avg * 0.7) {
+          if (state.tickCount % 6 === 0)
+            log("FILTER", `[ATR] Consolidation zone — range ${((currentHL/price)*100).toFixed(3)}% < 70% of 20-period avg → SKIP`);
+          return;
+        }
       }
 
       // ════════════════════════════════════════════════════════════
@@ -5024,6 +5252,40 @@ async function tradingLoop() {
         return;
       }
 
+      // ════════════════════════════════════════════════════════════
+      // TRADE SETUP SCORING 1–10 — require ≥ 7 before entry
+      // Each dimension checked against actual signal data
+      // ════════════════════════════════════════════════════════════
+      const htfAlignedForScore = htf.trend === tradeSide
+        || (tradeSide === "BULLISH" && htf.trend === "BULLISH")
+        || (tradeSide === "BEARISH" && htf.trend === "BEARISH");
+      const obOrFvgValid = (() => {
+        const fvgEntry = tradeSide === "BULLISH" ? fvgData.lastBullFVG : fvgData.lastBearFVG;
+        const obData   = tradeSide === "BULLISH" ? sdZone.zoneType === "DEMAND" : sdZone.zoneType === "SUPPLY";
+        return (fvgEntry != null) || obData;
+      })();
+      const isLondonNY = session.session === "LONDON" || session.session === "NEW_YORK"
+                      || session.session === "ALL_SESSIONS";
+      const btcQtyViable = (() => {
+        const estMargin = (CONFIG.BTC_SPECIFIC_CONFIG.BTC_STD_QTY * price) / 7;
+        const bal = state.totalAccountBalance || compoundedBalance || 15;
+        return estMargin <= bal * 0.8;
+      })();
+
+      const tradeScore = (htfAlignedForScore ? 2 : 0)
+                       + (sweep.detected ? 2 : 0)
+                       + (obOrFvgValid   ? 2 : 0)
+                       + (isLondonNY     ? 2 : 0)
+                       + (btcQtyViable   ? 2 : 0);
+
+      log("ENTRY", `[TRADE SCORE] ${tradeScore}/10 | HTF:${htfAlignedForScore?'+2':'0'} Sweep:${sweep.detected?'+2':'0'} OB/FVG:${obOrFvgValid?'+2':'0'} Session:${isLondonNY?'+2':'0'} Qty:${btcQtyViable?'+2':'0'}`);
+
+      if (tradeScore < CONFIG.TRADE_SCORE_MIN) {
+        if (state.tickCount % 6 === 0)
+          log("FILTER", `[TRADE SCORE] ${tradeScore}/10 < ${CONFIG.TRADE_SCORE_MIN} required → SKIP`);
+        return;
+      }
+
       // ── I. Entry ────────────────────────────────────────
       // Allow entry if: score >= 70 AND confidence >= threshold AND squeeze is safe
       if (entryScore >= CONFIG.ENTRY_SCORE_MIN &&
@@ -5051,7 +5313,7 @@ async function tradingLoop() {
         sniperMarginUSDT = Math.min(sniperMarginUSDT, 20); // cap  20 USDT
         const riskPct = sniperMarginUSDT * slFraction * leverage / balNow; // actual risk%
 
-        // Recalculate qty from sniper margin
+        // Final qty: BTC uses pre-calculated fixed tier qty; PEPE uses USDT-based calc
         const isPepeEntry = (state.currentPair || CONFIG.SYMBOL).includes("PEPE");
         let sniperQty;
         if (isPepeEntry) {
@@ -5059,15 +5321,14 @@ async function tradingLoop() {
           sniperQty = Math.floor((sniperMarginUSDT * leverage / price) / CONTRACT_SIZE) * CONTRACT_SIZE;
           if (sniperQty < CONTRACT_SIZE) sniperQty = CONTRACT_SIZE;
         } else {
-          let qty = (sniperMarginUSDT * leverage) / price;
-          qty = Math.round(qty * 1000) / 1000;
-          if (qty < 0.001) qty = 0.001;
-          sniperQty = qty;
+          // BTC: use fixed tier qty already set in orderQty above (0.001/0.002/0.003)
+          sniperQty = orderQty;
         }
+        const finalMarginUsdt = (sniperQty * price) / leverage;
         log("TRADE",
           `🎯 SNIPER ENTRY ${tradeSide} [${entryQuality}] | ` +
-          `SL:${slPct.toFixed(3)}% TP1:0.5%(50%) TP2:${tpPct.toFixed(3)}% RR:${(tpPct/slPct).toFixed(1)} ` +
-          `Lev:${leverage}x | Margin:${sniperMarginUSDT.toFixed(2)} USDT (risk ${(riskPct*100).toFixed(2)}% eq) | ` +
+          `SL:${slPct.toFixed(3)}% TP1:0.5%(60%) TP2:${tpPct.toFixed(3)}% RR:${(tpPct/slPct).toFixed(1)} ` +
+          `Lev:${leverage}x | Qty:${sniperQty} | Margin≈${finalMarginUsdt.toFixed(2)} USDT | ` +
           `Claude:${claudeFilter.confidence}% score:${entryScore}`
         );
 
@@ -5095,8 +5356,10 @@ async function tradingLoop() {
             ? price * (1 + tpPct / 100)
             : price * (1 - tpPct / 100);
           smcState.lastEntryTime = Date.now();
-          // Mode 8: count trade
+          // Mode 8: count trade + track hourly trades
           state.dailyTradeCount = (state.dailyTradeCount || 0) + 1;
+          state.hourlyTrades = (state.hourlyTrades || []);
+          state.hourlyTrades.push(Date.now());
           // Mode 5: reset scale-in flag
           state.scaleInDone = false;
           // Store quality for dashboard

@@ -76,17 +76,23 @@ function estimateFee(notionalUsdt) {
 function mapExitType(reason) {
   if (!reason) return "UNKNOWN";
   const r = reason.toUpperCase();
-  if (r.includes("HARD_STOP"))      return "HARD_SL";
-  if (r.includes("STOP_LOSS"))      return "VIRTUAL_SL";
-  if (r.includes("TRAILING"))       return "TRAILING_TP";
-  if (r.includes("TAKE_PROFIT"))    return "TAKE_PROFIT";
-  if (r.includes("TIMEOUT") || r.includes("DEAD_TRADE")) return "TIMEOUT";
-  if (r.includes("RUNNER"))         return "RUNNER";
-  if (r.includes("PROFIT_RETURN"))  return "PROFIT_RETURN";
-  if (r.includes("MICRO_PROFIT"))   return "MICRO_PROFIT";
-  if (r.includes("MOMENTUM"))       return "EARLY_EXIT";
-  if (r.includes("FORCE_CLOSE"))    return "FORCE_CLOSE";
-  if (r.includes("PARTIAL"))        return "PARTIAL";
+  if (r.includes("HARD_STOP"))              return "HARD_SL";
+  if (r.includes("TRAILING_STOP_PROFIT"))   return "TRAILING_TP";  // before STOP_LOSS check
+  if (r.includes("LOCK_PROFIT_STOP"))       return "TRAILING_TP";
+  if (r.includes("BREAKEVEN_STOP"))         return "BREAKEVEN_STOP";
+  if (r === "STOP_LOSS")                    return "VIRTUAL_SL";   // exact match only
+  if (r.includes("STOP_LOSS"))              return "VIRTUAL_SL";
+  if (r.includes("TRAILING"))               return "TRAILING_TP";
+  if (r.includes("TAKE_PROFIT"))            return "TAKE_PROFIT";
+  if (r === "DEAD_TRADE_PROFIT")                return "DEAD_TRADE_PROFIT";
+  if (r === "DEAD_TRADE_CUT")                   return "DEAD_TRADE_CUT";
+  if (r.includes("DEAD_TRADE") || r.includes("TIMEOUT")) return "TIMEOUT";
+  if (r.includes("RUNNER"))                 return "RUNNER";
+  if (r.includes("PROFIT_RETURN"))          return "PROFIT_RETURN";
+  if (r.includes("MICRO_PROFIT"))           return "MICRO_PROFIT";
+  if (r.includes("MOMENTUM"))               return "EARLY_EXIT";
+  if (r.includes("FORCE_CLOSE"))            return "FORCE_CLOSE";
+  if (r.includes("PARTIAL"))               return "PARTIAL";
   return "OTHER";
 }
 

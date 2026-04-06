@@ -2351,6 +2351,391 @@ async function closePartialPosition(reason, currentPrice) {
   saveState();
 }
 
+// ═══════════════════════════════════════════════════════════════
+// ADVANCED TRADE EXECUTION AI
+// Steps 1–7: Partial close, protect mode, lock profit,
+//            SL update, dynamic trailing, peak protection.
+// Rules: never reduce SL, never disable protection once active.
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Close a custom percentage of the current position.
+ * @param {string} reason
+ * @param {number} currentPrice
+ * @param {number} pct  — 0–100, percent of remaining size to close
+ * @returns {Promise<boolean>} true if close was sent
+ */
+async function closePartialByPct(reason, currentPrice, pct) {
+  const pos = state.activePosition;
+  if (!pos) return false;
+  const sym = pos.symbol || CONFIG.SYMBOL;
+  const isBTC = sym.includes("BTC");
+  // Round to contract granularity (BTC: 0.001, PEPE: 1000)
+  const granularity = isBTC ? 0.001 : 1000;
+  const rawSize     = pos.size * (pct / 100);
+  const closeSize   = isBTC
+    ? Math.floor(rawSize / granularity) * granularity
+    : Math.floor(rawSize / granularity) * granularity;
+  if (closeSize <= 0) {
+    log("WARN", `[ATX] closePartialByPct(${pct}%): computed size=${closeSize} → skip`);
+    return false;
+  }
+  log("TRADE",
+    `[ATX] PARTIAL CLOSE ${pct}% | ${reason} | ` +
+    `size=${closeSize} | price=${currentPrice.toFixed(8)}`
+  );
+  if (!CONFIG.DRY_RUN) {
+    await bitgetRequest("POST", "/api/v2/mix/order/place-order", {}, {
+      symbol:      sym,
+      productType: CONFIG.PRODUCT_TYPE,
+      marginCoin:  CONFIG.MARGIN_COIN,
+      size:        closeSize.toString(),
+      side:        pos.side === "LONG" ? "sell" : "buy",
+      tradeSide:   "close",
+      orderType:   "market",
+    });
+  } else {
+    log("INFO", `[DRY RUN] ATX partial close ${pct}% (${closeSize}) @ ${currentPrice.toFixed(8)}`);
+  }
+  pos.size = Math.max(0, pos.size - closeSize);
+  saveState();
+  return true;
+}
+
+/**
+ * ADVANCED TRADE EXECUTION AI — called every tick while a position is open.
+ *
+ * Steps executed:
+ *  1. Partial close at 1 % (30%) and 2 % (additional 20%)
+ *  2. Set PROTECT / MAX_PROTECT mode (never downgrade)
+ *  3. Dynamic lock-profit fraction
+ *  4. Move SL = entry + locked_profit × 0.8  (only improve, never reduce)
+ *  5. Return dynamic trailing offset (0.7 / 0.6 / 0.5 %)
+ *  6. Peak tracking + peak-protection exit flag
+ *  7. Enforcement: SL never lowered, protection never removed
+ *
+ * @param {Object} pos           — state.activePosition
+ * @param {number} price         — current mark price
+ * @param {number} rawProfitPct  — raw (non-leveraged) price move %
+ * @returns {Promise<{trailingOffset:number, shouldExitPeakProtect:boolean,
+ *                    mode:string, peak:number, dropFromPeak:number,
+ *                    lockedProfitPct:number}>}
+ */
+async function advancedTradeExecution(pos, price, rawProfitPct) {
+
+  // ── Track peak profit ──────────────────────────────────────
+  if (pos.atxPeak === undefined || rawProfitPct > pos.atxPeak) {
+    pos.atxPeak = rawProfitPct;
+  }
+  const peak = pos.atxPeak;
+
+  // ── STEP 2: Mode — PROTECT (≥3%) / MAX_PROTECT (≥5%) ──────
+  // Never downgrade once activated (Step 7 rule)
+  let mode = "NORMAL";
+  if      (rawProfitPct >= 5.0) mode = "MAX_PROTECT";
+  else if (rawProfitPct >= 3.0) mode = "PROTECT";
+  if      (pos.atxMode === "MAX_PROTECT")                  mode = "MAX_PROTECT";
+  else if (pos.atxMode === "PROTECT" && mode === "NORMAL") mode = "PROTECT";
+  if (pos.atxMode !== mode) {
+    log("TRADE", `[ATX] Mode: ${pos.atxMode || "NORMAL"} → ${mode} | profit=${rawProfitPct.toFixed(3)}%`);
+    broadcastSSE({ type: "atx_mode", mode, profit: rawProfitPct.toFixed(3) });
+  }
+  pos.atxMode = mode;
+
+  // ── STEP 3: Dynamic lock-profit fraction ──────────────────
+  let lockFraction = 0;
+  if      (rawProfitPct >= 7.0) lockFraction = 0.85;
+  else if (rawProfitPct >= 5.0) lockFraction = 0.75;
+  else if (rawProfitPct >= 3.0) lockFraction = 0.60;
+  else if (rawProfitPct >= 2.0) lockFraction = 0.40;
+  else if (rawProfitPct >= 1.0) lockFraction = 0.20;
+
+  const lockedProfitPct = rawProfitPct * lockFraction; // raw price move %
+
+  // ── STEP 4: SL = entry + (locked_profit × 0.8) ────────────
+  // Only improve SL — never reduce (Step 7 rule)
+  if (lockedProfitPct > 0) {
+    const slOffset = lockedProfitPct * 0.8 / 100;
+    const newSL = pos.side === "LONG"
+      ? pos.entryPrice * (1 + slOffset)
+      : pos.entryPrice * (1 - slOffset);
+    const improved = pos.stopLoss == null
+      ? true
+      : pos.side === "LONG" ? newSL > pos.stopLoss : newSL < pos.stopLoss;
+    if (improved) {
+      log("TRADE",
+        `[ATX] SL → ${newSL.toFixed(8)} ` +
+        `(lock ${(lockFraction * 100).toFixed(0)}% × ${rawProfitPct.toFixed(3)}% × 0.8, mode=${mode})`
+      );
+      pos.stopLoss = newSL;
+      broadcastSSE({ type: "atx_sl_update", newSL, mode, profit: rawProfitPct.toFixed(3) });
+      saveState();
+    }
+  }
+
+  // ── STEP 5: Dynamic trailing offset (tighter as profit grows) ─
+  let trailingOffset;
+  if      (rawProfitPct >= 5.0) trailingOffset = 0.5;
+  else if (rawProfitPct >= 3.0) trailingOffset = 0.6;
+  else                           trailingOffset = 0.7;
+
+  // ── STEP 6: Peak protection — drop > 1% from peak → EXIT ──
+  const dropFromPeak = peak - rawProfitPct;
+  const shouldExitPeakProtect = peak >= 1.0 && dropFromPeak > 1.0;
+
+  // ── STEP 1: Multi-tier partial close ──────────────────────
+  // Tier 1: profit ≥ 1% → close 30% of position
+  if (rawProfitPct >= 1.0 && !pos.atxTier1Done) {
+    pos.atxTier1Done = true;
+    const ok = await closePartialByPct("ATX_TP1_30PCT", price, 30);
+    if (ok) {
+      log("TRADE", `[ATX] Tier-1 partial done | 30% closed | profit=${rawProfitPct.toFixed(3)}%`);
+      broadcastSSE({ type: "atx_partial", tier: 1, pct: 30, profit: rawProfitPct.toFixed(3), mode });
+    }
+  }
+  // Tier 2: profit ≥ 2% → close additional 20%
+  else if (rawProfitPct >= 2.0 && pos.atxTier1Done && !pos.atxTier2Done) {
+    pos.atxTier2Done = true;
+    const ok = await closePartialByPct("ATX_TP2_20PCT", price, 20);
+    if (ok) {
+      log("TRADE", `[ATX] Tier-2 partial done | 20% closed | profit=${rawProfitPct.toFixed(3)}%`);
+      broadcastSSE({ type: "atx_partial", tier: 2, pct: 20, profit: rawProfitPct.toFixed(3), mode });
+    }
+  }
+
+  return { trailingOffset, shouldExitPeakProtect, mode, peak, dropFromPeak, lockedProfitPct };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// AI EXIT SPECIALIST ENGINE
+// Steps 1–8: Peak protection (75% rule), early profit lock,
+// smart trailing, reversal detector, dead-trade upgrade,
+// runner mode control.
+// Output: { action, mode, max_profit, locked_profit,
+//           exit_reason, smartTrailing }
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * AI Exit Specialist — called every tick after ATX.
+ *
+ * @param {Object} pos           — state.activePosition
+ * @param {number} price         — current mark price
+ * @param {number} rawProfitPct  — raw (non-leveraged) price move %
+ * @param {Object} ctx           — { klines, indicators, momentumStrong,
+ *                                   momentumWeak, momentumCondCount }
+ * @returns {Promise<{action:string, mode:string, max_profit:number,
+ *                    locked_profit:number, exit_reason:string,
+ *                    smartTrailing:number}>}
+ */
+async function exitSpecialistEngine(pos, price, rawProfitPct, ctx) {
+  const {
+    klines          = [],
+    indicators      = {},
+    momentumStrong  = false,
+    momentumWeak    = false,
+    momentumCondCount = 0,
+  } = ctx;
+  const rsiNow     = indicators.rsi          || 50;
+  const volRatioNow = indicators.volumeRatio || 1;
+
+  // ── STEP 1: Peak tracking (reuse pos.atxPeak set by ATX) ──
+  const peak = pos.atxPeak || Math.max(0, rawProfitPct);
+
+  // ── STEP 2: Hard profit protection — lose at most 25% of peak ─
+  // Exit immediately if current < peak × 0.75
+  if (peak >= 0.5 && rawProfitPct < peak * 0.75) {
+    const lostPct = ((peak - rawProfitPct) / peak * 100).toFixed(1);
+    log("TRADE",
+      `[EXIT] Hard Protect 75% rule — profit ${rawProfitPct.toFixed(3)}% < ` +
+      `peak ${peak.toFixed(3)}% × 0.75 = ${(peak * 0.75).toFixed(3)}% ` +
+      `(${lostPct}% of peak lost) → CLOSE`
+    );
+    broadcastSSE({ type: "exit_peak75", peak, current: rawProfitPct, lostPct });
+    return {
+      action: "CLOSE", mode: pos.atxMode || "NORMAL",
+      max_profit: peak, locked_profit: rawProfitPct,
+      exit_reason: "EXIT_PEAK_75PCT", smartTrailing: 0.6,
+    };
+  }
+
+  // ── STEP 3: Early profit lock — specific SL tiers ─────────
+  // 0.8% → secure +0.3%  |  1.5% → secure +0.7%  |  2.5% → secure +1.5%
+  const LOCK_TIERS_EXIT = [
+    { trigger: 2.5, lockPct: 1.5, id: "L3" },
+    { trigger: 1.5, lockPct: 0.7, id: "L2" },
+    { trigger: 0.8, lockPct: 0.3, id: "L1" },
+  ];
+  let appliedLockPct = 0;
+  for (const tier of LOCK_TIERS_EXIT) {
+    if (rawProfitPct >= tier.trigger) {
+      appliedLockPct = tier.lockPct;
+      const newSL = pos.side === "LONG"
+        ? pos.entryPrice * (1 + tier.lockPct / 100)
+        : pos.entryPrice * (1 - tier.lockPct / 100);
+      const improved = pos.stopLoss == null
+        ? true
+        : pos.side === "LONG" ? newSL > pos.stopLoss : newSL < pos.stopLoss;
+      if (improved) {
+        log("TRADE",
+          `[EXIT] Profit lock ${tier.id} — profit ${rawProfitPct.toFixed(3)}% ≥ ` +
+          `${tier.trigger}% → SL → +${tier.lockPct}% = ${newSL.toFixed(8)}`
+        );
+        pos.stopLoss = newSL;
+        broadcastSSE({ type: "exit_lock", tier: tier.id, lockPct: tier.lockPct, newSL,
+                       profit: rawProfitPct.toFixed(3) });
+        saveState();
+      }
+      break;
+    }
+  }
+
+  // ── STEP 4: Partial close (already handled by ATX — skip) ─
+
+  // ── STEP 5: Smart trailing based on momentum ──────────────
+  let smartTrailing;
+  if      (momentumStrong)                 smartTrailing = 0.4; // tight
+  else if (momentumWeak)                   smartTrailing = 0.8; // loose
+  else                                     smartTrailing = 0.6; // normal
+
+  // ── STEP 6: Reversal Detector ─────────────────────────────
+  let reversalDetected = false;
+  let reversalReason   = "";
+
+  if (klines.length >= 2) {
+    const prev     = klines[klines.length - 2];
+    const curr     = klines[klines.length - 1];
+    const prevBody = Math.abs(prev.close - prev.open);
+    const currBody = Math.abs(curr.close - curr.open);
+    const currRange = curr.high - curr.low || 0.000001;
+
+    // 6a. Bearish engulfing (LONG) — bearish candle swallows prior body
+    if (!reversalDetected && pos.side === "LONG"
+        && curr.close < curr.open
+        && curr.open  >= prev.close
+        && curr.close <= prev.open
+        && currBody   >= prevBody * 0.8) {
+      reversalDetected = true;
+      reversalReason   = "BEARISH_ENGULFING";
+    }
+
+    // 6b. Bullish engulfing (SHORT)
+    if (!reversalDetected && pos.side === "SHORT"
+        && curr.close > curr.open
+        && curr.open  <= prev.close
+        && curr.close >= prev.open
+        && currBody   >= prevBody * 0.8) {
+      reversalDetected = true;
+      reversalReason   = "BULLISH_ENGULFING";
+    }
+
+    // 6c. Volume spike + price rejection (wick > 1.5× body AND > 40% of range)
+    if (!reversalDetected && volRatioNow > 2.0) {
+      const upperWick = curr.high - Math.max(curr.open, curr.close);
+      const lowerWick = Math.min(curr.open, curr.close) - curr.low;
+      if (pos.side === "LONG"
+          && upperWick > currBody * 1.5
+          && upperWick > currRange * 0.4) {
+        reversalDetected = true;
+        reversalReason   = "VOL_SPIKE_REJECTION_HIGH";
+      }
+      if (!reversalDetected && pos.side === "SHORT"
+          && lowerWick > currBody * 1.5
+          && lowerWick > currRange * 0.4) {
+        reversalDetected = true;
+        reversalReason   = "VOL_SPIKE_REJECTION_LOW";
+      }
+    }
+
+    // 6d. RSI divergence — compare with RSI from previous tick (stored in pos)
+    if (!reversalDetected && klines.length >= 4) {
+      const prevRSI  = pos.exitPrevRSI || rsiNow;
+      const priceDir = klines[klines.length - 1].close - klines[klines.length - 4].close;
+      // Bearish divergence: price up, RSI falling
+      if (pos.side === "LONG" && priceDir > 0 && rsiNow < prevRSI - 5) {
+        reversalDetected = true;
+        reversalReason   = "RSI_BEARISH_DIVERGENCE";
+      }
+      // Bullish divergence: price down, RSI rising
+      if (!reversalDetected && pos.side === "SHORT" && priceDir < 0 && rsiNow > prevRSI + 5) {
+        reversalDetected = true;
+        reversalReason   = "RSI_BULLISH_DIVERGENCE";
+      }
+    }
+  }
+  // Update RSI history for next tick
+  pos.exitPrevRSI = rsiNow;
+
+  // Reversal exit — only when there is meaningful profit to protect
+  if (reversalDetected && rawProfitPct >= 0.3) {
+    log("TRADE",
+      `[EXIT] Reversal: ${reversalReason} | profit=${rawProfitPct.toFixed(3)}% ` +
+      `vol=${volRatioNow.toFixed(2)}x RSI=${rsiNow.toFixed(1)} → CLOSE`
+    );
+    broadcastSSE({ type: "exit_reversal", reason: reversalReason,
+                   profit: rawProfitPct.toFixed(3) });
+    return {
+      action: "CLOSE", mode: pos.atxMode || "NORMAL",
+      max_profit: peak, locked_profit: rawProfitPct,
+      exit_reason: `EXIT_REVERSAL_${reversalReason}`, smartTrailing,
+    };
+  }
+
+  // ── STEP 7: Dead trade exit upgrade ───────────────────────
+  // Exit if profit stagnates for 10–20 ticks with no breakout
+  const STAGNANT_LIMIT     = 15;  // ticks without meaningful move
+  const STAGNANT_BAND_PCT  = 0.05; // < ±0.05% = stagnant
+  const STAGNANT_MIN_PROF  = 0.3; // only act if profit ≥ 0.3%
+
+  if (pos.exitStagnantBase === undefined) {
+    pos.exitStagnantBase  = rawProfitPct;
+    pos.exitStagnantCount = 0;
+  }
+  if (Math.abs(rawProfitPct - pos.exitStagnantBase) < STAGNANT_BAND_PCT) {
+    pos.exitStagnantCount++;
+  } else {
+    pos.exitStagnantBase  = rawProfitPct;
+    pos.exitStagnantCount = 0;
+  }
+
+  if (pos.exitStagnantCount >= STAGNANT_LIMIT
+      && rawProfitPct >= STAGNANT_MIN_PROF
+      && !pos.runnerActivated) {
+    log("TRADE",
+      `[EXIT] Dead trade upgrade — stagnant ${pos.exitStagnantCount} ticks ` +
+      `(±${STAGNANT_BAND_PCT}%) | profit=${rawProfitPct.toFixed(3)}% | no breakout → CLOSE`
+    );
+    broadcastSSE({ type: "exit_dead_trade", ticks: pos.exitStagnantCount,
+                   profit: rawProfitPct.toFixed(3) });
+    return {
+      action: "CLOSE", mode: pos.atxMode || "NORMAL",
+      max_profit: peak, locked_profit: rawProfitPct,
+      exit_reason: "EXIT_DEAD_TRADE_STAGNANT", smartTrailing,
+    };
+  }
+
+  // ── STEP 8: Runner mode control ───────────────────────────
+  // Activate at ≥ 3% profit — peak protect + trailing ALWAYS stay active
+  let mode = pos.atxMode || "NORMAL";
+  if (rawProfitPct >= 3.0 && !pos.runnerActivated) {
+    pos.runnerActivated  = true;
+    pos._timeoutDisabled = true;
+    pos.tpTrailPct       = 0.20;
+    mode                 = "RUNNER";
+    log("TRADE",
+      `[EXIT] Runner activated at profit=${rawProfitPct.toFixed(3)}% ` +
+      `— peak protect + trailing remain active (runner never becomes loser)`
+    );
+    broadcastSSE({ type: "exit_runner", profit: rawProfitPct.toFixed(3) });
+  }
+  if (pos.runnerActivated) mode = "RUNNER";
+
+  return {
+    action: "HOLD", mode,
+    max_profit: peak, locked_profit: appliedLockPct,
+    exit_reason: "HOLD", smartTrailing,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────
 // FITUR #6: AUTO COMPOUND
 // ─────────────────────────────────────────────────────────────
@@ -4370,17 +4755,53 @@ async function tradingLoop() {
       }
     }
 
-    // Update trailing stop
+    // ── ADVANCED TRADE EXECUTION AI ───────────────────────────
+    // Handles: partial close (1%/2%), protect mode, lock SL,
+    // dynamic trailing offset, peak protection exit (Step 6).
+    const atxResult = await advancedTradeExecution(pos, price, rawProfitPct);
+    if (atxResult.shouldExitPeakProtect) {
+      log("TRADE",
+        `[ATX] PEAK PROTECT EXIT — peak=${atxResult.peak.toFixed(3)}% ` +
+        `drop=${atxResult.dropFromPeak.toFixed(3)}% > 1% threshold → EXIT NOW`
+      );
+      broadcastSSE({ type: "atx_peak_exit", peak: atxResult.peak, drop: atxResult.dropFromPeak });
+      await closePosition("ATX_PEAK_PROTECT", price);
+      return;
+    }
+    // ATX trailing offset: profit-level based (tighter as profit grows)
+    const atxTrailingOffset = atxResult.trailingOffset;
+
+    // ── AI EXIT SPECIALIST ─────────────────────────────────────
+    // Handles: 75% peak rule, early lock, smart trailing (momentum),
+    // reversal detector, dead-trade upgrade, runner mode.
+    const exitResult = await exitSpecialistEngine(pos, price, rawProfitPct, {
+      klines, indicators, momentumStrong, momentumWeak, momentumCondCount,
+    });
+    if (exitResult.action === "CLOSE") {
+      await closePosition(exitResult.exit_reason, price);
+      return;
+    }
+    // Combine ATX (profit-based) + Exit Specialist (momentum-based) trailing offsets.
+    // Take the tighter (smaller) value — more protection at high profit + strong momentum.
+    const effectiveTrailing = Math.min(atxTrailingOffset, exitResult.smartTrailing);
+
+    // Update trailing stop (combined offset, never reduce SL)
     if (CONFIG.TRAILING_STOP) {
       if (pos.side === "LONG") {
         if (price > pos.trailingHigh) {
           pos.trailingHigh = price;
-          pos.stopLoss = pos.trailingHigh * (1 - CONFIG.TRAILING_OFFSET / 100);
+          const trailSL = pos.trailingHigh * (1 - effectiveTrailing / 100);
+          if (pos.stopLoss == null || trailSL > pos.stopLoss) {
+            pos.stopLoss = trailSL;
+          }
         }
       } else {
         if (price < pos.trailingLow) {
           pos.trailingLow = price;
-          pos.stopLoss = pos.trailingLow * (1 + CONFIG.TRAILING_OFFSET / 100);
+          const trailSL = pos.trailingLow * (1 + effectiveTrailing / 100);
+          if (pos.stopLoss == null || trailSL < pos.stopLoss) {
+            pos.stopLoss = trailSL;
+          }
         }
       }
     }

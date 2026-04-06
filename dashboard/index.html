@@ -531,6 +531,60 @@ select.fsel{background:var(--bg);border:1px solid var(--border2);color:var(--tex
       <div class="row"><div class="lbl">Cooldown Timer</div><div class="val yellow" id="bot-cooldown-timer">--</div></div>
       <div class="row"><div class="lbl">Cooldown Trade</div><div class="val yellow" id="bot-cooldown">0</div></div>
       <div class="row"><div class="lbl">Confidence Req</div><div class="val blue" id="bot-conf-req">--</div></div>
+
+      <div class="divider"></div>
+
+      <!-- ── DAILY TRADE LIMIT ── -->
+      <div style="font-size:10px;font-weight:700;color:var(--text3);letter-spacing:.07em;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between">
+        <span>📊 Trade Limit Harian</span>
+        <span id="daily-limit-badge" class="badge b-green" style="font-size:9px;padding:2px 8px">OK</span>
+      </div>
+
+      <!-- Progress bar hari ini -->
+      <div style="margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text3);margin-bottom:5px">
+          <span>Progress trade hari ini</span>
+          <span id="daily-progress-label">0 / 0</span>
+        </div>
+        <div class="progress-bg" style="height:10px;border-radius:5px">
+          <div id="daily-limit-bar" class="progress-fill" style="width:0%;background:var(--green);border-radius:5px;transition:width .5s,background .3s"></div>
+        </div>
+      </div>
+
+      <!-- 4 stat boxes -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px">
+        <!-- Trade hari ini -->
+        <div style="text-align:center;padding:10px 6px;background:var(--bg);border-radius:var(--r-sm);border:1px solid var(--border)">
+          <div style="font-size:9px;color:var(--text3);margin-bottom:4px">TRADE HARI INI</div>
+          <div id="daily-trade-count" style="font-size:22px;font-weight:800;line-height:1">0</div>
+          <div id="daily-trade-limit" style="font-size:10px;color:var(--text3);margin-top:2px">dari 0</div>
+        </div>
+        <!-- Sniper quota -->
+        <div style="text-align:center;padding:10px 6px;background:var(--bg);border-radius:var(--r-sm);border:1px solid var(--border)">
+          <div style="font-size:9px;color:var(--text3);margin-bottom:4px">SNIPER QUOTA</div>
+          <div id="daily-sniper-used" style="font-size:22px;font-weight:800;line-height:1">0</div>
+          <div id="daily-sniper-max" style="font-size:10px;color:var(--text3);margin-top:2px">dari 0</div>
+        </div>
+        <!-- Jam ini -->
+        <div style="text-align:center;padding:10px 6px;background:var(--bg);border-radius:var(--r-sm);border:1px solid var(--border)">
+          <div style="font-size:9px;color:var(--text3);margin-bottom:4px">JAM INI</div>
+          <div id="daily-hourly-count" style="font-size:22px;font-weight:800;line-height:1">0</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:2px">dari <span id="daily-hourly-max">3</span> /jam</div>
+        </div>
+        <!-- Sisa hari ini -->
+        <div style="text-align:center;padding:10px 6px;background:var(--bg);border-radius:var(--r-sm);border:1px solid var(--border)">
+          <div style="font-size:9px;color:var(--text3);margin-bottom:4px">SISA HARI INI</div>
+          <div id="daily-remaining" style="font-size:22px;font-weight:800;line-height:1;color:var(--green)">--</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:2px">slot tersedia</div>
+        </div>
+      </div>
+
+      <!-- Mode info row -->
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">
+        <div id="daily-mode-badge" class="badge b-purple" style="font-size:9px">SNIPER MODE</div>
+        <div id="daily-date-badge" class="badge b-blue" style="font-size:9px">--</div>
+      </div>
+
       <div class="divider"></div>
       <!-- Learning Engine -->
       <div style="font-size:10px;color:var(--text3);margin-bottom:8px">🤖 AI LEARNING</div>
@@ -813,6 +867,17 @@ function handle(d) {
       if (d.ema21) S.ema21 = d.ema21;
       if (d.klines?.length) loadPriceChart(d.klines);
       if (d.tradeLog) renderLiveTrades(d.tradeLog);
+      // Daily limit fields from init
+      if (d.dailyTradeCount  !== undefined) S.dailyTradeCount  = d.dailyTradeCount;
+      if (d.dailyLimit       !== undefined) S.dailyLimit       = d.dailyLimit;
+      if (d.dailyLimitReached!== undefined) S.dailyLimitReached= d.dailyLimitReached;
+      if (d.dailyRemaining   !== undefined) S.dailyRemaining   = d.dailyRemaining;
+      if (d.dailyTradeDate   !== undefined) S.dailyTradeDate   = d.dailyTradeDate;
+      if (d.sniperMode       !== undefined) S.sniperMode       = d.sniperMode;
+      if (d.maxSniperTrades  !== undefined) S.maxSniperTrades  = d.maxSniperTrades;
+      if (d.maxTradesPerDay  !== undefined) S.maxTradesPerDay  = d.maxTradesPerDay;
+      if (d.maxTradesPerHour !== undefined) S.maxTradesPerHour = d.maxTradesPerHour;
+      if (d.hourlyTradeCount !== undefined) S.hourlyTradeCount = d.hourlyTradeCount;
       renderHeader(d);
       renderPosition();
       renderBotStatus();
@@ -904,6 +969,17 @@ function applyStats(st) {
   if (st.totalPnL !== undefined)    S.totalPnL    = st.totalPnL;
   if (st.lossStreak !== undefined)  S.lossStreak  = st.lossStreak;
   if (st.winStreak !== undefined)   S.winStreak   = st.winStreak;
+  // Daily limit fields
+  if (st.dailyTradeCount  !== undefined) S.dailyTradeCount  = st.dailyTradeCount;
+  if (st.dailyLimit       !== undefined) S.dailyLimit       = st.dailyLimit;
+  if (st.dailyLimitReached!== undefined) S.dailyLimitReached= st.dailyLimitReached;
+  if (st.dailyRemaining   !== undefined) S.dailyRemaining   = st.dailyRemaining;
+  if (st.dailyTradeDate   !== undefined) S.dailyTradeDate   = st.dailyTradeDate;
+  if (st.sniperMode       !== undefined) S.sniperMode       = st.sniperMode;
+  if (st.maxSniperTrades  !== undefined) S.maxSniperTrades  = st.maxSniperTrades;
+  if (st.maxTradesPerDay  !== undefined) S.maxTradesPerDay  = st.maxTradesPerDay;
+  if (st.maxTradesPerHour !== undefined) S.maxTradesPerHour = st.maxTradesPerHour;
+  if (st.hourlyTradeCount !== undefined) S.hourlyTradeCount = st.hourlyTradeCount;
   renderKPI();
   renderBotStatus();
 }
@@ -1074,6 +1150,79 @@ function renderPosition() {
 function renderBotStatus() {
   set('bot-loss-streak', S.lossStreak || 0, S.lossStreak>=2?'red':'');
   set('bot-win-streak',  S.winStreak  || 0, S.winStreak>=2?'green':'');
+
+  // ── Daily Trade Limit ──────────────────────────────────────
+  const count    = S.dailyTradeCount  || 0;
+  const limit    = S.dailyLimit       || (S.sniperMode ? (S.maxSniperTrades||3) : (S.maxTradesPerDay||5));
+  const hourly   = S.hourlyTradeCount || 0;
+  const hourMax  = S.maxTradesPerHour || 3;
+  const sniperMax= S.maxSniperTrades  || 3;
+  const remaining= Math.max(0, limit - count);
+  const reached  = count >= limit;
+  const pct      = limit > 0 ? Math.min(100, (count / limit) * 100) : 0;
+
+  // Progress bar colour: green → yellow → red
+  const barColor = pct >= 100 ? 'var(--red)' : pct >= 66 ? 'var(--yellow)' : 'var(--green)';
+  const barEl = document.getElementById('daily-limit-bar');
+  if (barEl) { barEl.style.width = pct + '%'; barEl.style.background = barColor; }
+
+  // Progress label e.g. "2 / 3"
+  const progEl = document.getElementById('daily-progress-label');
+  if (progEl) progEl.textContent = count + ' / ' + limit;
+
+  // Status badge
+  const badgeEl = document.getElementById('daily-limit-badge');
+  if (badgeEl) {
+    if (reached) {
+      badgeEl.textContent = '🛑 LIMIT TERCAPAI';
+      badgeEl.className   = 'badge b-red';
+    } else if (pct >= 66) {
+      badgeEl.textContent = '⚠️ HAMPIR HABIS';
+      badgeEl.className   = 'badge b-yellow';
+    } else {
+      badgeEl.textContent = '✅ OK';
+      badgeEl.className   = 'badge b-green';
+    }
+  }
+
+  // Trade hari ini box
+  const countEl = document.getElementById('daily-trade-count');
+  if (countEl) { countEl.textContent = count; countEl.style.color = reached ? 'var(--red)' : remaining===1 ? 'var(--yellow)' : 'var(--text)'; }
+  const limitEl = document.getElementById('daily-trade-limit');
+  if (limitEl) limitEl.textContent = 'dari ' + limit;
+
+  // Sniper quota box (same count, sniper max displayed)
+  const sniperUsedEl = document.getElementById('daily-sniper-used');
+  if (sniperUsedEl) { sniperUsedEl.textContent = count; sniperUsedEl.style.color = count >= sniperMax ? 'var(--red)' : 'var(--text)'; }
+  const sniperMaxEl = document.getElementById('daily-sniper-max');
+  if (sniperMaxEl) sniperMaxEl.textContent = 'dari ' + sniperMax + ' (sniper)';
+
+  // Hourly box
+  const hourlyEl = document.getElementById('daily-hourly-count');
+  if (hourlyEl) { hourlyEl.textContent = hourly; hourlyEl.style.color = hourly >= hourMax ? 'var(--red)' : hourly >= hourMax-1 ? 'var(--yellow)' : 'var(--text)'; }
+  const hourMaxEl = document.getElementById('daily-hourly-max');
+  if (hourMaxEl) hourMaxEl.textContent = hourMax;
+
+  // Remaining box
+  const remEl = document.getElementById('daily-remaining');
+  if (remEl) {
+    remEl.textContent = remaining;
+    remEl.style.color = remaining === 0 ? 'var(--red)' : remaining === 1 ? 'var(--yellow)' : 'var(--green)';
+  }
+
+  // Mode badge
+  const modeEl = document.getElementById('daily-mode-badge');
+  if (modeEl) {
+    modeEl.textContent = S.sniperMode ? '🎯 SNIPER MODE' : '📊 NORMAL MODE';
+    modeEl.className   = 'badge ' + (S.sniperMode ? 'b-purple' : 'b-blue');
+  }
+
+  // Date badge — today's date
+  const dateEl = document.getElementById('daily-date-badge');
+  if (dateEl) {
+    const d = S.dailyTradeDate || new Date().toISOString().slice(0,10);
+    dateEl.textContent = '📅 ' + d;
+  }
 }
 
 function renderPhase(ph) {

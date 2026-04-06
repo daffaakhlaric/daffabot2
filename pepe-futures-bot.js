@@ -6451,6 +6451,7 @@ async function tradingLoop() {
           state.dailyTradeCount = (state.dailyTradeCount || 0) + 1;
           state.hourlyTrades = (state.hourlyTrades || []);
           state.hourlyTrades.push(Date.now());
+          saveState(); // ← persist counter segera agar restart tidak kehilangan count
           // Mode 5: reset scale-in flag
           state.scaleInDone = false;
           // Store quality for dashboard
@@ -6744,11 +6745,17 @@ function saveState() {
     // Big Win Protection state
     lastWinPct:       state.lastWinPct,
     cooldownActive:   state.cooldownActive,
-    cooldownUntil:   state.cooldownUntil,
+    cooldownUntil:    state.cooldownUntil,
     lossesAfterWin:   state.lossesAfterWin,
     // Revenge Trading Prevention state
     lossModeActive:   state.lossModeActive,
     lossModeUntil:    state.lossModeUntil,
+    // ── Daily / Hourly Trade Limit (persisted across restarts) ──
+    dailyTradeCount:  state.dailyTradeCount  || 0,
+    dailyTradeDate:   state.dailyTradeDate   || '',
+    hourlyTrades:     (state.hourlyTrades    || []).filter(t => Date.now() - t < 3600000),
+    dailyLossUsdt:    state.dailyLossUsdt    || 0,
+    dailyLossPaused:  state.dailyLossPaused  || false,
   }, null, 2));
 }
 
@@ -6885,6 +6892,24 @@ function loadPersistedData() {
       if (saved.initialBalance && saved.initialBalance > 0) {
         state.initialBalance = saved.initialBalance;
       }
+      // ── Restore daily/hourly trade counters ──────────────────
+      // Only restore if same calendar day — otherwise let it reset naturally
+      const todayNow = new Date().toISOString().slice(0, 10);
+      if (saved.dailyTradeDate === todayNow) {
+        state.dailyTradeCount = saved.dailyTradeCount || 0;
+        state.dailyTradeDate  = saved.dailyTradeDate;
+        state.dailyLossUsdt   = saved.dailyLossUsdt   || 0;
+        state.dailyLossPaused = saved.dailyLossPaused || false;
+        // Restore only trades within last 60 min
+        state.hourlyTrades    = (saved.hourlyTrades || []).filter(t => Date.now() - t < 3600000);
+        log("INFO",
+          `Daily limit dipulihkan: ${state.dailyTradeCount} trade hari ini` +
+          ` | Hourly: ${state.hourlyTrades.length} dalam 60min` +
+          ` | DailyLoss: ${state.dailyLossUsdt.toFixed(3)} USDT`
+        );
+      } else {
+        log("INFO", `Hari baru (${todayNow}) — daily counter direset`);
+      }
     }
     if (fs.existsSync(CONFIG.STATS_FILE)) {
       stats = { ...stats, ...JSON.parse(fs.readFileSync(CONFIG.STATS_FILE, "utf8")) };
@@ -6944,6 +6969,8 @@ function startDashboard() {
         drawdown:       (state.peakBalance || 0) > 0 ? (((state.peakBalance - state.currentBalance) / state.peakBalance) * 100) : 0,
         history:        state.balanceHistory || [],
       };
+      const _initDailyLimit = CONFIG.SNIPER_MODE ? CONFIG.MAX_SNIPER_TRADES : CONFIG.MAX_TRADES_PER_DAY;
+      const _initHourlyCount = (state.hourlyTrades || []).filter(t => Date.now() - t < 3600000).length;
       res.write(`data: ${JSON.stringify({
         type:        "init",
         price:       state.lastPrice,
@@ -6963,6 +6990,17 @@ function startDashboard() {
         phase:       state.phase,
         phaseCooldownLeft: state.phaseCooldownLeft,
         symbol:      CONFIG.SYMBOL,
+        // Daily Trade Limit
+        dailyTradeCount:   state.dailyTradeCount   || 0,
+        dailyTradeDate:    state.dailyTradeDate    || '',
+        dailyLimit:        _initDailyLimit,
+        dailyLimitReached: (state.dailyTradeCount || 0) >= _initDailyLimit,
+        dailyRemaining:    Math.max(0, _initDailyLimit - (state.dailyTradeCount || 0)),
+        sniperMode:        CONFIG.SNIPER_MODE,
+        maxSniperTrades:   CONFIG.MAX_SNIPER_TRADES,
+        maxTradesPerDay:   CONFIG.MAX_TRADES_PER_DAY,
+        maxTradesPerHour:  CONFIG.MAX_TRADES_PER_HOUR,
+        hourlyTradeCount:  _initHourlyCount,
       })}\n\n`);
 
       req.on("close", () => {
@@ -7322,6 +7360,9 @@ function startDashboard() {
       ? Math.abs(stats.currentStreak)
       : 0;
 
+    const _dailyLimit = CONFIG.SNIPER_MODE ? CONFIG.MAX_SNIPER_TRADES : CONFIG.MAX_TRADES_PER_DAY;
+    const _hourlyCount = (state.hourlyTrades || []).filter(t => Date.now() - t < 3600000).length;
+
     broadcastSSE({
       type:             "stats",
       ...stats,
@@ -7344,6 +7385,17 @@ function startDashboard() {
         ? "🧪 TRAINING MODE (NO COOLDOWN)"
         : (lossStreak >= 5 ? "🚨 DEFENSIVE MODE" : "🟢 NORMAL TRADING"),
       isDryRun: CONFIG.DRY_RUN,
+      // ── Daily Trade Limit ──
+      dailyTradeCount:    state.dailyTradeCount   || 0,
+      dailyTradeDate:     state.dailyTradeDate    || '',
+      dailyLimit:         _dailyLimit,
+      dailyLimitReached:  (state.dailyTradeCount || 0) >= _dailyLimit,
+      dailyRemaining:     Math.max(0, _dailyLimit - (state.dailyTradeCount || 0)),
+      sniperMode:         CONFIG.SNIPER_MODE,
+      maxSniperTrades:    CONFIG.MAX_SNIPER_TRADES,
+      maxTradesPerDay:    CONFIG.MAX_TRADES_PER_DAY,
+      maxTradesPerHour:   CONFIG.MAX_TRADES_PER_HOUR,
+      hourlyTradeCount:   _hourlyCount,
     });
   }, 30000);
 

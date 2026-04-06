@@ -759,6 +759,65 @@ async function migrateFromTradesJson(filePath = "./trades.json") {
 }
 
 // ─────────────────────────────────────────────────────────────
+// getDailyStats()
+// Query trades table for today's trade count, wins, losses,
+// and pnl — used to populate the Daily Limit dashboard widget.
+// Returns safe defaults if Supabase is disabled or query fails.
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * @param {boolean} dryRun   — filter by dry_run column
+ * @param {string}  symbol   — e.g. "BTCUSDT" (optional, null = all)
+ * @returns {Promise<{
+ *   count: number, wins: number, losses: number,
+ *   pnlUsdt: number, date: string
+ * }>}
+ */
+async function getDailyStats(dryRun = true, symbol = null) {
+  const empty = { count: 0, wins: 0, losses: 0, pnlUsdt: 0,
+                  date: new Date().toISOString().slice(0, 10) };
+  if (!isEnabled()) return empty;
+  try {
+    // Today's date range in UTC (Supabase stores close_time as ISO string)
+    const now      = new Date();
+    const todayUTC = now.toISOString().slice(0, 10);           // "2026-04-06"
+    const startISO = `${todayUTC}T00:00:00.000Z`;
+    const endISO   = `${todayUTC}T23:59:59.999Z`;
+
+    let query = supabase
+      .from("trades")
+      .select("result, pnl_usdt")
+      .eq("dry_run", dryRun)
+      .gte("close_time", startISO)
+      .lte("close_time", endISO);
+
+    if (symbol) query = query.eq("symbol", symbol);
+
+    const { data, error } = await query;
+    if (error) {
+      console.warn("[SUPABASE] getDailyStats error:", error.message);
+      return empty;
+    }
+
+    const rows   = data || [];
+    const wins   = rows.filter(r => r.result === "WIN").length;
+    const losses = rows.filter(r => r.result === "LOSS").length;
+    const pnl    = rows.reduce((s, r) => s + (parseFloat(r.pnl_usdt) || 0), 0);
+
+    return {
+      count:    rows.length,
+      wins,
+      losses,
+      pnlUsdt:  parseFloat(pnl.toFixed(4)),
+      date:     todayUTC,
+    };
+  } catch (err) {
+    console.error("[SUPABASE] getDailyStats exception:", err.message);
+    return empty;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 // EXPORTS
 // ─────────────────────────────────────────────────────────────
 module.exports = {
@@ -769,6 +828,8 @@ module.exports = {
   saveSignal,
   updateStats,
   saveEquity,
+  // Daily stats for dashboard
+  getDailyStats,
   // Trade tracker
   updateTradeTracker,
   consumeTracker,

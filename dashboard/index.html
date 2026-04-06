@@ -579,6 +579,12 @@ select.fsel{background:var(--bg);border:1px solid var(--border2);color:var(--tex
         </div>
       </div>
 
+      <!-- W/L PnL hari ini dari Supabase -->
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg);border-radius:var(--r-sm);border:1px solid var(--border);margin-bottom:8px">
+        <div style="font-size:9px;color:var(--text3)">HASIL HARI INI</div>
+        <div id="daily-wl" style="font-size:12px">—</div>
+      </div>
+
       <!-- Mode info row -->
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">
         <div id="daily-mode-badge" class="badge b-purple" style="font-size:9px">SNIPER MODE</div>
@@ -867,12 +873,15 @@ function handle(d) {
       if (d.ema21) S.ema21 = d.ema21;
       if (d.klines?.length) loadPriceChart(d.klines);
       if (d.tradeLog) renderLiveTrades(d.tradeLog);
-      // Daily limit fields from init
+      // Daily limit fields from init (Supabase-backed)
       if (d.dailyTradeCount  !== undefined) S.dailyTradeCount  = d.dailyTradeCount;
       if (d.dailyLimit       !== undefined) S.dailyLimit       = d.dailyLimit;
       if (d.dailyLimitReached!== undefined) S.dailyLimitReached= d.dailyLimitReached;
       if (d.dailyRemaining   !== undefined) S.dailyRemaining   = d.dailyRemaining;
       if (d.dailyTradeDate   !== undefined) S.dailyTradeDate   = d.dailyTradeDate;
+      if (d.dailyWins        !== undefined) S.dailyWins        = d.dailyWins;
+      if (d.dailyLosses      !== undefined) S.dailyLosses      = d.dailyLosses;
+      if (d.dailyPnlUsdt     !== undefined) S.dailyPnlUsdt     = d.dailyPnlUsdt;
       if (d.sniperMode       !== undefined) S.sniperMode       = d.sniperMode;
       if (d.maxSniperTrades  !== undefined) S.maxSniperTrades  = d.maxSniperTrades;
       if (d.maxTradesPerDay  !== undefined) S.maxTradesPerDay  = d.maxTradesPerDay;
@@ -975,6 +984,9 @@ function applyStats(st) {
   if (st.dailyLimitReached!== undefined) S.dailyLimitReached= st.dailyLimitReached;
   if (st.dailyRemaining   !== undefined) S.dailyRemaining   = st.dailyRemaining;
   if (st.dailyTradeDate   !== undefined) S.dailyTradeDate   = st.dailyTradeDate;
+  if (st.dailyWins        !== undefined) S.dailyWins        = st.dailyWins;
+  if (st.dailyLosses      !== undefined) S.dailyLosses      = st.dailyLosses;
+  if (st.dailyPnlUsdt     !== undefined) S.dailyPnlUsdt     = st.dailyPnlUsdt;
   if (st.sniperMode       !== undefined) S.sniperMode       = st.sniperMode;
   if (st.maxSniperTrades  !== undefined) S.maxSniperTrades  = st.maxSniperTrades;
   if (st.maxTradesPerDay  !== undefined) S.maxTradesPerDay  = st.maxTradesPerDay;
@@ -1222,6 +1234,19 @@ function renderBotStatus() {
   if (dateEl) {
     const d = S.dailyTradeDate || new Date().toISOString().slice(0,10);
     dateEl.textContent = '📅 ' + d;
+  }
+
+  // W/L dan PnL hari ini (dari Supabase)
+  const wlEl = document.getElementById('daily-wl');
+  if (wlEl) {
+    const w   = S.dailyWins   || 0;
+    const l   = S.dailyLosses || 0;
+    const pnl = S.dailyPnlUsdt || 0;
+    const pnlStr = (pnl >= 0 ? '+' : '') + pnl.toFixed(3) + ' USDT';
+    wlEl.innerHTML =
+      `<span class="green fw7">${w}W</span>` +
+      ` / <span class="red fw7">${l}L</span>` +
+      ` &nbsp;<span style="color:${pnl>=0?'var(--green)':'var(--red)'};font-size:11px">${pnlStr}</span>`;
   }
 }
 

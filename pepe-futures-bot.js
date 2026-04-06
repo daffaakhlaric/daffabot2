@@ -6969,8 +6969,18 @@ function startDashboard() {
         drawdown:       (state.peakBalance || 0) > 0 ? (((state.peakBalance - state.currentBalance) / state.peakBalance) * 100) : 0,
         history:        state.balanceHistory || [],
       };
-      const _initDailyLimit = CONFIG.SNIPER_MODE ? CONFIG.MAX_SNIPER_TRADES : CONFIG.MAX_TRADES_PER_DAY;
+      const _initDailyLimit  = CONFIG.SNIPER_MODE ? CONFIG.MAX_SNIPER_TRADES : CONFIG.MAX_TRADES_PER_DAY;
       const _initHourlyCount = (state.hourlyTrades || []).filter(t => Date.now() - t < 3600000).length;
+      // Ambil data harian terkini dari Supabase untuk init event
+      const _initDaily = await db.getDailyStats(CONFIG.DRY_RUN, CONFIG.SYMBOL).catch(() => ({
+        count: state.dailyTradeCount || 0, wins: 0, losses: 0, pnlUsdt: 0,
+        date: new Date().toISOString().slice(0, 10),
+      }));
+      // Sync state counter
+      if (_initDaily.date === new Date().toISOString().slice(0, 10)) {
+        state.dailyTradeCount = _initDaily.count;
+        state.dailyTradeDate  = _initDaily.date;
+      }
       res.write(`data: ${JSON.stringify({
         type:        "init",
         price:       state.lastPrice,
@@ -6990,12 +7000,15 @@ function startDashboard() {
         phase:       state.phase,
         phaseCooldownLeft: state.phaseCooldownLeft,
         symbol:      CONFIG.SYMBOL,
-        // Daily Trade Limit
-        dailyTradeCount:   state.dailyTradeCount   || 0,
-        dailyTradeDate:    state.dailyTradeDate    || '',
+        // Daily Trade Limit — sumber: Supabase
+        dailyTradeCount:   _initDaily.count,
+        dailyTradeDate:    _initDaily.date,
+        dailyWins:         _initDaily.wins,
+        dailyLosses:       _initDaily.losses,
+        dailyPnlUsdt:      _initDaily.pnlUsdt,
         dailyLimit:        _initDailyLimit,
-        dailyLimitReached: (state.dailyTradeCount || 0) >= _initDailyLimit,
-        dailyRemaining:    Math.max(0, _initDailyLimit - (state.dailyTradeCount || 0)),
+        dailyLimitReached: _initDaily.count >= _initDailyLimit,
+        dailyRemaining:    Math.max(0, _initDailyLimit - _initDaily.count),
         sniperMode:        CONFIG.SNIPER_MODE,
         maxSniperTrades:   CONFIG.MAX_SNIPER_TRADES,
         maxTradesPerDay:   CONFIG.MAX_TRADES_PER_DAY,
@@ -7352,6 +7365,26 @@ function startDashboard() {
     log("INFO", `Dashboard aktif di http://localhost:${CONFIG.DASHBOARD_PORT}`);
   });
 
+  // ── Fetch daily stats dari Supabase setiap 60 detik ─────────
+  // Hasil disimpan di cache agar broadcast 30s bisa pakai tanpa await
+  let _supabaseDailyCache = { count: 0, wins: 0, losses: 0, pnlUsdt: 0,
+                               date: new Date().toISOString().slice(0, 10) };
+  async function refreshDailyCache() {
+    try {
+      const result = await db.getDailyStats(CONFIG.DRY_RUN, CONFIG.SYMBOL);
+      _supabaseDailyCache = result;
+      // Sync state counter agar limit check pakai angka Supabase
+      const todayNow = new Date().toISOString().slice(0, 10);
+      if (result.date === todayNow) {
+        state.dailyTradeCount = result.count;
+        state.dailyTradeDate  = result.date;
+      }
+    } catch (_) {}
+  }
+  // Fetch langsung saat dashboard connect
+  refreshDailyCache();
+  setInterval(refreshDailyCache, 60000); // refresh tiap 60 detik
+
   // Kirim stats + win rate setiap 30 detik
   setInterval(() => {
     const lossStreak = stats.losses > 0 && stats.wins === 0
@@ -7360,8 +7393,10 @@ function startDashboard() {
       ? Math.abs(stats.currentStreak)
       : 0;
 
-    const _dailyLimit = CONFIG.SNIPER_MODE ? CONFIG.MAX_SNIPER_TRADES : CONFIG.MAX_TRADES_PER_DAY;
-    const _hourlyCount = (state.hourlyTrades || []).filter(t => Date.now() - t < 3600000).length;
+    const _dailyLimit   = CONFIG.SNIPER_MODE ? CONFIG.MAX_SNIPER_TRADES : CONFIG.MAX_TRADES_PER_DAY;
+    const _hourlyCount  = (state.hourlyTrades || []).filter(t => Date.now() - t < 3600000).length;
+    // Gunakan data Supabase sebagai sumber utama, fallback ke state
+    const _dailyCount   = _supabaseDailyCache.count || state.dailyTradeCount || 0;
 
     broadcastSSE({
       type:             "stats",
@@ -7385,12 +7420,15 @@ function startDashboard() {
         ? "🧪 TRAINING MODE (NO COOLDOWN)"
         : (lossStreak >= 5 ? "🚨 DEFENSIVE MODE" : "🟢 NORMAL TRADING"),
       isDryRun: CONFIG.DRY_RUN,
-      // ── Daily Trade Limit ──
-      dailyTradeCount:    state.dailyTradeCount   || 0,
-      dailyTradeDate:     state.dailyTradeDate    || '',
+      // ── Daily Trade Limit (sumber: Supabase real-time) ──
+      dailyTradeCount:    _dailyCount,
+      dailyTradeDate:     _supabaseDailyCache.date || state.dailyTradeDate || '',
+      dailyWins:          _supabaseDailyCache.wins   || 0,
+      dailyLosses:        _supabaseDailyCache.losses || 0,
+      dailyPnlUsdt:       _supabaseDailyCache.pnlUsdt || 0,
       dailyLimit:         _dailyLimit,
-      dailyLimitReached:  (state.dailyTradeCount || 0) >= _dailyLimit,
-      dailyRemaining:     Math.max(0, _dailyLimit - (state.dailyTradeCount || 0)),
+      dailyLimitReached:  _dailyCount >= _dailyLimit,
+      dailyRemaining:     Math.max(0, _dailyLimit - _dailyCount),
       sniperMode:         CONFIG.SNIPER_MODE,
       maxSniperTrades:    CONFIG.MAX_SNIPER_TRADES,
       maxTradesPerDay:    CONFIG.MAX_TRADES_PER_DAY,

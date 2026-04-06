@@ -1728,6 +1728,130 @@ function calcIndicators(klines) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// AI MARKET FILTER — 7-step gate before any entry
+// Returns { status, trend, volume, atr, structure, reason, blocked }
+// ─────────────────────────────────────────────────────────────
+function runMarketFilter(klines, indicators, session, price) {
+  const reasons = [];
+  const blocks  = [];
+
+  // ── STEP 1: TREND FILTER (EMA20 vs EMA50) ───────────────────
+  const closes   = klines.map(k => k.close);
+  const ema20    = calcEMA(closes, Math.min(20, closes.length));
+  const ema50    = calcEMA(closes, Math.min(50, closes.length));
+  const emaSep   = ema50 > 0 ? Math.abs((ema20 - ema50) / ema50 * 100) : 0;
+  const emaBull  = ema20 > ema50;
+  const emaValid = emaSep >= 0.10; // gap must be > 0.1%
+  let trend;
+  if (!emaValid) {
+    trend = "SIDEWAYS";
+    blocks.push(`EMA20/50 sep=${emaSep.toFixed(3)}% < 0.10% — SIDEWAYS`);
+  } else {
+    trend = emaBull ? "BULLISH" : "BEARISH";
+    reasons.push(`Trend ${trend} (EMA sep=${emaSep.toFixed(3)}%)`);
+  }
+
+  // ── STEP 2: VOLUME FILTER ────────────────────────────────────
+  const volRatio = indicators.volumeRatio || 0;
+  if (volRatio < 0.8) {
+    blocks.push(`Volume ${volRatio.toFixed(2)}x < 0.80x — thin market`);
+  } else if (volRatio < 1.0) {
+    reasons.push(`Volume ${volRatio.toFixed(2)}x (low, caution)`);
+  } else {
+    reasons.push(`Volume ${volRatio.toFixed(2)}x OK`);
+  }
+
+  // ── STEP 3: VOLATILITY FILTER (ATR) ─────────────────────────
+  // Use current atrPct approximation from last 5 candles
+  const recentHL = klines.slice(-5).map(c => c.high - c.low);
+  const atrEst   = recentHL.reduce((a, b) => a + b, 0) / recentHL.length;
+  const atrPctEst = price > 0 ? atrEst / price * 100 : 0;
+  if (atrPctEst < 0.15) {
+    blocks.push(`ATR ${atrPctEst.toFixed(3)}% < 0.15% — no movement`);
+  } else {
+    reasons.push(`ATR ${atrPctEst.toFixed(3)}% OK`);
+  }
+
+  // ── STEP 4: STRUCTURE FILTER (HH/HL or LH/LL) ───────────────
+  const structureOK = (() => {
+    if (klines.length < 6) return true; // not enough data — pass
+    const slice = klines.slice(-6);
+    const highs = slice.map(c => c.high);
+    const lows  = slice.map(c => c.low);
+    // Bull structure: last high > previous high AND last low > previous low
+    const lastHigh = highs[highs.length - 1];
+    const prevHigh = highs[highs.length - 3]; // 3 candles back
+    const lastLow  = lows[lows.length - 1];
+    const prevLow  = lows[lows.length - 3];
+    const hhhl = lastHigh > prevHigh && lastLow  > prevLow;  // HH + HL (bull)
+    const lhll = lastHigh < prevHigh && lastLow  < prevLow;  // LH + LL (bear)
+    return hhhl || lhll;
+  })();
+  if (!structureOK) {
+    blocks.push("Structure unclear — no HH/HL or LH/LL pattern");
+  } else {
+    reasons.push("Structure OK (HH/HL or LH/LL)");
+  }
+
+  // ── STEP 5: SESSION FILTER ───────────────────────────────────
+  const sessionOK = session.session === "LONDON" || session.session === "NEW_YORK"
+                 || session.session === "ALL_SESSIONS";
+  if (!sessionOK) {
+    blocks.push(`Session ${session.session} — only London/NY allowed`);
+  } else {
+    reasons.push(`Session ${session.session} OK`);
+  }
+
+  // ── STEP 6: CHOPPY MARKET DETECTION ─────────────────────────
+  // Choppy = small range AND high wick ratio AND no clear breakout
+  const choppy = (() => {
+    if (klines.length < 8) return false;
+    const slice = klines.slice(-8);
+    // Average wick-to-range ratio (wicks dominate = choppy)
+    let totalWickRatio = 0;
+    let smallBodyCount = 0;
+    slice.forEach(c => {
+      const range = c.high - c.low;
+      if (range === 0) return;
+      const body     = Math.abs(c.close - c.open);
+      const wickSize = range - body;
+      totalWickRatio += wickSize / range;
+      if (body / range < 0.3) smallBodyCount++; // body < 30% of range = wicky
+    });
+    const avgWickRatio = totalWickRatio / slice.length;
+    const wickDominated = avgWickRatio > 0.60; // >60% wick avg = choppy
+    const manyWicky     = smallBodyCount >= 5;  // ≥5 of 8 candles wicky
+    // Combine with tight range check
+    const hi8 = Math.max(...slice.map(c => c.high));
+    const lo8 = Math.min(...slice.map(c => c.low));
+    const range8Pct = price > 0 ? (hi8 - lo8) / price * 100 : 1;
+    const tightRange = range8Pct < 0.20; // 8-candle range < 0.20%
+    return (wickDominated && manyWicky) || (tightRange && manyWicky);
+  })();
+  if (choppy) {
+    blocks.push("Choppy market — wicks dominant, no clear breakout");
+  } else {
+    reasons.push("Market not choppy");
+  }
+
+  // ── STEP 7: FINAL DECISION ───────────────────────────────────
+  const blocked = blocks.length > 0;
+  const status  = blocked ? "NO_TRADE" : "TRADE_ALLOWED";
+
+  return {
+    status,
+    trend,
+    volume:    parseFloat(volRatio.toFixed(3)),
+    atr:       parseFloat(atrPctEst.toFixed(4)),
+    structure: structureOK,
+    choppy,
+    reason:    blocked ? blocks.join(" | ") : reasons.join(" | "),
+    blocks,
+    reasons,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
 // INDIKATOR TAMBAHAN: BB, VWAP, VOLUME PROFILE, CANDLE PATTERN
 // ─────────────────────────────────────────────────────────────
 
@@ -4530,6 +4654,31 @@ async function tradingLoop() {
     }
     const tradeSide = htf.trend; // "BULLISH" atau "BEARISH"
 
+    // ════════════════════════════════════════════════════════════
+    // AI MARKET FILTER — 7-step gate
+    // Runs every tick; result cached in smcState for dashboard
+    // ════════════════════════════════════════════════════════════
+    const mf = runMarketFilter(klines, indicators, session, price);
+    smcState.lastMarketFilter = mf; // expose to dashboard
+    if (mf.status === "NO_TRADE") {
+      if (state.tickCount % 6 === 0)
+        log("FILTER", `[MKT FILTER] NO_TRADE | ${mf.reason}`);
+      broadcastSSE({
+        type: "market_filter",
+        status:    mf.status,
+        trend:     mf.trend,
+        volume:    mf.volume,
+        atr:       mf.atr,
+        structure: mf.structure,
+        choppy:    mf.choppy,
+        reason:    mf.reason,
+      });
+      return;
+    }
+    // TRADE_ALLOWED — log only on change or every 30s
+    if (state.tickCount % 3 === 0)
+      log("INFO", `[MKT FILTER] TRADE_ALLOWED | trend=${mf.trend} vol=${mf.volume}x atr=${mf.atr}%`);
+
   // Skip entry kalau HTF terlalu lemah — counter-trend berbahaya
   if (htf.strength === "WEAK") {
     if (state.tickCount % 6 === 0) {
@@ -4763,6 +4912,8 @@ async function tradingLoop() {
       smcFull,
       smcReady,
       bosDirectEntry,
+      // AI Market Filter result
+      marketFilter: smcState.lastMarketFilter || null,
     };
     
     // Debug: log smcData yang dikirim

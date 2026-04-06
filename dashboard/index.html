@@ -334,6 +334,59 @@ select.fsel{background:var(--bg);border:1px solid var(--border2);color:var(--tex
     <div id="price-chart"></div>
   </div>
 
+  <!-- ── ROW 3.3: AI MARKET FILTER ── -->
+  <div class="card mb section-gap" id="mf-card">
+    <div class="card-hd">
+      <div class="card-title">🛡️ AI Market Filter</div>
+      <span id="mf-status-badge" class="badge b-blue">Menunggu...</span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px">
+      <!-- Step 1 -->
+      <div style="text-align:center;padding:8px 4px;background:var(--bg);border-radius:var(--r-sm);border:1px solid var(--border)" id="mf-s1">
+        <div style="font-size:9px;color:var(--text3);margin-bottom:4px">STEP 1<br>TREND</div>
+        <div style="font-size:16px" id="mf-s1-icon">⬜</div>
+        <div style="font-size:9px;margin-top:3px;color:var(--text3)" id="mf-s1-val">--</div>
+      </div>
+      <!-- Step 2 -->
+      <div style="text-align:center;padding:8px 4px;background:var(--bg);border-radius:var(--r-sm);border:1px solid var(--border)" id="mf-s2">
+        <div style="font-size:9px;color:var(--text3);margin-bottom:4px">STEP 2<br>VOLUME</div>
+        <div style="font-size:16px" id="mf-s2-icon">⬜</div>
+        <div style="font-size:9px;margin-top:3px;color:var(--text3)" id="mf-s2-val">--</div>
+      </div>
+      <!-- Step 3 -->
+      <div style="text-align:center;padding:8px 4px;background:var(--bg);border-radius:var(--r-sm);border:1px solid var(--border)" id="mf-s3">
+        <div style="font-size:9px;color:var(--text3);margin-bottom:4px">STEP 3<br>ATR</div>
+        <div style="font-size:16px" id="mf-s3-icon">⬜</div>
+        <div style="font-size:9px;margin-top:3px;color:var(--text3)" id="mf-s3-val">--</div>
+      </div>
+      <!-- Step 4 -->
+      <div style="text-align:center;padding:8px 4px;background:var(--bg);border-radius:var(--r-sm);border:1px solid var(--border)" id="mf-s4">
+        <div style="font-size:9px;color:var(--text3);margin-bottom:4px">STEP 4<br>STRUCTURE</div>
+        <div style="font-size:16px" id="mf-s4-icon">⬜</div>
+        <div style="font-size:9px;margin-top:3px;color:var(--text3)" id="mf-s4-val">--</div>
+      </div>
+      <!-- Step 5 -->
+      <div style="text-align:center;padding:8px 4px;background:var(--bg);border-radius:var(--r-sm);border:1px solid var(--border)" id="mf-s5">
+        <div style="font-size:9px;color:var(--text3);margin-bottom:4px">STEP 5<br>SESSION</div>
+        <div style="font-size:16px" id="mf-s5-icon">⬜</div>
+        <div style="font-size:9px;margin-top:3px;color:var(--text3)" id="mf-s5-val">--</div>
+      </div>
+      <!-- Step 6 -->
+      <div style="text-align:center;padding:8px 4px;background:var(--bg);border-radius:var(--r-sm);border:1px solid var(--border)" id="mf-s6">
+        <div style="font-size:9px;color:var(--text3);margin-bottom:4px">STEP 6<br>CHOPPY</div>
+        <div style="font-size:16px" id="mf-s6-icon">⬜</div>
+        <div style="font-size:9px;margin-top:3px;color:var(--text3)" id="mf-s6-val">--</div>
+      </div>
+      <!-- Step 7 Final -->
+      <div style="text-align:center;padding:8px 4px;border-radius:var(--r-sm);border:2px solid var(--border2)" id="mf-s7">
+        <div style="font-size:9px;color:var(--text3);margin-bottom:4px">FINAL<br>DECISION</div>
+        <div style="font-size:16px" id="mf-s7-icon">⬜</div>
+        <div style="font-size:9px;font-weight:700;margin-top:3px" id="mf-s7-val">--</div>
+      </div>
+    </div>
+    <div id="mf-reason" style="margin-top:10px;font-size:11px;color:var(--text3);padding:7px 10px;background:var(--bg);border-radius:var(--r-sm);border-left:3px solid var(--border2);line-height:1.5">—</div>
+  </div>
+
   <!-- ── ROW 3.5: SMC + CLAUDE FILTER ── -->
   <div class="g2 mb section-gap">
 
@@ -819,7 +872,13 @@ function handle(d) {
         renderLearning(d);
       }
       break;
+    case 'market_filter':
+      renderMarketFilter(d);
+      break;
   }
+
+  // Extract marketFilter from any smcData payload (tick, analysis_update)
+  if (d.smcData?.marketFilter) renderMarketFilter(d.smcData.marketFilter);
 }
 
 function applyStats(st) {
@@ -1887,6 +1946,76 @@ function shortReason(r) {
     .replace('MICRO_PROFIT_REVERSAL','Micro Rev')
     .replace('FORCE_CLOSE_MAX_LOSS','Force Close')
     .replace(/_/g,' ');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// AI MARKET FILTER PANEL
+// ═══════════════════════════════════════════════════════════════
+function renderMarketFilter(mf) {
+  if (!mf) return;
+
+  // Step evaluations — map filter fields to pass/fail
+  const trend     = mf.trend || 'SIDEWAYS';
+  const vol       = typeof mf.volume === 'number' ? mf.volume : 0;
+  const atr       = typeof mf.atr    === 'number' ? mf.atr    : 0;
+  const structure = mf.structure;
+  const choppy    = mf.choppy;
+  const session   = typeof mf.reason === 'string'
+    ? (mf.reason.includes('London') || mf.reason.includes('NEW_YORK') || mf.reason.includes('ALL_SESSION')
+        || mf.status === 'TRADE_ALLOWED')
+    : true;
+  const finalOK   = mf.status === 'TRADE_ALLOWED';
+
+  const s1ok = trend !== 'SIDEWAYS';
+  const s2ok = vol >= 0.8;
+  const s3ok = atr >= 0.15;
+  const s4ok = structure;
+  const s5ok = !mf.blocks || !mf.blocks.some(b => b.includes('Session'));
+  const s6ok = !choppy;
+
+  function applyStep(id, ok, valStr) {
+    const box  = document.getElementById(id);
+    const icon = document.getElementById(id + '-icon');
+    const val  = document.getElementById(id + '-val');
+    if (!box || !icon || !val) return;
+    icon.textContent = ok ? '✅' : '❌';
+    val.textContent  = valStr;
+    box.style.borderColor = ok ? 'var(--green)' : 'var(--red)';
+    box.style.background  = ok ? 'rgba(5,46,22,.25)' : 'rgba(45,10,10,.25)';
+  }
+
+  applyStep('mf-s1', s1ok, trend === 'BULLISH' ? '▲ BULLISH' : trend === 'BEARISH' ? '▼ BEARISH' : 'SIDEWAYS');
+  applyStep('mf-s2', s2ok, vol.toFixed(2) + 'x');
+  applyStep('mf-s3', s3ok, atr.toFixed(3) + '%');
+  applyStep('mf-s4', s4ok, s4ok ? 'HH/HL ok' : 'unclear');
+  applyStep('mf-s5', s5ok, s5ok ? 'London/NY' : 'Asia/Off');
+  applyStep('mf-s6', s6ok, s6ok ? 'Clean' : 'CHOPPY');
+
+  // Final step
+  const s7box = document.getElementById('mf-s7');
+  const s7ico = document.getElementById('mf-s7-icon');
+  const s7val = document.getElementById('mf-s7-val');
+  if (s7box && s7ico && s7val) {
+    s7ico.textContent = finalOK ? '✅' : '🚫';
+    s7val.textContent = finalOK ? 'TRADE\nALLOWED' : 'NO\nTRADE';
+    s7val.style.color = finalOK ? 'var(--green)' : 'var(--red)';
+    s7box.style.borderColor = finalOK ? 'var(--green)' : 'var(--red)';
+    s7box.style.background  = finalOK ? 'rgba(5,46,22,.3)' : 'rgba(45,10,10,.3)';
+  }
+
+  // Status badge
+  const badge = document.getElementById('mf-status-badge');
+  if (badge) {
+    badge.textContent = finalOK ? '✅ TRADE ALLOWED' : '🚫 NO TRADE';
+    badge.className   = 'badge ' + (finalOK ? 'b-green' : 'b-red');
+  }
+
+  // Reason line
+  const reasonEl = document.getElementById('mf-reason');
+  if (reasonEl) {
+    reasonEl.textContent  = mf.reason || '—';
+    reasonEl.style.borderLeftColor = finalOK ? 'var(--green)' : 'var(--red)';
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════

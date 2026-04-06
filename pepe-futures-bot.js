@@ -3559,6 +3559,11 @@ async function runPepeStrategy(pepeTicker, pepeKlines) {
 
 async function tradingLoop() {
   state.tickCount++;
+  
+  // Debug: log every 10 ticks to confirm bot is running
+  if (state.tickCount % 10 === 0) {
+    log("DEBUG", `tickCount=${state.tickCount}, lossStreak=${stats.lossStreak || 0}, paused=${!!state.pausedUntil}`);
+  }
 
   // ── BUG #2 FIX: Hard stop — berhenti total jika total loss > threshold ──────
   if (stats.totalPnL < 0) {
@@ -6484,6 +6489,9 @@ function getDashboardHTML() {
 
 function broadcastSSE(data) {
   const msg = `data: ${JSON.stringify(data)}\n\n`;
+  if (data.type === 'trading_status') {
+    console.log(`[SSE BROADCAST] trading_status:`, data);
+  }
   state.dashboardClients = state.dashboardClients.filter((res) => {
     try { res.write(msg); return true; } catch { return false; }
   });

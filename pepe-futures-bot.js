@@ -3985,7 +3985,7 @@ async function tradingLoop() {
       ? Math.ceil((state.pausedUntil - Date.now()) / 60000) 
       : 0;
     
-    broadcastSSE({
+    const statusData = {
       type: "trading_status",
       is_dead: isDead,
       loss_streak: lossStreak,
@@ -3996,7 +3996,10 @@ async function tradingLoop() {
         : (lossStreak >= 2 ? `Loss streak ${lossStreak}x - heightened risk` : "Normal trading"),
       paused_until: state.pausedUntil || null,
       dry_run: CONFIG.DRY_RUN,
-    });
+    };
+    
+    log("DEBUG", `[STATUS] tickCount=${state.tickCount} lossStreak=${lossStreak} isDead=${isDead}`);
+    broadcastSSE(statusData);
   }
 
   // ── 3. Tampilkan status di log ────────────────────────────

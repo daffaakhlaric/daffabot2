@@ -888,6 +888,7 @@ function handle(d) {
       renderMarketFilter(d);
       break;
     case 'trading_status':
+      console.log('Trading status received:', d);
       updateTradingStatus(d);
       break;
   }

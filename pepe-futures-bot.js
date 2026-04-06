@@ -202,8 +202,21 @@ const CONFIG = {
   ADAPTIVE_PAIR_ENABLED:    false,      // Disabled - force single pair
   DUAL_TRADING_MODE:        false,      // Disabled - single pair only
   DEFAULT_SYMBOL:           "BTCUSDT",  // Force BTC only for now
-                                         // Jika false: switching antara BTC dan PEPE
+                                          // Jika false: switching antara BTC dan PEPE
   PAIR_SELECTION_INTERVAL:  300000,     // 5 menit - interval evaluasi ulang pair
+
+  // ═══ BIG WIN PROTECTION CONFIG ═══
+  BIG_WIN_THRESHOLD_PCT:   0.8,       // Profit % to trigger big win protection (≥0.8%)
+  COOLDOWN_MINUTES:         10,        // Cooldown period after big win (5-15 min)
+  LOSSES_AFTER_WIN_LIMIT:  2,         // Stop after 2 losses following a win
+
+  // ═══ REVENGE TRADING PREVENTION CONFIG ═══
+  REVENGE_LOSS_MODE_MINUTES: 10,      // Loss mode duration (10-15 min)
+  REVENGE_PROTECTION_THRESHOLD: 2,    // Activate protection at 2 consecutive losses
+  REVENGE_DEFENSIVE_THRESHOLD: 3,     // Activate defensive at 3 consecutive losses
+  REVENGE_CONFIDENCE_BOOST: 10,       // Confidence boost in loss mode
+  REVENGE_POSITION_REDUCTION: 0.5,    // Position size reduction in defensive mode (50%)
+
   BTC_SPECIFIC_CONFIG: {
     STOP_LOSS_PCT:    1.5,    // BTC: structure SL ~1.5% (tighter — BTC less volatile)
     TAKE_PROFIT_PCT:  2.0,    // TP2 BTC
@@ -295,6 +308,16 @@ let state = {
 
   // Market Regime Detection
   lastRegime:          null,         // "TREND" or "RANGE"
+
+  // ═══ BIG WIN PROTECTION SYSTEM ═══
+  lastWinPct:          0,            // Profit % of last winning trade
+  cooldownActive:       false,        // Cooldown after big win
+  cooldownUntil:       0,            // Timestamp when cooldown ends
+  lossesAfterWin:      0,            // Losses count after last big win
+
+  // ═══ REVENGE TRADING PREVENTION ═══
+  lossModeActive:      false,        // Active after a loss
+  lossModeUntil:       0,            // Timestamp when loss mode expires
 };
 
 let stats = {
@@ -315,6 +338,186 @@ let stats = {
 let tradeLog = [];
 // Fitur #6: balance yang di-compound setelah tiap trade
 let compoundedBalance = CONFIG.POSITION_SIZE_USDT;
+
+// ═══════════════════════════════════════════════════════════════
+// REVENGE TRADING PREVENTION SYSTEM
+// Purpose: Stop revenge trading behavior after losses
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Determine trading mode based on recent trade history.
+ * @param {Object} state - Bot state
+ * @param {Object} stats - Bot stats
+ * @returns {{mode: string, allow_trade: boolean, risk_level: string, reason: string}}
+ */
+function getRevengeProtectionMode(state, stats) {
+  const config = CONFIG;
+  const lossStreak = stats.lossStreak || 0;
+  const lastTradeWasLoss = state.lastTradeWasLoss === true;
+  const now = Date.now();
+  
+  // Use config values
+  const LOSS_MODE_MINUTES = config.REVENGE_LOSS_MODE_MINUTES || 10;
+  const PROTECTION_THRESHOLD = config.REVENGE_PROTECTION_THRESHOLD || 2;
+  const DEFENSIVE_THRESHOLD = config.REVENGE_DEFENSIVE_THRESHOLD || 3;
+  const CONF_BOOST = config.REVENGE_CONFIDENCE_BOOST || 10;
+  const POS_REDUCTION = config.REVENGE_POSITION_REDUCTION || 0.5;
+  
+  // STEP 1: DETECT LOSS - Check if last trade was a loss
+  if (lastTradeWasLoss && lossStreak === 0) {
+    state.lossModeActive = true;
+    state.lossModeUntil = now + (LOSS_MODE_MINUTES * 60 * 1000);
+  }
+  
+  // STEP 2: LOSS STREAK DETECTION
+  let protectionMode = "NORMAL";
+  let riskLevel = "NORMAL";
+  let confidenceBoost = 0;
+  let positionMultiplier = 1.0;
+  let blockCounterTrend = false;
+  
+  if (lossStreak >= DEFENSIVE_THRESHOLD) {
+    // DEFENSIVE MODE - 3+ consecutive losses
+    protectionMode = "DEFENSIVE";
+    riskLevel = "LOW";
+    confidenceBoost = CONF_BOOST * 2;
+    positionMultiplier = POS_REDUCTION; // 50% size reduction
+    blockCounterTrend = true;
+  } else if (lossStreak >= PROTECTION_THRESHOLD) {
+    // PROTECTION MODE - 2 consecutive losses
+    protectionMode = "PROTECTION";
+    riskLevel = "NORMAL";
+    confidenceBoost = CONF_BOOST + 5;
+    positionMultiplier = POS_REDUCTION + 0.1; // 60%
+  } else if (state.lossModeActive) {
+    // LOSS MODE - just had a loss
+    protectionMode = "LOSS";
+    riskLevel = "NORMAL";
+    confidenceBoost = CONF_BOOST;
+    positionMultiplier = 0.8;
+  }
+  
+  // Check if loss mode has expired
+  if (state.lossModeActive && now >= state.lossModeUntil) {
+    state.lossModeActive = false;
+    log("REVENGE", "[PROTECTION] Loss mode expired - resuming normal trading");
+  }
+  
+  // STEP 6: RESET CONDITION - exit loss mode after 1 clean win
+  if (stats.winStreak >= 1 && state.lossModeActive) {
+    state.lossModeActive = false;
+    state.lossModeUntil = 0;
+    log("REVENGE", "[PROTECTION] Win detected - exiting loss mode");
+  }
+  
+  // Determine allow_trade based on mode
+  let allowTrade = true;
+  let reason = "normal trading";
+  
+  if (protectionMode === "DEFENSIVE") {
+    allowTrade = false; // Block until conditions improve
+    reason = `DEFENSIVE MODE: ${lossStreak} consecutive losses - waiting for market conditions to improve`;
+  } else if (protectionMode === "PROTECTION") {
+    allowTrade = true;
+    reason = `PROTECTION MODE: ${lossStreak} consecutive losses - increased confidence threshold`;
+  } else if (protectionMode === "LOSS") {
+    allowTrade = true;
+    reason = "LOSS MODE: requiring stronger signals";
+  }
+  
+  return {
+    mode: protectionMode,
+    allow_trade: allowTrade,
+    risk_level: riskLevel,
+    confidenceBoost,
+    positionMultiplier,
+    blockCounterTrend,
+    reason,
+    lossStreak
+  };
+}
+
+/**
+ * Check if entry should be blocked due to market conditions in loss/streak mode.
+ * @param {Object} indicators - Technical indicators (volume, candle sizes, etc)
+ * @param {Object} protection - Protection mode from getRevengeProtectionMode
+ * @param {Array} klines - Price candles
+ * @returns {{allowed: boolean, reason: string}}
+ */
+function checkRevengeProtectionFilters(indicators, protection, klines) {
+  // Only apply filters if in non-normal mode
+  if (protection.mode === "NORMAL") {
+    return { allowed: true, reason: "normal trading" };
+  }
+  
+  const reasons = [];
+  
+  // STEP 5: ENTRY BLOCK CONDITIONS
+  
+  // 1. Check low volume
+  if (indicators.volumeRatio < 1.0) {
+    reasons.push(`volume ${indicators.volumeRatio.toFixed(2)}x < 1.0x`);
+  }
+  
+  // 2. Check small candles
+  if (klines && klines.length >= 3) {
+    const recentCandles = klines.slice(-3);
+    let smallCandleCount = 0;
+    for (const c of recentCandles) {
+      const bodyPct = Math.abs(c.close - c.open) / c.open * 100;
+      if (bodyPct < 0.08) smallCandleCount++;
+    }
+    if (smallCandleCount >= 2) {
+      reasons.push(`small candles detected (${smallCandleCount}/3)`);
+    }
+  }
+  
+  // 3. Check unclear structure (no HH/LL or LH/HL)
+  if (klines && klines.length >= 6) {
+    const recent = klines.slice(-6);
+    const highs = recent.map(c => c.high);
+    const lows = recent.map(c => c.low);
+    
+    const lastHigh = highs[highs.length - 1];
+    const prevHigh = highs[highs.length - 3];
+    const lastLow = lows[lows.length - 1];
+    const prevLow = lows[lows.length - 3];
+    
+    const hasStructure = (lastHigh > prevHigh && lastLow > prevLow) || 
+                         (lastHigh < prevHigh && lastLow < prevLow);
+    if (!hasStructure) {
+      reasons.push("unclear structure (no HH/HL or LH/LL)");
+    }
+  }
+  
+  // 4. Check sideways movement
+  if (klines && klines.length >= 6) {
+    const recent = klines.slice(-6);
+    const hi = Math.max(...recent.map(c => c.high));
+    const lo = Math.min(...recent.map(c => c.low));
+    const rangePct = (hi - lo) / recent[recent.length - 1].close * 100;
+    if (rangePct < 0.3) {
+      reasons.push(`sideways movement (range ${rangePct.toFixed(2)}% < 0.3%)`);
+    }
+  }
+  
+  // 5. DEFENSIVE MODE: Only allow HIGH CONFIDENCE trades
+  if (protection.mode === "DEFENSIVE") {
+    reasons.push("DEFENSIVE MODE requires market conditions to improve");
+  }
+  
+  if (reasons.length > 0) {
+    return {
+      allowed: false,
+      reason: `[${protection.mode}] Blocked: ${reasons.join(", ")}`
+    };
+  }
+  
+  return {
+    allowed: true,
+    reason: `[${protection.mode}] All filters passed`
+  };
+}
 
 // ─────────────────────────────────────────────────────────────
 // DRY RUN ADAPTIVE RISK
@@ -415,6 +618,87 @@ function checkLossStreakFilters(stats, orderBook, choch, volumeRatio) {
   
   log("LOSS PROTECTION", `[LOSS PROTECTION] Streak=${streak} → PASS (OB=${orderbookScore} SMC=✅ VOL=${volumeSpike})`);
   return { allowed: true, reason: "All filters passed", orderbookScore, smcConfirmed, volumeSpike };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BIG WIN PROTECTION SYSTEM
+// Purpose: Prevent losses after a big winning trade (≥0.8% profit)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Check if trading is allowed based on big win protection rules.
+ * @param {Object} state - Bot state
+ * @param {Object} config - Bot config
+ * @returns {{allow_trade: boolean, cooldown_active: boolean, reason: string}}
+ */
+function checkBigWinProtection(state, config) {
+  const BIG_WIN_PCT = config.BIG_WIN_THRESHOLD_PCT || 0.8;
+  const COOLDOWN_MIN = config.COOLDOWN_MINUTES || 10;
+  const LOSS_LIMIT = config.LOSSES_AFTER_WIN_LIMIT || 2;
+
+  // Check if cooldown period has expired - reset if so
+  if (state.cooldownActive && Date.now() >= state.cooldownUntil) {
+    state.cooldownActive = false;
+    log("BIG WIN", `[PROTECTION] Cooldown expired - resuming normal trading`);
+  }
+
+  // STEP 1: Check if cooldown is active after big win
+  if (state.cooldownActive && Date.now() < state.cooldownUntil) {
+    const remainingSec = Math.ceil((state.cooldownUntil - Date.now()) / 1000);
+    return {
+      allow_trade: false,
+      cooldown_active: true,
+      reason: `post-win cooldown active (${remainingSec}s remaining)`
+    };
+  }
+
+  // STEP 2: Check if we've had too many losses after a win
+  if (state.lossesAfterWin >= LOSS_LIMIT) {
+    return {
+      allow_trade: false,
+      cooldown_active: true,
+      reason: `stop trading after ${state.lossesAfterWin} losses following win`
+    };
+  }
+
+  // No protection active
+  return {
+    allow_trade: true,
+    cooldown_active: false,
+    reason: "normal trading"
+  };
+}
+
+/**
+ * Record a trade result and update big win protection state.
+ * @param {Object} state - Bot state
+ * @param {Object} config - Bot config
+ * @param {number} pnlPct - Profit/loss percentage
+ */
+function recordBigWinTrade(state, config, pnlPct) {
+  const BIG_WIN_PCT = config.BIG_WIN_THRESHOLD_PCT || 0.8;
+  const COOLDOWN_MIN = config.COOLDOWN_MINUTES || 10;
+
+  if (pnlPct >= BIG_WIN_PCT) {
+    // STEP 1: DETECT BIG WIN - Activate cooldown
+    state.lastWinPct = pnlPct;
+    state.cooldownActive = true;
+    state.cooldownUntil = Date.now() + (COOLDOWN_MIN * 60 * 1000);
+    state.lossesAfterWin = 0; // Reset counter
+    log("BIG WIN", `[PROTECTION] Big win detected: +${pnlPct.toFixed(2)}% → cooldown ${COOLDOWN_MIN} min`);
+  } else if (state.lastWinPct >= BIG_WIN_PCT) {
+    // Track losses after big win
+    if (pnlPct < 0) {
+      state.lossesAfterWin++;
+      log("BIG WIN", `[PROTECTION] Loss after big win: ${state.lossesAfterWin}/${config.LOSSES_AFTER_WIN_LIMIT}`);
+    }
+  } else {
+    // Reset if no big win recorded
+    state.lastWinPct = pnlPct >= 0 ? pnlPct : 0;
+    if (pnlPct < 0) {
+      state.lossesAfterWin = 0;
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -945,7 +1229,8 @@ function calcOrderSize(price, leverage) {
   
   const phaseMultiplier2  = state.phase?.riskMultiplier ?? 1.0;
   const dryRunMultiplier2 = CONFIG.DRY_RUN ? (getAdaptiveRisk(stats.lossStreak || 0).riskMultiplier) : 1.0;
-  const riskMultiplier    = phaseMultiplier2 * dryRunMultiplier2;
+  const revengeMultiplier  = CONFIG._revengePositionMultiplier || 1.0;
+  const riskMultiplier    = phaseMultiplier2 * dryRunMultiplier2 * revengeMultiplier;
   const notional          = CONFIG.POSITION_SIZE_USDT * riskMultiplier * leverage;
   const qty       = notional / price;
   const contracts = Math.max(1, Math.floor(qty / CONTRACT_SIZE));
@@ -1430,6 +1715,9 @@ async function closePosition(reason, currentPrice, symbol = null) {
     state.lastSetupConfirmed = false; // must see 1 confirmed setup before next entry
   }
   if (stats.totalPnL < stats.maxDrawdown) stats.maxDrawdown = stats.totalPnL;
+
+  // ═══ BIG WIN PROTECTION: Record trade result ═══
+  recordBigWinTrade(state, CONFIG, pnlPct);
 
   // SMC: Daily loss accumulation
   const todayD = new Date().toISOString().slice(0, 10);
@@ -5311,6 +5599,51 @@ async function tradingLoop() {
       }
 
       // ════════════════════════════════════════════════════════════
+      // BIG WIN PROTECTION — prevent losses after big winning trade
+      // ════════════════════════════════════════════════════════════
+      {
+        const protection = checkBigWinProtection(state, CONFIG);
+        if (!protection.allow_trade) {
+          if (state.tickCount % 6 === 0) {
+            log("FILTER", `[BIG WIN] ${protection.reason} → SKIP`);
+          }
+          return;
+        }
+        if (protection.cooldown_active && state.tickCount % 12 === 0) {
+          log("INFO", `[BIG WIN] Cooldown active: ${protection.reason}`);
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // REVENGE TRADING PREVENTION — prevent revenge trading after losses
+      // ════════════════════════════════════════════════════════════
+      {
+        const revengeProtection = getRevengeProtectionMode(state, stats);
+        const revengeFilters = checkRevengeProtectionFilters(indicators, revengeProtection, klines);
+        
+        // Log mode status
+        if (state.tickCount % 12 === 0 && revengeProtection.mode !== "NORMAL") {
+          log("REVENGE", `[MODE: ${revengeProtection.mode}] ${revengeProtection.reason} | Risk: ${revengeProtection.risk_level}`);
+        }
+        
+        // Block entry if not allowed
+        if (!revengeFilters.allowed) {
+          if (state.tickCount % 6 === 0) {
+            log("FILTER", `[REVENGE] ${revengeFilters.reason} → SKIP`);
+          }
+          return;
+        }
+        
+        // Apply confidence boost from protection mode
+        if (revengeProtection.confidenceBoost > 0) {
+          CONFIG._revengeConfidenceBoost = revengeProtection.confidenceBoost;
+        }
+        if (revengeProtection.positionMultiplier < 1.0) {
+          CONFIG._revengePositionMultiplier = revengeProtection.positionMultiplier;
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════
       // CONSECUTIVE LOSS PAUSE — stop after 2 losses, require fresh structure
       // ════════════════════════════════════════════════════════════
       if ((stats.lossStreak || 0) >= CONFIG.MAX_CONSEC_LOSSES) {
@@ -5521,7 +5854,9 @@ async function tradingLoop() {
         );
       }
       const baseConfThreshold = CONFIG.OPEN_CONFIDENCE; // 65 (Sniper mode)
-      const confThreshold = baseConfThreshold + (adaptive?.confidenceBoost ?? 0);
+      // Add revenge protection confidence boost if active
+      const revengeConfBoost = CONFIG._revengeConfidenceBoost || 0;
+      const confThreshold = baseConfThreshold + (adaptive?.confidenceBoost ?? 0) + revengeConfBoost;
 
       // ── ANTI-LOSS STREAK: Get adaptive minimum confidence ───────────
       const adaptiveRisk = getAdaptiveRisk(stats.lossStreak || 0);
@@ -5955,6 +6290,14 @@ function saveState() {
     activePosition:   state.activePosition,
     compoundedBalance,
     initialBalance:   state.initialBalance,
+    // Big Win Protection state
+    lastWinPct:       state.lastWinPct,
+    cooldownActive:   state.cooldownActive,
+    cooldownUntil:   state.cooldownUntil,
+    lossesAfterWin:   state.lossesAfterWin,
+    // Revenge Trading Prevention state
+    lossModeActive:   state.lossModeActive,
+    lossModeUntil:    state.lossModeUntil,
   }, null, 2));
 }
 

@@ -2210,28 +2210,105 @@ ${pairRules}
 
 /** 1A — HTF Trend Filter (15m EMA50 vs EMA200) */
 async function getHTFTrend() {
-  try {
-    const klines5m = await getKlines("5m", 110); // HTF = 5m, EMA50+EMA100
-    if (klines5m.length < 100) return { trend: "NEUTRAL", strength: "WEAK" };
-    const closes = klines5m.map(k => k.close);
-    function emaLocal(data, period) {
-      const k = 2 / (period + 1);
-      let ema = data.slice(0, period).reduce((a, b) => a + b, 0) / period;
-      for (let i = period; i < data.length; i++) ema = data[i] * k + ema * (1 - k);
-      return ema;
-    }
-    const ema50  = emaLocal(closes, 50);
-    const ema100 = emaLocal(closes, 100); // EMA100 menggantikan EMA200 (sesuai jumlah candle)
-    const sep    = Math.abs((ema50 - ema100) / ema100 * 100);
-    return {
-      trend:    ema50 > ema100 ? "BULLISH" : "BEARISH",
-      strength: sep > 0.5 ? "STRONG" : "WEAK", // threshold diturunkan karena TF lebih kecil
-      ema50, ema200: ema100, sep: parseFloat(sep.toFixed(3)),
-    };
-  } catch (err) {
-    log("WARN", `HTF trend gagal: ${err.message}`);
-    return { trend: "NEUTRAL", strength: "WEAK" };
+  function emaLocal(data, period) {
+    if (data.length < period) return data[data.length - 1] || 0;
+    const k = 2 / (period + 1);
+    let ema = data.slice(0, period).reduce((a, b) => a + b, 0) / period;
+    for (let i = period; i < data.length; i++) ema = data[i] * k + ema * (1 - k);
+    return ema;
   }
+
+  // ── Base trend: 5m EMA50 vs EMA100 (existing logic) ─────────
+  let baseTrend = "NEUTRAL", baseStrength = "WEAK", ema50 = 0, ema100 = 0, sep = 0;
+  try {
+    const klines5m = await getKlines("5m", 110);
+    if (klines5m.length >= 100) {
+      const closes = klines5m.map(k => k.close);
+      ema50  = emaLocal(closes, 50);
+      ema100 = emaLocal(closes, 100);
+      sep    = Math.abs((ema50 - ema100) / ema100 * 100);
+      baseTrend    = ema50 > ema100 ? "BULLISH" : "BEARISH";
+      baseStrength = sep > 0.5 ? "STRONG" : "WEAK";
+    }
+  } catch (_) {}
+
+  // ── 1H candles: last 6 for consecutive candle check ─────────
+  let h1Candles = [];
+  try { h1Candles = await getKlines("1H", 6); } catch (_) {}
+
+  // ── 4H candles: last 10 for EMA21 check ─────────────────────
+  let h4Candles = [];
+  let h4ema21 = 0;
+  try {
+    h4Candles = await getKlines("4H", 25);
+    if (h4Candles.length >= 10) {
+      const h4c = h4Candles.map(k => k.close);
+      h4ema21 = emaLocal(h4c, Math.min(21, h4c.length));
+    }
+  } catch (_) {}
+
+  // ── 15m candles: last 6 for HH/LL detection ─────────────────
+  let m15Candles = [];
+  try { m15Candles = await getKlines("15m", 6); } catch (_) {}
+
+  // ── 1m candles for last-30min price move ─────────────────────
+  // We'll use the last 3 × 10m (30 candles of 1m) to measure 30m move
+  let m1For30 = [];
+  try { m1For30 = await getKlines("1m", 32); } catch (_) {}
+
+  // Calc 30-min price move (first vs last of last 30 candles)
+  let priceMoveUp30 = 0, priceMoveDown30 = 0;
+  if (m1For30.length >= 30) {
+    const priceStart = m1For30[m1For30.length - 30].open;
+    const priceNow   = m1For30[m1For30.length - 1].close;
+    const movePct    = priceStart > 0 ? ((priceNow - priceStart) / priceStart * 100) : 0;
+    priceMoveUp30   = movePct;   // positive = price went up
+    priceMoveDown30 = -movePct;  // positive = price went down
+  }
+
+  // 1H consecutive candle analysis (last 3)
+  const h1Last3 = h1Candles.slice(-3);
+  const h1ConsecBullish = h1Last3.length === 3 && h1Last3.every(c => c.close > c.open);
+  const h1ConsecBearish = h1Last3.length === 3 && h1Last3.every(c => c.close < c.open);
+
+  // 4H EMA21: is price above or below?
+  const h4PriceNow   = h4Candles.length > 0 ? h4Candles[h4Candles.length - 1].close : 0;
+  const h4AboveEma21 = h4ema21 > 0 && h4PriceNow > h4ema21;
+  const h4BelowEma21 = h4ema21 > 0 && h4PriceNow < h4ema21;
+
+  // 15m Higher Highs / Lower Lows (last 4 candles)
+  const m15Last4 = m15Candles.slice(-4);
+  const m15HH = m15Last4.length >= 3 && (() => {
+    // Each candle's high > previous candle's high
+    for (let i = 1; i < m15Last4.length; i++) {
+      if (m15Last4[i].high <= m15Last4[i-1].high) return false;
+    }
+    return true;
+  })();
+  const m15LL = m15Last4.length >= 3 && (() => {
+    for (let i = 1; i < m15Last4.length; i++) {
+      if (m15Last4[i].low >= m15Last4[i-1].low) return false;
+    }
+    return true;
+  })();
+
+  return {
+    // Original fields (backward compat)
+    trend:    baseTrend,
+    strength: baseStrength,
+    ema50, ema200: ema100, sep: parseFloat(sep.toFixed(3)),
+    // New HTF filter fields
+    h1ConsecBullish,    // 3 consecutive bullish 1H closes
+    h1ConsecBearish,    // 3 consecutive bearish 1H closes
+    h4AboveEma21,       // price above 4H EMA21
+    h4BelowEma21,       // price below 4H EMA21
+    h4ema21:   parseFloat((h4ema21 || 0).toFixed(2)),
+    h4Price:   parseFloat((h4PriceNow || 0).toFixed(2)),
+    priceMoveUp30:   parseFloat(priceMoveUp30.toFixed(4)),   // % move UP last 30min
+    priceMoveDown30: parseFloat(priceMoveDown30.toFixed(4)), // % move DOWN last 30min
+    m15HH,  // 15m making Higher Highs
+    m15LL,  // 15m making Lower Lows
+  };
 }
 
 /** 1B — Fractal Swing Detection (5 candle) */
@@ -4165,7 +4242,8 @@ async function tradingLoop() {
   if (!pos) {
 
     // ── A. Update HTF Trend setiap 1 menit ─────────────────
-    if (Date.now() - smcState.htfLastUpdate > 60000 || !smcState.htfTrend) {
+    // Refresh every 2 min — needed for 30m momentum calc (was 60s)
+    if (Date.now() - smcState.htfLastUpdate > 120000 || !smcState.htfTrend) {
       smcState.htfTrend      = await getHTFTrend();
       smcState.htfLastUpdate = Date.now();
     }
@@ -4184,7 +4262,11 @@ async function tradingLoop() {
         `SMC: HTF=${htf?.trend || "N/A"}(${htf?.strength || "?"}) | ` +
         `Session=${session.session}(${session.wibHour}:xx WIB) | ` +
         `ATR=${atrPct.toFixed(3)}% | ` +
-        `Aktif=${session.active ? "✅" : "❌"}`
+        `Aktif=${session.active ? "✅" : "❌"} | ` +
+        `1H:${htf?.h1ConsecBullish ? "3×BULL" : htf?.h1ConsecBearish ? "3×BEAR" : "OK"} ` +
+        `4H:${htf?.h4ema21 > 0 ? (htf.h4AboveEma21 ? "▲EMA21" : "▼EMA21") : "N/A"} ` +
+        `30m:${(htf?.priceMoveUp30 ?? 0) >= 0 ? "+" : ""}${(htf?.priceMoveUp30 ?? 0).toFixed(3)}% ` +
+        `15m:${htf?.m15HH ? "HH" : htf?.m15LL ? "LL" : "neutral"}`
       );
     }
 
@@ -5163,6 +5245,61 @@ async function tradingLoop() {
             log("FILTER", `[SMC] HTF ${htf.trend} ≠ trade direction ${tradeSide} → SKIP (no counter-trend entries)`);
           return;
         }
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // MANDATORY HTF TREND FILTER — granular 1H / 4H / 15m / 30m
+      // These are ABSOLUTE rules — any failure = skip entry
+      // ════════════════════════════════════════════════════════════
+      {
+        const HTF_MOMENTUM_PCT = 0.3; // 0.3% move in 30 min = strong momentum
+        const isShort = tradeSide === "BEARISH";
+        const isLong  = tradeSide === "BULLISH";
+
+        // ── SHORT rules ───────────────────────────────────────────
+        if (isShort) {
+          // Rule 1: 1H — last 3 candles must NOT be consecutive bullish
+          if (htf.h1ConsecBullish) {
+            log("FILTER", `[HTF FILTER] SHORT rejected — 1H has 3 consecutive bullish closes (strong bull momentum)`);
+            return;
+          }
+          // Rule 2: 4H — price must be below 4H EMA21
+          if (htf.h4ema21 > 0 && htf.h4AboveEma21) {
+            log("FILTER", `[HTF FILTER] SHORT rejected — price ${htf.h4Price} ABOVE 4H EMA21 ${htf.h4ema21} → no short in uptrend`);
+            return;
+          }
+          // Rule 3: BTC moved UP > 0.3% in last 30 min → skip short
+          if (htf.priceMoveUp30 > HTF_MOMENTUM_PCT) {
+            log("FILTER", `[HTF FILTER] SHORT rejected — BTC moved +${htf.priceMoveUp30.toFixed(3)}% in last 30min (>${HTF_MOMENTUM_PCT}%) → wait for structure break`);
+            return;
+          }
+          // Rule 4: ABSOLUTE — never short if 15m making Higher Highs
+          if (htf.m15HH) {
+            log("FILTER", `[HTF FILTER] SHORT rejected — 15m making Higher Highs (absolute rule: no short in HH structure)`);
+            return;
+          }
+        }
+
+        // ── LONG rules ────────────────────────────────────────────
+        if (isLong) {
+          // Rule 1: 1H — last 3 candles must NOT be consecutive bearish
+          if (htf.h1ConsecBearish) {
+            log("FILTER", `[HTF FILTER] LONG rejected — 1H has 3 consecutive bearish closes (strong bear pressure)`);
+            return;
+          }
+          // Rule 2: BTC moved DOWN > 0.3% in last 30 min → skip long
+          if (htf.priceMoveDown30 > HTF_MOMENTUM_PCT) {
+            log("FILTER", `[HTF FILTER] LONG rejected — BTC dropped -${htf.priceMoveDown30.toFixed(3)}% in last 30min (>${HTF_MOMENTUM_PCT}%) → wait for structure confirmation`);
+            return;
+          }
+          // Rule 3: ABSOLUTE — never long if 15m making Lower Lows
+          if (htf.m15LL) {
+            log("FILTER", `[HTF FILTER] LONG rejected — 15m making Lower Lows (absolute rule: no long in LL structure)`);
+            return;
+          }
+        }
+
+        log("INFO", `[HTF FILTER] PASS ${tradeSide} | 1H:${isLong ? 'notBearish' : 'notBullish'}=${isLong ? !htf.h1ConsecBearish : !htf.h1ConsecBullish} | 4H_EMA21:${htf.h4ema21>0?(isShort?'below':'OK'):'N/A'} | 30m_move:${htf.priceMoveUp30>=0?'+':''}${htf.priceMoveUp30.toFixed(3)}% | 15m:HH=${htf.m15HH} LL=${htf.m15LL}`);
       }
 
       // ════════════════════════════════════════════════════════════

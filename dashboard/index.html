@@ -234,6 +234,7 @@ select.fsel{background:var(--bg);border:1px solid var(--border2);color:var(--tex
     <span id="time-display">--:--:--</span>
     <button class="btn btn-blue" id="topup-btn" onclick="topupQuick()" style="display:none">+ Top Up</button>
     <button class="btn btn-red" onclick="resetSim()">↺ Reset</button>
+    <button class="btn" id="stop-trading-btn" onclick="toggleManualStop()" style="border-color:#7f1d1d;color:#f87171">🛑 Stop Entry</button>
     <button class="btn" id="toggle-btn" onclick="toggleBot()">⏸ Pause</button>
   </div>
 </header>
@@ -243,6 +244,12 @@ select.fsel{background:var(--bg);border:1px solid var(--border2);color:var(--tex
 
   <!-- ── WARN BANNER ── -->
   <div class="warn-banner" id="warn-banner" style="display:none"></div>
+  <!-- ── MANUAL STOP BANNER ── -->
+  <div id="manual-stop-banner" style="display:none;background:linear-gradient(90deg,#1a0600,#2d0a0a);border:1px solid #7f1d1d;border-radius:6px;padding:10px 16px;color:#f87171;font-size:12px;margin-bottom:12px;display:flex;align-items:center;gap:10px">
+    <span style="font-size:16px">🛑</span>
+    <span style="flex:1"><b>TRADING DIHENTIKAN MANUAL</b> — Bot tidak akan buka posisi baru. Posisi aktif tetap berjalan.</span>
+    <button class="btn" onclick="toggleManualStop()" style="border-color:#166534;color:#4ade80;font-size:11px">▶ Resume</button>
+  </div>
 
   <!-- ── ROW 1: KPI ── -->
   <div class="g5 mb section-gap">
@@ -559,11 +566,11 @@ select.fsel{background:var(--bg);border:1px solid var(--border2);color:var(--tex
           <div id="daily-trade-count" style="font-size:22px;font-weight:800;line-height:1">0</div>
           <div id="daily-trade-limit" style="font-size:10px;color:var(--text3);margin-top:2px">dari 0</div>
         </div>
-        <!-- Sniper quota -->
+        <!-- Sniper quota — max entries per day (same as daily limit in sniper mode) -->
         <div style="text-align:center;padding:10px 6px;background:var(--bg);border-radius:var(--r-sm);border:1px solid var(--border)">
-          <div style="font-size:9px;color:var(--text3);margin-bottom:4px">SNIPER QUOTA</div>
+          <div style="font-size:9px;color:var(--text3);margin-bottom:4px">MAX ENTRY/HARI</div>
           <div id="daily-sniper-used" style="font-size:22px;font-weight:800;line-height:1">0</div>
-          <div id="daily-sniper-max" style="font-size:10px;color:var(--text3);margin-top:2px">dari 0</div>
+          <div id="daily-sniper-max" style="font-size:10px;color:var(--text3);margin-top:2px">limit aktif</div>
         </div>
         <!-- Jam ini -->
         <div style="text-align:center;padding:10px 6px;background:var(--bg);border-radius:var(--r-sm);border:1px solid var(--border)">
@@ -952,6 +959,13 @@ function handle(d) {
     case 'lock_profit': case 'breakeven':
       renderPosition();
       break;
+    case 'manual_stop':
+      S.manualTradingStop = d.active;
+      renderManualStopState();
+      break;
+    case 'trade_quality':
+      // Quality result logged; will appear on next trade table refresh
+      break;
     case 'learning':
       if (d.favorable_conditions || d.avoid_conditions) {
         S.learningRules = d;
@@ -991,9 +1005,11 @@ function applyStats(st) {
   if (st.maxSniperTrades  !== undefined) S.maxSniperTrades  = st.maxSniperTrades;
   if (st.maxTradesPerDay  !== undefined) S.maxTradesPerDay  = st.maxTradesPerDay;
   if (st.maxTradesPerHour !== undefined) S.maxTradesPerHour = st.maxTradesPerHour;
-  if (st.hourlyTradeCount !== undefined) S.hourlyTradeCount = st.hourlyTradeCount;
+  if (st.hourlyTradeCount     !== undefined) S.hourlyTradeCount     = st.hourlyTradeCount;
+  if (st.manualTradingStop    !== undefined) S.manualTradingStop    = st.manualTradingStop;
   renderKPI();
   renderBotStatus();
+  renderManualStopState();
 }
 
 function applyBalance(b) {
@@ -1159,6 +1175,31 @@ function renderPosition() {
 // ═══════════════════════════════════════════════════════════════
 // BOT STATUS
 // ═══════════════════════════════════════════════════════════════
+function renderManualStopState() {
+  const active = S.manualTradingStop || false;
+  const banner = document.getElementById('manual-stop-banner');
+  const btn    = document.getElementById('stop-trading-btn');
+  if (banner) banner.style.display = active ? 'flex' : 'none';
+  if (btn) {
+    btn.textContent = active ? '▶ Resume Entry' : '🛑 Stop Entry';
+    btn.style.borderColor = active ? '#166534' : '#7f1d1d';
+    btn.style.color       = active ? '#4ade80' : '#f87171';
+  }
+}
+
+async function toggleManualStop() {
+  const active = S.manualTradingStop || false;
+  const url    = active ? '/api/resume-trading' : '/api/stop-trading';
+  try {
+    const r = await fetch(url, { method: 'POST' });
+    const j = await r.json();
+    if (j.ok) {
+      S.manualTradingStop = !active;
+      renderManualStopState();
+    }
+  } catch(e) { alert('Gagal: ' + e.message); }
+}
+
 function renderBotStatus() {
   set('bot-loss-streak', S.lossStreak || 0, S.lossStreak>=2?'red':'');
   set('bot-win-streak',  S.winStreak  || 0, S.winStreak>=2?'green':'');
@@ -1618,12 +1659,18 @@ function renderTradeTable(trades) {
     const pill    = t.result==='WIN'?'pill-win':t.result==='LOSS'?'pill-loss':'pill-be';
     const sideCls = t.side==='LONG'?'green':'red';
     const flags   = [t.breakeven_set?'🎯':'',t.runner_activated?'🏃':''].filter(Boolean).join(' ');
+    const qType   = t.trade_quality || '';
+    const qBadge  = qType === 'SNIPER_CONFIRMED' ? '<span style="background:#1e1245;color:#c4b5fd;border:1px solid #4c1d95;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700">⚡SNIPER✓</span>'
+                  : qType === 'SNIPER'  ? '<span style="background:#052e16;color:#4ade80;border:1px solid #166534;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700">🎯SNIPER</span>'
+                  : qType === 'NORMAL'  ? '<span style="background:#0f2040;color:#60a5fa;border:1px solid #1e3a5f;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700">NORMAL</span>'
+                  : qType === 'TRASH'   ? '<span style="background:#2d0a0a;color:#f87171;border:1px solid #7f1d1d;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700">TRASH</span>'
+                  : '';
 
     return `<tr>
       <td style="color:var(--text3);font-size:11px">${ct}</td>
       <td class="fw6">${t.symbol||'--'}</td>
       <td class="${sideCls} fw7">${t.side}</td>
-      <td><span class="pill ${pill}">${t.result}</span></td>
+      <td><span class="pill ${pill}">${t.result}</span> ${qBadge}</td>
       <td class="num mono">${entry}</td>
       <td class="num mono">${exit_}</td>
       <td class="num" style="color:var(--text2)">${sizeStr}</td>

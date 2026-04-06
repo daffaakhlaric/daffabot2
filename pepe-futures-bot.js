@@ -318,6 +318,8 @@ let state = {
   // ═══ REVENGE TRADING PREVENTION ═══
   lossModeActive:      false,        // Active after a loss
   lossModeUntil:       0,            // Timestamp when loss mode expires
+  // Manual trading stop
+  manualTradingStop:   false,        // true = no new entries until manually resumed
 };
 
 let stats = {
@@ -1628,6 +1630,88 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
   return state.activePosition;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// AI TRADE QUALITY CLASSIFIER
+// Classifies closed trade as SNIPER, NORMAL, or TRASH
+// ═══════════════════════════════════════════════════════════════
+
+function classifyTradeQuality(pos, rawProfitPct, reason, maxProfitPct) {
+  const indicators = pos._entryIndicators || {};
+  const smcData    = pos._smcData         || {};
+  const durationMs = pos.openTime ? Date.now() - new Date(pos.openTime).getTime() : 0;
+  const duration   = durationMs / 60000; // minutes
+
+  // ── STEP 1: Sniper score (0–6) ─────────────────────────────
+  let sniperScore = 0;
+
+  const htfTrend   = (smcData.htfTrend || '').toUpperCase();
+  const htfAligned = (pos.side === 'LONG'  && htfTrend === 'BULLISH') ||
+                     (pos.side === 'SHORT' && htfTrend === 'BEARISH');
+  if (htfAligned) sniperScore++;
+
+  const rsi = indicators.rsi || 50;
+  if (rsi >= 45 && rsi <= 55) sniperScore++;
+
+  const volRatio = indicators.volumeRatio || 0;
+  if (volRatio >= 1.2) sniperScore++;
+
+  const atrPct = indicators.atrPct || 0;
+  if (atrPct >= 0.15) sniperScore++;
+
+  const hasBOS     = !!(smcData.bos?.detected);
+  const hasChoch   = !!(smcData.choch?.detected);
+  const hasLiqGrab = !!(smcData.liquidityGrab?.detected);
+  if (hasBOS || hasChoch || hasLiqGrab) sniperScore++;
+
+  const entryScore = pos._entryScore || 0;
+  if (entryScore >= 75) sniperScore++;
+
+  // ── STEP 2: Classification ──────────────────────────────────
+  const maxProfit = maxProfitPct || 0;
+  let type = 'NORMAL';
+
+  if (sniperScore >= 4 && maxProfit >= 0.8 && duration >= 5) {
+    type = 'SNIPER';
+  } else if (
+    sniperScore <= 1 ||
+    (duration < 2 && rawProfitPct < 0) ||
+    Math.abs(rawProfitPct) < 0.2
+  ) {
+    type = 'TRASH';
+  }
+
+  // ── STEP 3: Bonus — SNIPER_CONFIRMED ───────────────────────
+  if (type === 'SNIPER' && maxProfit >= 1.5) {
+    type = 'SNIPER_CONFIRMED';
+  }
+
+  // ── STEP 4: Flags ───────────────────────────────────────────
+  const flags = [];
+  if (duration < 2 && rawProfitPct < 0)                              flags.push('FAST_LOSS');
+  if (Math.abs(rawProfitPct) < 0.2)                                  flags.push('MICRO_PROFIT');
+  if (maxProfit > rawProfitPct + 0.5 && rawProfitPct < maxProfit * 0.5) flags.push('MISSED_RUNNER');
+  const exitUp = (reason || '').toUpperCase();
+  if (exitUp.includes('REVERSAL') || exitUp.includes('PEAK') || exitUp.includes('BULLISH_ENGULFING') || exitUp.includes('BEARISH_ENGULFING')) flags.push('GOOD_EXIT');
+
+  const quality = (type === 'SNIPER' || type === 'SNIPER_CONFIRMED') ? 'HIGH'
+                : type === 'TRASH' ? 'LOW' : 'MEDIUM';
+
+  let verdict;
+  if (type === 'SNIPER_CONFIRMED') verdict = `Elite setup score=${sniperScore}/6 — clean runner`;
+  else if (type === 'SNIPER')      verdict = `High-quality entry score=${sniperScore}/6`;
+  else if (type === 'TRASH') {
+    if (flags.includes('FAST_LOSS'))    verdict = `Fast loss (${duration.toFixed(1)}min) — poor timing`;
+    else if (flags.includes('MICRO_PROFIT')) verdict = `Fee-eaten — not worth taking`;
+    else                                 verdict = `Poor entry quality score=${sniperScore}/6`;
+  } else {
+    verdict = `Average setup score=${sniperScore}/6`;
+  }
+
+  return { type, sniper_score: sniperScore, quality, flags,
+           max_profit: parseFloat(maxProfit.toFixed(4)),
+           final_profit: parseFloat(rawProfitPct.toFixed(4)), verdict };
+}
+
 async function closePosition(reason, currentPrice, symbol = null) {
   const tradeSymbol = symbol || (state.activePosition?.symbol) || CONFIG.SYMBOL;
   const isPepe = tradeSymbol === "PEPEUSDT";
@@ -1740,6 +1824,19 @@ async function closePosition(reason, currentPrice, symbol = null) {
 
   // BUG #4 FIX: update currentBalance setiap posisi ditutup
   state.currentBalance = state.initialBalance + stats.totalPnL;
+
+  // ── AI Trade Quality Classifier ──────────────────────────────
+  const rawPnlPct = pos.side === "LONG"
+    ? (currentPrice - pos.entryPrice) / pos.entryPrice * 100
+    : (pos.entryPrice - currentPrice) / pos.entryPrice * 100;
+  const trackerData   = db.consumeTracker(db.makeTradeId(tradeSymbol, pos.openTime));
+  const maxProfitPct  = trackerData?.maxProfitPct || 0;
+  const tradeQuality  = classifyTradeQuality(pos, rawPnlPct, reason, maxProfitPct);
+  log("TRADE",
+    `[QUALITY] ${tradeQuality.type} | score=${tradeQuality.sniper_score}/6 | ` +
+    `quality=${tradeQuality.quality} | flags=[${tradeQuality.flags.join(',')}] | ${tradeQuality.verdict}`
+  );
+  broadcastSSE({ type: "trade_quality", quality: tradeQuality, pnlUSDT, reason });
 
   updateCompoundBalance(pnlUSDT);
   updateWinRateTracker(pnlUSDT, pnlPct);
@@ -5109,6 +5206,13 @@ async function tradingLoop() {
 
   if (!pos) {
 
+    // ── Manual Trading Stop ──────────────────────────────────
+    if (state.manualTradingStop) {
+      if (state.tickCount % 12 === 0)
+        log("FILTER", `[MANUAL STOP] Trading dihentikan manual — resume via dashboard`);
+      return;
+    }
+
     // ── A. Update HTF Trend setiap 1 menit ─────────────────
     // Refresh every 2 min — needed for 30m momentum calc (was 60s)
     if (Date.now() - smcState.htfLastUpdate > 120000 || !smcState.htfTrend) {
@@ -6750,6 +6854,8 @@ function saveState() {
     // Revenge Trading Prevention state
     lossModeActive:   state.lossModeActive,
     lossModeUntil:    state.lossModeUntil,
+    // Manual trading stop
+    manualTradingStop: state.manualTradingStop || false,
     // ── Daily / Hourly Trade Limit (persisted across restarts) ──
     dailyTradeCount:  state.dailyTradeCount  || 0,
     dailyTradeDate:   state.dailyTradeDate   || '',
@@ -6891,6 +6997,11 @@ function loadPersistedData() {
       }
       if (saved.initialBalance && saved.initialBalance > 0) {
         state.initialBalance = saved.initialBalance;
+      }
+      // Restore manual trading stop state
+      if (saved.manualTradingStop) {
+        state.manualTradingStop = true;
+        log("WARN", "[MANUAL STOP] Trading masih dihentikan manual dari sesi sebelumnya");
       }
       // ── Restore daily/hourly trade counters ──────────────────
       // Only restore if same calendar day — otherwise let it reset naturally
@@ -7067,6 +7178,20 @@ function startDashboard() {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message, klines: [] }));
       }
+    } else if (req.url === "/api/stop-trading" && req.method === "POST") {
+      state.manualTradingStop = true;
+      saveState();
+      broadcastSSE({ type: "manual_stop", active: true, message: "Trading dihentikan manual" });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, message: "Trading dihentikan — posisi aktif tetap jalan hingga close" }));
+      log("WARN", "[MANUAL STOP] Trading dihentikan via dashboard");
+    } else if (req.url === "/api/resume-trading" && req.method === "POST") {
+      state.manualTradingStop = false;
+      saveState();
+      broadcastSSE({ type: "manual_stop", active: false, message: "Trading dilanjutkan" });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, message: "Trading dilanjutkan" }));
+      log("INFO", "[MANUAL STOP] Trading dilanjutkan via dashboard");
     } else if (req.url === "/api/state") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ state: { lastPrice: state.lastPrice, activePosition: state.activePosition }, stats }));
@@ -7420,6 +7545,7 @@ function startDashboard() {
         ? "🧪 TRAINING MODE (NO COOLDOWN)"
         : (lossStreak >= 5 ? "🚨 DEFENSIVE MODE" : "🟢 NORMAL TRADING"),
       isDryRun: CONFIG.DRY_RUN,
+      manualTradingStop: state.manualTradingStop || false,
       // ── Daily Trade Limit (sumber: Supabase real-time) ──
       dailyTradeCount:    _dailyCount,
       dailyTradeDate:     _supabaseDailyCache.date || state.dailyTradeDate || '',
@@ -7570,6 +7696,30 @@ async function main() {
 
   // BUG #3 FIX: fetch data eksternal SEBELUM startDashboard agar init event sudah punya data
   await fetchAllExternalData();
+
+  // ── Init daily counter dari Supabase SEBELUM trading loop mulai ──
+  // Tanpa ini, tick pertama melihat dailyTradeCount=0 dan bisa buka posisi
+  // meski limit sudah tercapai (race condition saat restart).
+  try {
+    const _initDaily = await db.getDailyStats(CONFIG.DRY_RUN, CONFIG.SYMBOL);
+    const todayNow   = new Date().toISOString().slice(0, 10);
+    if (_initDaily.date === todayNow) {
+      state.dailyTradeCount = _initDaily.count;
+      state.dailyTradeDate  = _initDaily.date;
+      state.dailyLossUsdt   = state.dailyLossUsdt || 0; // keep existing if any
+      const _lim = CONFIG.SNIPER_MODE ? CONFIG.MAX_SNIPER_TRADES : CONFIG.MAX_TRADES_PER_DAY;
+      log("INFO",
+        `[DAILY LIMIT] Supabase: ${_initDaily.count} trade hari ini ` +
+        `(${_initDaily.wins}W/${_initDaily.losses}L) | limit=${_lim}` +
+        (_initDaily.count >= _lim ? " → 🛑 LIMIT TERCAPAI — entry diblokir" : " → ✅ masih ada slot")
+      );
+      if (_initDaily.count >= _lim) {
+        state.dailyLossPaused = false; // biarkan loss paused state terpisah
+      }
+    }
+  } catch (err) {
+    log("WARN", `[DAILY LIMIT] Gagal init dari Supabase: ${err.message} — pakai state lokal`);
+  }
 
   // Mulai dashboard
   startDashboard();

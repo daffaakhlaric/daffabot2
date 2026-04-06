@@ -887,6 +887,9 @@ function handle(d) {
     case 'market_filter':
       renderMarketFilter(d);
       break;
+    case 'trading_status':
+      updateTradingStatus(d);
+      break;
   }
 
   // Extract marketFilter from any smcData payload (tick, analysis_update)
@@ -1126,6 +1129,11 @@ function updateTradingStatus(d) {
   const cooldownEl = document.getElementById('bot-cooldown-timer');
   const statusDot = document.getElementById('status-dot');
   
+  if (!modeEl || !cooldownEl) {
+    console.log('Trading status elements not found');
+    return;
+  }
+  
   // Update mode display
   const mode = d.mode || 'NORMAL';
   let modeClass = 'var(--green)';
@@ -1139,18 +1147,26 @@ function updateTradingStatus(d) {
   }
   modeEl.innerHTML = `<span style="color:${modeClass}">${modeIcon} ${mode}</span>`;
   
-  // Update cooldown timer
+  // Update cooldown timer - always show something
+  let cooldownText = '--';
+  let cooldownClass = 'val yellow';
+  
   if (d.cooldown_minutes > 0) {
-    cooldownEl.textContent = d.cooldown_minutes + ' min';
-    cooldownEl.className = 'val red';
-  } else if (d.paused_until) {
-    const remaining = Math.max(0, Math.ceil((d.paused_until - Date.now()) / 60000));
-    cooldownEl.textContent = remaining > 0 ? remaining + ' min' : '--';
-    cooldownEl.className = remaining > 0 ? 'val red' : 'val yellow';
-  } else {
-    cooldownEl.textContent = '--';
-    cooldownEl.className = 'val yellow';
+    cooldownText = d.cooldown_minutes + ' min';
+    cooldownClass = 'val red';
+  } else if (d.paused_until && d.paused_until > Date.now()) {
+    const remaining = Math.ceil((d.paused_until - Date.now()) / 60000);
+    if (remaining > 0) {
+      cooldownText = remaining + ' min';
+      cooldownClass = 'val red';
+    }
+  } else if (d.loss_streak >= 3) {
+    cooldownText = 'PAUSED';
+    cooldownClass = 'val red';
   }
+  
+  cooldownEl.textContent = cooldownText;
+  cooldownEl.className = cooldownClass;
   
   // Update status dot color
   if (d.is_dead) {

@@ -1592,19 +1592,24 @@ async function closePosition(reason, currentPrice, symbol = null) {
         adaptive,
       });
     } else {
-      // RULE 2: After 3 consecutive losses - STOP for 1 hour + MARKET_BAD phase
-      // LIVE: tiered cooldown
+      // CONSISTENCY OPTIMIZER RULE 8:
+      //   2 consecutive losses → pause 30–60 min
+      //   3 consecutive losses → STOP trading today
       const cooldownMs =
         lossStreak >= 5 ? 180 * 60 * 1000 :  // 3 jam kalau loss 5+
         lossStreak >= 4 ? 120 * 60 * 1000 :  // 2 jam kalau loss 4
-        lossStreak >= 3 ? 60  * 60 * 1000 :  // 1 jam kalau loss 3 (RULE 2)
+        lossStreak >= 3 ? 60  * 60 * 1000 :  // STOP — 1 jam kalau loss 3
+        lossStreak >= 2 ? 45  * 60 * 1000 :  // PAUSE — 45 menit kalau loss 2
                           0;
 
       if (cooldownMs > 0) {
-        // Switch to MARKET_BAD phase during cooldown
+        // Switch to MARKET_BAD phase on 3+ losses (STOP trading)
         if (lossStreak >= 3) {
-          state.phase = { phase: "MARKET_BAD", reason: `Loss streak ${lossStreak}x` };
-          log("LOSS PROTECTION", `[LOSS PROTECTION] LossStreak=${lossStreak} → COOLDOWN ${cooldownMs/60000}H + MARKET_BAD phase`);
+          state.phase = { phase: "MARKET_BAD", reason: `Loss streak ${lossStreak}x — STOP today` };
+          state.dailyLossPaused = true; // block new entries for rest of day
+          log("LOSS PROTECTION", `[RULE 8] LossStreak=${lossStreak} ≥ 3 → STOP trading today + MARKET_BAD + ${cooldownMs/60000}min pause`);
+        } else if (lossStreak >= 2) {
+          log("LOSS PROTECTION", `[RULE 8] LossStreak=2 → PAUSE ${cooldownMs/60000}min (revenge trading prevention)`);
         }
         
         state.pausedUntil = Date.now() + cooldownMs;
@@ -5093,12 +5098,18 @@ async function tradingLoop() {
       }
 
       // ════════════════════════════════════════════════════════════
-      // DAILY HARD STOP — -0.30 USDT absolute USDT loss → halt today
+      // DAILY HARD STOP — dynamic 3% of balance (RULE 2)
+      // Absolute floor: CONFIG.DAILY_STOP_USDT (0.30 USDT minimum)
       // ════════════════════════════════════════════════════════════
-      if ((state.dailyLossUsdt || 0) >= CONFIG.DAILY_STOP_USDT) {
-        if (state.tickCount % 18 === 0)
-          log("FILTER", `🛑 [DAILY STOP] -${(state.dailyLossUsdt || 0).toFixed(3)} USDT loss ≥ -${CONFIG.DAILY_STOP_USDT} USDT → halting all entries today`);
-        return;
+      {
+        const _balForStop = state.totalAccountBalance > 0 ? state.totalAccountBalance
+          : (CONFIG.DRY_RUN ? compoundedBalance + (stats.totalPnL || 0) : compoundedBalance);
+        const dynamicDailyStop = Math.max(CONFIG.DAILY_STOP_USDT, _balForStop * 0.03);
+        if ((state.dailyLossUsdt || 0) >= dynamicDailyStop) {
+          if (state.tickCount % 18 === 0)
+            log("FILTER", `🛑 [DAILY STOP] -${(state.dailyLossUsdt||0).toFixed(3)} USDT ≥ -${dynamicDailyStop.toFixed(3)} USDT (3% bal) → halt today`);
+          return;
+        }
       }
 
       // ════════════════════════════════════════════════════════════
@@ -5430,11 +5441,11 @@ async function tradingLoop() {
           squeezeSafe &&
           !volumeTooLow) {
 
-        // SMC Position Sizing: risk MAX 1.5% equity per trade
+        // CONSISTENCY RULE 1: max risk = 1% of balance per trade
         const balNow = state.totalAccountBalance > 0
           ? state.totalAccountBalance
           : (CONFIG.DRY_RUN ? compoundedBalance + (stats.totalPnL || 0) : compoundedBalance);
-        const SMC_RISK_PCT    = 0.015;  // 1.5% equity risk per trade
+        const SMC_RISK_PCT    = 0.010;  // 1% equity risk per trade (RULE 1)
         const maxLossPerTrade = balNow * SMC_RISK_PCT;
         // Margin = maxLoss / (SL% × leverage)
         const slFraction      = (slPct || CONFIG.STOP_LOSS_PCT) / 100;
@@ -5444,10 +5455,16 @@ async function tradingLoop() {
         let sniperMarginUSDT = maxLossPerTrade / (slFraction * leverage);
         // Apply quality and growth multipliers (still capped by risk budget)
         sniperMarginUSDT = sniperMarginUSDT * state.capitalGrowthFactor * entryQualityFactor;
-        // Hard range: 15–20 USDT margin
-        // @7x: 105–140 USDT notional | @10x: 150–200 USDT notional
-        sniperMarginUSDT = Math.max(sniperMarginUSDT, 15); // floor 15 USDT
-        sniperMarginUSDT = Math.min(sniperMarginUSDT, 20); // cap  20 USDT
+        // CONSISTENCY RULE 3: notional based on balance bracket
+        // balance < $50  → notional $2–4 (margin at 7x)
+        // balance $50–100 → notional $4–6 (margin at 7x)
+        // balance > $100  → normal 15–20 USDT margin
+        let floorMargin, capMargin;
+        if (balNow < 50)       { floorMargin = 2;  capMargin = 4;  }
+        else if (balNow < 100) { floorMargin = 4;  capMargin = 6;  }
+        else                   { floorMargin = 15; capMargin = 20; }
+        sniperMarginUSDT = Math.max(sniperMarginUSDT, floorMargin);
+        sniperMarginUSDT = Math.min(sniperMarginUSDT, capMargin);
         const riskPct = sniperMarginUSDT * slFraction * leverage / balNow; // actual risk%
 
         // Final qty: BTC uses pre-calculated fixed tier qty; PEPE uses USDT-based calc

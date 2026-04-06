@@ -179,6 +179,25 @@ select.fsel{background:var(--bg);border:1px solid var(--border2);color:var(--tex
 @media(max-width:800px){.g5,.g4,.g3,.g2{grid-template-columns:1fr}.span2,.span3,.span4{grid-column:unset}.wrap{padding:12px}}
 @media(max-width:500px){.kpi .value{font-size:20px}}
 
+/* ── CALENDAR ───────────────────────────────────── */
+.cal-day{
+  min-height:68px;border-radius:var(--r-sm);border:1px solid var(--border);
+  background:var(--bg);padding:6px 8px;position:relative;
+  display:flex;flex-direction:column;gap:3px;transition:.12s border-color;
+}
+.cal-day.today{border-color:var(--accent);box-shadow:0 0 0 1px rgba(59,130,246,.25)}
+.cal-day.empty{background:transparent;border-color:transparent}
+.cal-day.profit{border-color:#166534;background:rgba(5,46,22,.35)}
+.cal-day.loss  {border-color:#7f1d1d;background:rgba(45,10,10,.35)}
+.cal-day-num{font-size:10px;font-weight:700;color:var(--text3)}
+.cal-day.today .cal-day-num{color:var(--accent)}
+.cal-pnl{font-size:13px;font-weight:800;line-height:1;margin-top:2px}
+.cal-pnl.pos{color:var(--green)}
+.cal-pnl.neg{color:var(--red)}
+.cal-trades{font-size:9px;color:var(--text3);margin-top:auto}
+.cal-trades b{color:var(--text2)}
+@media(max-width:800px){.cal-day{min-height:50px}.cal-pnl{font-size:11px}}
+
 /* ── MISC ────────────────────────────────────────── */
 .divider{height:1px;background:var(--border);margin:14px 0}
 .green{color:var(--green)}.red{color:var(--red)}.yellow{color:var(--yellow)}.blue{color:var(--accent)}.muted{color:var(--text2)}.dim{color:var(--text3)}
@@ -603,6 +622,41 @@ select.fsel{background:var(--bg);border:1px solid var(--border2);color:var(--tex
         </tbody>
       </table>
     </div>
+  </div>
+
+  <!-- ── ROW 6.5: DAILY CALENDAR ── -->
+  <div class="card mb section-gap" id="calendar-card">
+    <div class="card-hd">
+      <div style="display:flex;align-items:center;gap:12px">
+        <div class="card-title">📅 Kalender Trading Harian</div>
+        <div style="display:flex;gap:4px;align-items:center">
+          <button class="btn" id="cal-prev" onclick="calNav(-1)" style="padding:2px 10px;font-size:13px">‹</button>
+          <span id="cal-month-label" style="font-size:12px;font-weight:700;color:var(--text);min-width:110px;text-align:center">—</span>
+          <button class="btn" id="cal-next" onclick="calNav(+1)" style="padding:2px 10px;font-size:13px">›</button>
+          <button class="btn" onclick="calGoToday()" style="font-size:10px;padding:2px 9px;margin-left:4px">Hari Ini</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:16px;font-size:11px;color:var(--text3);align-items:center">
+        <span><span style="color:var(--green);font-weight:700">+</span> Profit</span>
+        <span><span style="color:var(--red);font-weight:700">-</span> Loss</span>
+        <span style="color:var(--text3)">· Tidak ada trade</span>
+        <span id="cal-month-summary" style="color:var(--text2);margin-left:8px"></span>
+      </div>
+    </div>
+
+    <!-- Day-of-week headers -->
+    <div id="cal-dow" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:4px;text-align:center">
+      <div style="font-size:9px;font-weight:700;color:var(--text3);padding:4px">MIN</div>
+      <div style="font-size:9px;font-weight:700;color:var(--text3);padding:4px">SEN</div>
+      <div style="font-size:9px;font-weight:700;color:var(--text3);padding:4px">SEL</div>
+      <div style="font-size:9px;font-weight:700;color:var(--text3);padding:4px">RAB</div>
+      <div style="font-size:9px;font-weight:700;color:var(--text3);padding:4px">KAM</div>
+      <div style="font-size:9px;font-weight:700;color:var(--text3);padding:4px">JUM</div>
+      <div style="font-size:9px;font-weight:700;color:var(--text3);padding:4px">SAB</div>
+    </div>
+
+    <!-- Calendar grid -->
+    <div id="cal-grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px"></div>
   </div>
 
   <!-- ── ROW 7: MARKET DATA (Order Book + Trades) ── -->
@@ -1220,6 +1274,7 @@ async function loadTrades() {
 
     renderTradeTable(_trades);
     computeAnalytics(_trades);
+    renderCalendar(); // sync calendar with fresh trade data
   } catch(e) {
     tbody.innerHTML = `<tr><td colspan="15" class="no-data" style="color:var(--red)">Error: ${e.message}</td></tr>`;
   }
@@ -1835,6 +1890,117 @@ function shortReason(r) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// CALENDAR
+// ═══════════════════════════════════════════════════════════════
+let _calYear  = new Date().getFullYear();
+let _calMonth = new Date().getMonth(); // 0-indexed
+
+const MONTH_NAMES = ['Januari','Februari','Maret','April','Mei','Juni',
+                     'Juli','Agustus','September','Oktober','November','Desember'];
+
+function calNav(dir) {
+  _calMonth += dir;
+  if (_calMonth > 11) { _calMonth = 0;  _calYear++; }
+  if (_calMonth <  0) { _calMonth = 11; _calYear--; }
+  renderCalendar();
+}
+
+function calGoToday() {
+  const now  = new Date();
+  _calYear   = now.getFullYear();
+  _calMonth  = now.getMonth();
+  renderCalendar();
+}
+
+function buildDailyMap(trades) {
+  // Build map: "YYYY-MM-DD" → { trades, pnl, wins, losses }
+  const map = {};
+  (trades || []).forEach(t => {
+    if (!t.close_time) return;
+    // Convert close_time to WIB date string (UTC+7)
+    const d = new Date(new Date(t.close_time).getTime() + 7 * 3600000);
+    const key = d.toISOString().slice(0, 10);
+    if (!map[key]) map[key] = { trades: 0, pnl: 0, wins: 0, losses: 0 };
+    map[key].trades++;
+    map[key].pnl    += (t.net_profit_usdt || t.pnl_usdt || 0);
+    if (t.result === 'WIN')  map[key].wins++;
+    if (t.result === 'LOSS') map[key].losses++;
+  });
+  return map;
+}
+
+function renderCalendar() {
+  const grid  = document.getElementById('cal-grid');
+  const label = document.getElementById('cal-month-label');
+  const sumEl = document.getElementById('cal-month-summary');
+  if (!grid) return;
+
+  label.textContent = `${MONTH_NAMES[_calMonth]} ${_calYear}`;
+
+  const dailyMap = buildDailyMap(typeof _trades !== 'undefined' ? _trades : []);
+
+  // First day of month, number of days
+  const firstDay = new Date(_calYear, _calMonth, 1).getDay(); // 0=Sun
+  const daysInMonth = new Date(_calYear, _calMonth + 1, 0).getDate();
+  const todayStr = (() => {
+    const t = new Date(new Date().getTime() + 7 * 3600000);
+    return t.toISOString().slice(0, 10);
+  })();
+
+  let cells = '';
+
+  // Empty cells before first day
+  for (let i = 0; i < firstDay; i++) {
+    cells += '<div class="cal-day empty"></div>';
+  }
+
+  // Month-level summary
+  let monthTrades = 0, monthPnl = 0, monthDays = 0;
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const key = `${_calYear}-${String(_calMonth + 1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const day = dailyMap[key];
+    const isToday = key === todayStr;
+
+    let cls = 'cal-day';
+    if (isToday) cls += ' today';
+
+    let inner = `<div class="cal-day-num">${d}</div>`;
+
+    if (day && day.trades > 0) {
+      const pnl     = day.pnl;
+      const isProfit = pnl >= 0;
+      cls += isProfit ? ' profit' : ' loss';
+      const sign    = isProfit ? '+' : '';
+      const pnlCls  = isProfit ? 'pos' : 'neg';
+      const icon    = isProfit ? '+' : '-';
+      monthTrades  += day.trades;
+      monthPnl     += pnl;
+      monthDays++;
+
+      inner += `<div class="cal-pnl ${pnlCls}">${icon}${Math.abs(pnl).toFixed(3)}</div>`;
+      inner += `<div class="cal-trades"><b>${day.trades}</b> trade${day.trades > 1 ? 's' : ''} · <span style="color:var(--green)">${day.wins}W</span>/<span style="color:var(--red)">${day.losses}L</span></div>`;
+    } else {
+      inner += `<div class="cal-trades" style="margin-top:auto;color:var(--border2)">—</div>`;
+    }
+
+    cells += `<div class="${cls}">${inner}</div>`;
+  }
+
+  grid.innerHTML = cells;
+
+  // Month summary line
+  if (monthDays > 0) {
+    const isMonthProfit = monthPnl >= 0;
+    const sign = isMonthProfit ? '+' : '';
+    const col  = isMonthProfit ? 'var(--green)' : 'var(--red)';
+    sumEl.innerHTML = `Bulan ini: <b style="color:${col}">${sign}${monthPnl.toFixed(4)} USDT</b> · <b>${monthTrades}</b> trade · <b>${monthDays}</b> hari aktif`;
+  } else {
+    sumEl.textContent = 'Belum ada trade bulan ini';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════════════════
 window.addEventListener('load', async () => {
@@ -1847,6 +2013,9 @@ window.addEventListener('load', async () => {
     switchTF('5m'),
   ]);
 
+  // Render calendar after trades loaded
+  renderCalendar();
+
   // Start market data for default symbol
   startMarketData('BTCUSDT');
 
@@ -1855,6 +2024,9 @@ window.addEventListener('load', async () => {
 
   // Auto-refresh trades every 30s
   setInterval(loadTrades, 30000);
+
+  // Refresh calendar every 60s
+  setInterval(renderCalendar, 60000);
 
   // Poll ticker every 5s (backup for SSE)
   setInterval(pollTicker, 5000);

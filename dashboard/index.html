@@ -58,6 +58,8 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',-apple-system,sa
 .dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
 .dot.off{background:var(--red);box-shadow:0 0 8px var(--red)}
 .dot.pause{background:var(--yellow);box-shadow:0 0 8px var(--yellow)}
+.dot.dead{background:var(--red);box-shadow:0 0 8px var(--red);animation:blink 0.5s infinite}
+.dot.warning{background:var(--yellow);box-shadow:0 0 8px var(--yellow);animation:blink 1s infinite}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
 .dot{animation:blink 2s infinite}
 
@@ -525,6 +527,8 @@ select.fsel{background:var(--bg);border:1px solid var(--border2);color:var(--tex
       <div class="row"><div class="lbl">Risk Multiplier</div><div class="val" id="bot-risk">--</div></div>
       <div class="row"><div class="lbl">Loss Streak</div><div class="val red" id="bot-loss-streak">0</div></div>
       <div class="row"><div class="lbl">Win Streak</div><div class="val green" id="bot-win-streak">0</div></div>
+      <div class="row"><div class="lbl">Trading Mode</div><div class="val" id="bot-trading-mode">NORMAL</div></div>
+      <div class="row"><div class="lbl">Cooldown Timer</div><div class="val yellow" id="bot-cooldown-timer">--</div></div>
       <div class="row"><div class="lbl">Cooldown Trade</div><div class="val yellow" id="bot-cooldown">0</div></div>
       <div class="row"><div class="lbl">Confidence Req</div><div class="val blue" id="bot-conf-req">--</div></div>
       <div class="divider"></div>
@@ -827,8 +831,16 @@ function handle(d) {
       applyBalance(d);
       break;
     case 'phase':
-      S.phase = d.phase;
-      renderPhase(d.phase);
+      if (d && d.phase) {
+        S.phase = d.phase;
+        renderPhase(d.phase);
+      } else {
+        S.phase = d;
+        renderPhase(d);
+      }
+      break;
+    case 'trading_status':
+      updateTradingStatus(d);
       break;
     case 'tick':
       if (d.price) { const prev = S.price; S.price = d.price; updatePriceTicker(S.price, prev, d); }
@@ -1107,9 +1119,47 @@ function renderIndicators() {
   const r  = S.rsi;
   const rEl = document.getElementById('hdr-rsi');
   rEl.textContent = r ? r.toFixed(1) : '--';
-  rEl.style.color = r>70?'var(--red)':r<30?'var(--green)':'var(--text)';
-  set('hdr-ema9',  S.ema9  ? S.ema9.toFixed(2)  : '--');
-  set('hdr-vol',   S.volumeRatio ? S.volumeRatio.toFixed(2) : '--');
+}
+
+function updateTradingStatus(d) {
+  const modeEl = document.getElementById('bot-trading-mode');
+  const cooldownEl = document.getElementById('bot-cooldown-timer');
+  const statusDot = document.getElementById('status-dot');
+  
+  // Update mode display
+  const mode = d.mode || 'NORMAL';
+  let modeClass = 'var(--green)';
+  let modeIcon = '🟢';
+  if (mode === 'DEFENSIVE') {
+    modeClass = 'var(--red)';
+    modeIcon = '🛑';
+  } else if (mode === 'PROTECTION') {
+    modeClass = 'var(--yellow)';
+    modeIcon = '🟡';
+  }
+  modeEl.innerHTML = `<span style="color:${modeClass}">${modeIcon} ${mode}</span>`;
+  
+  // Update cooldown timer
+  if (d.cooldown_minutes > 0) {
+    cooldownEl.textContent = d.cooldown_minutes + ' min';
+    cooldownEl.className = 'val red';
+  } else if (d.paused_until) {
+    const remaining = Math.max(0, Math.ceil((d.paused_until - Date.now()) / 60000));
+    cooldownEl.textContent = remaining > 0 ? remaining + ' min' : '--';
+    cooldownEl.className = remaining > 0 ? 'val red' : 'val yellow';
+  } else {
+    cooldownEl.textContent = '--';
+    cooldownEl.className = 'val yellow';
+  }
+  
+  // Update status dot color
+  if (d.is_dead) {
+    statusDot.className = 'dot dead';
+  } else if (mode === 'PROTECTION') {
+    statusDot.className = 'dot warning';
+  } else {
+    statusDot.className = 'dot';
+  }
 }
 
 function renderLearning(d) {

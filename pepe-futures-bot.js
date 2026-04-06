@@ -3977,6 +3977,28 @@ async function tradingLoop() {
     }).catch(() => {});
   }
 
+  // ── Broadcast trading status for dashboard ─────
+  if (state.tickCount % 6 === 0) {
+    const lossStreak = stats.lossStreak || 0;
+    const isDead = (lossStreak >= 3 && !CONFIG.DRY_RUN) || (lossStreak >= 5);
+    const cooldownRemaining = state.pausedUntil && state.pausedUntil > Date.now() 
+      ? Math.ceil((state.pausedUntil - Date.now()) / 60000) 
+      : 0;
+    
+    broadcastSSE({
+      type: "trading_status",
+      is_dead: isDead,
+      loss_streak: lossStreak,
+      cooldown_minutes: cooldownRemaining,
+      mode: isDead ? "DEFENSIVE" : (lossStreak >= 2 ? "PROTECTION" : "NORMAL"),
+      reason: isDead 
+        ? `Loss streak ${lossStreak}x - trading paused` 
+        : (lossStreak >= 2 ? `Loss streak ${lossStreak}x - heightened risk` : "Normal trading"),
+      paused_until: state.pausedUntil || null,
+      dry_run: CONFIG.DRY_RUN,
+    });
+  }
+
   // ── 3. Tampilkan status di log ────────────────────────────
   if (state.tickCount % 3 === 0) { // setiap 30 detik
     log("INFO", `Harga: ${C.bold}${price.toFixed(8)}${C.reset} USDT | RSI: ${indicators.rsi.toFixed(1)} | EMA9: ${indicators.ema9.toFixed(8)} | EMA21: ${indicators.ema21.toFixed(8)}`);

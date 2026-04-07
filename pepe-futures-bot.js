@@ -210,6 +210,16 @@ const CONFIG = {
   COOLDOWN_MINUTES:         10,        // Cooldown period after big win (5-15 min)
   LOSSES_AFTER_WIN_LIMIT:  2,         // Stop after 2 losses following a win
 
+  // ═══ TRADING BEHAVIOR CONTROLLER CONFIG ═══
+  BIG_WIN_THRESHOLD_PCT_V2: 0.5,      // Profit % to trigger (≥0.5%)
+  BIG_WIN_THRESHOLD_USDT:   0.3,      // OR profit in USDT (≥0.3 USDT)
+  COOLDOWN_MINUTES_V2:      8,        // Cooldown after big win (5-10 min)
+  REVENGE_BLOCK_MINUTES:   5,        // Block trade if last was loss within 5 min
+  DOUBLE_LOSS_WINDOW_MIN:  10,        // 2 losses within this window = pause
+  DOUBLE_LOSS_PAUSE_MIN:    30,       // Pause for this many minutes
+  NORMAL_ENTRY_SCORE:       70,       // Normal minimum entry score
+  POST_WIN_ENTRY_SCORE:     80,        // Higher score required after win
+
   // ═══ REVENGE TRADING PREVENTION CONFIG ═══
   REVENGE_LOSS_MODE_MINUTES: 10,      // Loss mode duration (10-15 min)
   REVENGE_PROTECTION_THRESHOLD: 2,    // Activate protection at 2 consecutive losses
@@ -314,6 +324,14 @@ let state = {
   cooldownActive:       false,        // Cooldown after big win
   cooldownUntil:       0,            // Timestamp when cooldown ends
   lossesAfterWin:      0,            // Losses count after last big win
+
+  // ═══ TRADING BEHAVIOR CONTROLLER ═══
+  lastTradeTime:       0,            // Timestamp of last trade close
+  lastTradeResult:     null,          // "WIN" or "LOSS" or null
+  lastTradeProfitPct:  0,            // Profit % of last trade
+  lastTradeProfitUSDT: 0,            // Profit USDT of last trade
+  doubleLossCount:     0,            // Losses in quick succession window
+  doubleLossWindowStart: 0,          // Start time of double loss window
 
   // ═══ REVENGE TRADING PREVENTION ═══
   lossModeActive:      false,        // Active after a loss
@@ -473,52 +491,174 @@ function checkRevengeProtectionFilters(indicators, protection, klines) {
       reasons.push(`small candles detected (${smallCandleCount}/3)`);
     }
   }
-  
+
   // 3. Check unclear structure (no HH/LL or LH/HL)
   if (klines && klines.length >= 6) {
     const recent = klines.slice(-6);
     const highs = recent.map(c => c.high);
-    const lows = recent.map(c => c.low);
-    
+    const lows  = recent.map(c => c.low);
+
     const lastHigh = highs[highs.length - 1];
     const prevHigh = highs[highs.length - 3];
-    const lastLow = lows[lows.length - 1];
-    const prevLow = lows[lows.length - 3];
-    
-    const hasStructure = (lastHigh > prevHigh && lastLow > prevLow) || 
+    const lastLow  = lows[lows.length - 1];
+    const prevLow  = lows[lows.length - 3];
+
+    const hasStructure = (lastHigh > prevHigh && lastLow > prevLow) ||
                          (lastHigh < prevHigh && lastLow < prevLow);
     if (!hasStructure) {
       reasons.push("unclear structure (no HH/HL or LH/LL)");
     }
   }
+
+  if (reasons.length > 0) {
+    return { allowed: false, reason: reasons.join(", ") };
+  }
+  return { allowed: true, reason: "filters passed" };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TRADING BEHAVIOR CONTROLLER
+// Prevent losses immediately after winning trades
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Check if trading is allowed based on trading behavior rules.
+ * @param {Object} state - Bot state
+ * @param {Object} config - Bot config
+ * @param {Object} indicators - Current market indicators (rsi, volume, etc)
+ * @returns {{allow_trade: boolean, mode: string, reason: string}}
+ */
+function checkTradingBehavior(state, config, indicators) {
+  const now = Date.now();
   
-  // 4. Check sideways movement
-  if (klines && klines.length >= 6) {
-    const recent = klines.slice(-6);
-    const hi = Math.max(...recent.map(c => c.high));
-    const lo = Math.min(...recent.map(c => c.low));
-    const rangePct = (hi - lo) / recent[recent.length - 1].close * 100;
-    if (rangePct < 0.3) {
-      reasons.push(`sideways movement (range ${rangePct.toFixed(2)}% < 0.3%)`);
+  const BIG_WIN_PCT = config.BIG_WIN_THRESHOLD_PCT_V2 || 0.5;
+  const BIG_WIN_USDT = config.BIG_WIN_THRESHOLD_USDT || 0.3;
+  const COOLDOWN_MIN = config.COOLDOWN_MINUTES_V2 || 8;
+  const REVENGE_BLOCK_MIN = config.REVENGE_BLOCK_MINUTES || 5;
+  const DOUBLE_LOSS_WINDOW = config.DOUBLE_LOSS_WINDOW_MIN || 10;
+  const DOUBLE_LOSS_PAUSE = config.DOUBLE_LOSS_PAUSE_MIN || 30;
+  
+  // ── RULE 6: DOUBLE LOSS STOP ───────────────────────────────
+  // If 2 losses within DOUBLE_LOSS_WINDOW minutes, pause for DOUBLE_LOSS_PAUSE minutes
+  if (state.doubleLossCount >= 2) {
+    const windowElapsed = (now - state.doubleLossWindowStart) / 60000;
+    if (windowElapsed < DOUBLE_LOSS_WINDOW) {
+      const remainingPause = DOUBLE_LOSS_PAUSE - (now - state.doubleLossWindowStart) / 60000;
+      return {
+        allow_trade: false,
+        mode: "BLOCKED",
+        reason: `Double loss pause - wait ${Math.ceil(remainingPause)} min`
+      };
+    } else {
+      // Window expired, reset
+      state.doubleLossCount = 0;
+      state.doubleLossWindowStart = 0;
     }
   }
   
-  // 5. DEFENSIVE MODE: Only allow HIGH CONFIDENCE trades
-  if (protection.mode === "DEFENSIVE") {
-    reasons.push("DEFENSIVE MODE requires market conditions to improve");
+  // ── RULE 5: REVENGE PREVENTION ─────────────────────────────
+  // If last trade was LOSS within REVENGE_BLOCK_MIN minutes, BLOCK
+  if (state.lastTradeResult === "LOSS" && state.lastTradeTime > 0) {
+    const minSinceLastTrade = (now - state.lastTradeTime) / 60000;
+    if (minSinceLastTrade < REVENGE_BLOCK_MIN) {
+      return {
+        allow_trade: false,
+        mode: "BLOCKED",
+        reason: `Revenge block - last loss ${minSinceLastTrade.toFixed(1)} min ago`
+      };
+    }
   }
   
-  if (reasons.length > 0) {
+  // ── RULE 2: COOLING PHASE ────────────────────────────────
+  // After BIG_WIN (≥0.5% OR ≥0.3 USDT), no trades for 5-10 minutes
+  const lastWinWasBig = state.lastTradeResult === "WIN" && 
+    (state.lastTradeProfitPct >= BIG_WIN_PCT || state.lastTradeProfitUSDT >= BIG_WIN_USDT);
+  
+  if (lastWinWasBig && state.cooldownActive && now < state.cooldownUntil) {
+    const remainingSec = Math.ceil((state.cooldownUntil - now) / 1000);
     return {
-      allowed: false,
-      reason: `[${protection.mode}] Blocked: ${reasons.join(", ")}`
+      allow_trade: false,
+      mode: "COOLING",
+      reason: `Cooling phase after big win - ${remainingSec}s remaining`
     };
   }
   
+  // ── RULE 3: MARKET RESET CHECK ────────────────────────────
+  // Only apply if we had a recent big win (within last 15 min)
+  if (lastWinWasBig && state.cooldownActive) {
+    const rsi = indicators?.rsi || 50;
+    const volRatio = indicators?.volumeRatio || 1;
+    
+    // Check all conditions for market reset
+    const volumeStable = volRatio >= 0.8; // Not dropping significantly
+    const rsiNeutral = rsi >= 45 && rsi <= 55; // Back to neutral
+    
+    if (!volumeStable || !rsiNeutral) {
+      return {
+        allow_trade: false,
+        mode: "COOLING",
+        reason: `Waiting for market reset - RSI:${rsi.toFixed(1)} Vol:${volRatio.toFixed(2)}`
+      };
+    }
+  }
+  
   return {
-    allowed: true,
-    reason: `[${protection.mode}] All filters passed`
+    allow_trade: true,
+    mode: "NORMAL",
+    reason: "normal trading"
   };
+}
+
+/**
+ * Record trade result and update trading behavior state.
+ * @param {Object} state - Bot state
+ * @param {Object} config - Bot config
+ * @param {number} pnlPct - Profit/loss percentage
+ * @param {number} pnlUSDT - Profit/loss in USDT
+ */
+function recordTradeResult(state, config, pnlPct, pnlUSDT) {
+  const now = Date.now();
+  const BIG_WIN_PCT = config.BIG_WIN_THRESHOLD_PCT_V2 || 0.5;
+  const BIG_WIN_USDT = config.BIG_WIN_THRESHOLD_USDT || 0.3;
+  const COOLDOWN_MIN = config.COOLDOWN_MINUTES_V2 || 8;
+  const DOUBLE_LOSS_WINDOW = config.DOUBLE_LOSS_WINDOW_MIN || 10;
+  
+  // Update last trade info
+  state.lastTradeTime = now;
+  state.lastTradeProfitPct = pnlPct;
+  state.lastTradeProfitUSDT = pnlUSDT;
+  
+  if (pnlPct >= 0) {
+    // WIN
+    state.lastTradeResult = "WIN";
+    state.doubleLossCount = 0;
+    state.doubleLossWindowStart = 0;
+    
+    // RULE 1: BIG WIN DETECTION - activate cooling
+    if (pnlPct >= BIG_WIN_PCT || pnlUSDT >= BIG_WIN_USDT) {
+      state.cooldownActive = true;
+      state.cooldownUntil = now + (COOLDOWN_MIN * 60 * 1000);
+      log("BEHAVIOR", `[CONTROLLER] Big win: +${pnlPct.toFixed(2)}% / +${pnlUSDT.toFixed(4)} USDT → Cooling ${COOLDOWN_MIN}min`);
+    }
+  } else {
+    // LOSS
+    state.lastTradeResult = "LOSS";
+    
+    // RULE 6: Track double loss
+    if (state.doubleLossCount === 0) {
+      state.doubleLossCount = 1;
+      state.doubleLossWindowStart = now;
+    } else if (state.doubleLossCount === 1) {
+      const windowElapsed = (now - state.doubleLossWindowStart) / 60000;
+      if (windowElapsed < DOUBLE_LOSS_WINDOW) {
+        state.doubleLossCount = 2;
+        log("BEHAVIOR", `[CONTROLLER] Double loss detected within ${windowElapsed.toFixed(1)}min → PAUSE`);
+      } else {
+        state.doubleLossCount = 1;
+        state.doubleLossWindowStart = now;
+      }
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1802,6 +1942,9 @@ async function closePosition(reason, currentPrice, symbol = null) {
 
   // ═══ BIG WIN PROTECTION: Record trade result ═══
   recordBigWinTrade(state, CONFIG, pnlPct);
+
+  // ═══ TRADING BEHAVIOR CONTROLLER: Record trade result ═══
+  recordTradeResult(state, CONFIG, pnlPct, pnlUSDT);
 
   // SMC: Daily loss accumulation
   const todayD = new Date().toISOString().slice(0, 10);
@@ -6038,8 +6181,22 @@ async function tradingLoop() {
       const lwTag = lwActive
         ? ` [LEARN: T${lw.trend>=0?'+':''}${lw.trend} R${lw.rsi>=0?'+':''}${lw.rsi} V${lw.volume>=0?'+':''}${lw.volume} M${lw.momentum>=0?'+':''}${lw.momentum} S${lw.session>=0?'+':''}${lw.session}]`
         : ` [LEARN: LOCKED (need ≥50 trades)]`;
-      log("ENTRY", `[ENTRY SCORE] ${entryScore}/100 → ${entryScore >= CONFIG.ENTRY_SCORE_MIN ? 'VALID' : 'INVALID'} | ` +
-        `Trend:${trendAligned?'✅':'❌'}(${tradeSide}) RSI:${rsiPullback?'✅':'❌'} Vol:${volumeConfirmed?'✅':'❌'} ATR:${atrValid?'✅':'❌'} AI:${aiAgrees?'✅':'❌'}${lwTag}`);
+
+      // ═══ RULE 4: STRICT ENTRY AFTER WIN ═══
+      // Increase entry score requirement after big win
+      const BIG_WIN_PCT = CONFIG.BIG_WIN_THRESHOLD_PCT_V2 || 0.5;
+      const BIG_WIN_USDT = CONFIG.BIG_WIN_THRESHOLD_USDT || 0.3;
+      const lastWinWasBig = state.lastTradeResult === "WIN" && 
+        (state.lastTradeProfitPct >= BIG_WIN_PCT || state.lastTradeProfitUSDT >= BIG_WIN_USDT);
+      const minEntryScore = lastWinWasBig 
+        ? (CONFIG.POST_WIN_ENTRY_SCORE || 80) 
+        : (CONFIG.NORMAL_ENTRY_SCORE || 70);
+      
+      const lwTag2 = lwActive
+        ? ` [LEARN: T${lw.trend>=0?'+':''}${lw.trend} R${lw.rsi>=0?'+':''}${lw.rsi} V${lw.volume>=0?'+':''}${lw.volume} M${lw.momentum>=0?'+':''}${lw.momentum} S${lw.session>=0?'+':''}${lw.session}]`
+        : ` [LEARN: LOCKED (need ≥50 trades)]`;
+      log("ENTRY", `[ENTRY SCORE] ${entryScore}/100 → ${entryScore >= minEntryScore ? 'VALID' : 'INVALID'} | min:${minEntryScore} | ` +
+        `Trend:${trendAligned?'✅':'❌'}(${tradeSide}) RSI:${rsiPullback?'✅':'❌'} Vol:${volumeConfirmed?'✅':'❌'} ATR:${atrValid?'✅':'❌'} AI:${aiAgrees?'✅':'❌'}${lwTag2}`);
       
       log("ENTRY", `[ENTRY CHECK] AI confidence ${claudeFilter.confidence}% / Required ${CONFIG.OPEN_CONFIDENCE}%`);
 
@@ -6166,6 +6323,22 @@ async function tradingLoop() {
         }
         if (protection.cooldown_active && state.tickCount % 12 === 0) {
           log("INFO", `[BIG WIN] Cooldown active: ${protection.reason}`);
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // TRADING BEHAVIOR CONTROLLER — prevent losses after winning
+      // ════════════════════════════════════════════════════════════
+      {
+        const behavior = checkTradingBehavior(state, CONFIG, indicators);
+        if (!behavior.allow_trade) {
+          if (state.tickCount % 6 === 0) {
+            log("FILTER", `[BEHAVIOR] ${behavior.mode}: ${behavior.reason} → SKIP`);
+          }
+          return;
+        }
+        if (behavior.mode !== "NORMAL" && state.tickCount % 12 === 0) {
+          log("INFO", `[BEHAVIOR] ${behavior.mode}: ${behavior.reason}`);
         }
       }
 
@@ -6476,8 +6649,9 @@ async function tradingLoop() {
       }
 
       // ── I. Entry ────────────────────────────────────────
-      // Allow entry if: score >= 70 AND confidence >= threshold AND squeeze is safe
-      if (entryScore >= CONFIG.ENTRY_SCORE_MIN &&
+      // Allow entry if: score >= minEntryScore (70 normal, 80 after win) AND confidence >= threshold AND squeeze is safe
+      const minScore = lastWinWasBig ? (CONFIG.POST_WIN_ENTRY_SCORE || 80) : (CONFIG.NORMAL_ENTRY_SCORE || 70);
+      if (entryScore >= minScore &&
           claudeFilter.confidence >= confThreshold &&
           squeezeSafe &&
           !volumeTooLow) {
@@ -6647,7 +6821,7 @@ async function tradingLoop() {
         ema9: indicators.ema9, ema21: indicators.ema21,
         fundingRate, fearGreed: externalDataCache?.fearGreed,
         analysis: {
-          action:          entryScore >= CONFIG.ENTRY_SCORE_MIN && claudeFilter.confidence >= confThreshold && squeezeSafe && !volumeTooLow
+          action:          entryScore >= minScore && claudeFilter.confidence >= confThreshold && squeezeSafe && !volumeTooLow
             ? (tradeSide === "BULLISH" ? "LONG" : "SHORT") : "HOLD",
           confidence:      claudeFilter.confidence,
           entryScore:      entryScore,
@@ -6851,6 +7025,13 @@ function saveState() {
     cooldownActive:   state.cooldownActive,
     cooldownUntil:    state.cooldownUntil,
     lossesAfterWin:   state.lossesAfterWin,
+    // Trading Behavior Controller state
+    lastTradeTime:    state.lastTradeTime || 0,
+    lastTradeResult:  state.lastTradeResult || null,
+    lastTradeProfitPct: state.lastTradeProfitPct || 0,
+    lastTradeProfitUSDT: state.lastTradeProfitUSDT || 0,
+    doubleLossCount:  state.doubleLossCount || 0,
+    doubleLossWindowStart: state.doubleLossWindowStart || 0,
     // Revenge Trading Prevention state
     lossModeActive:   state.lossModeActive,
     lossModeUntil:    state.lossModeUntil,
@@ -7805,3 +7986,5 @@ async function main() {
 }
 
 main();
+
+

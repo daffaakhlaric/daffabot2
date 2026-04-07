@@ -6707,6 +6707,16 @@ async function tradingLoop() {
           return;
         }
 
+        // ── HARD GUARD: double-check daily limit tepat sebelum open ──
+        // Cegah race condition antara limit-check di atas dan eksekusi aktual.
+        {
+          const _dl = CONFIG.SNIPER_MODE ? CONFIG.MAX_SNIPER_TRADES : CONFIG.MAX_TRADES_PER_DAY;
+          if ((state.dailyTradeCount || 0) >= _dl) {
+            log("FILTER", `[HARD GUARD] Daily limit ${state.dailyTradeCount}/${_dl} — entry dibatalkan`);
+            return;
+          }
+        }
+
         const opened = await openPosition(
           tradeSide === "BULLISH" ? "LONG" : "SHORT",
           leverage,
@@ -7679,10 +7689,17 @@ function startDashboard() {
     try {
       const result = await db.getDailyStats(CONFIG.DRY_RUN, CONFIG.SYMBOL);
       _supabaseDailyCache = result;
-      // Sync state counter agar limit check pakai angka Supabase
+      // Sync state counter — tapi JANGAN turunkan counter lokal.
+      // Supabase hanya hitung closed trades: saat ada posisi aktif, count Supabase
+      // = N-1 (belum closed), dan override ke N-1 akan membuka slot lagi → BUG.
+      // Gunakan nilai tertinggi antara Supabase vs state lokal.
       const todayNow = new Date().toISOString().slice(0, 10);
       if (result.date === todayNow) {
-        state.dailyTradeCount = result.count;
+        const localCount = state.dailyTradeCount || 0;
+        // Tambahkan posisi aktif yang belum tercatat di Supabase
+        const activeBonus = state.activePosition ? 1 : 0;
+        const effectiveSupabase = result.count + activeBonus;
+        state.dailyTradeCount = Math.max(localCount, effectiveSupabase);
         state.dailyTradeDate  = result.date;
       }
     } catch (_) {}
@@ -7701,8 +7718,9 @@ function startDashboard() {
 
     const _dailyLimit   = CONFIG.SNIPER_MODE ? CONFIG.MAX_SNIPER_TRADES : CONFIG.MAX_TRADES_PER_DAY;
     const _hourlyCount  = (state.hourlyTrades || []).filter(t => Date.now() - t < 3600000).length;
-    // Gunakan data Supabase sebagai sumber utama, fallback ke state
-    const _dailyCount   = _supabaseDailyCache.count || state.dailyTradeCount || 0;
+    // Gunakan nilai tertinggi antara: state lokal (sudah include active pos) vs Supabase
+    // state.dailyTradeCount selalu paling akurat karena diincrement langsung saat open
+    const _dailyCount   = Math.max(state.dailyTradeCount || 0, _supabaseDailyCache.count || 0);
 
     broadcastSSE({
       type:             "stats",

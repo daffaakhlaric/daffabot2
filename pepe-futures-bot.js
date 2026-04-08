@@ -897,7 +897,6 @@ function marketPhaseController(state, config, indicators, klines, tradeSide, ent
   }
   
   // ═══ RULE 9: DIRECTION LOCK (with timeout) ═══
-  const now = Date.now();
   if (state.directionLocked && tradeSide !== state.directionLocked) {
     // Check if lock has expired
     if (state.directionLockedUntil && now > state.directionLockedUntil) {

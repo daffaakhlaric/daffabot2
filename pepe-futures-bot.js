@@ -204,7 +204,7 @@ const CONFIG = {
   DEFAULT_SYMBOL:           "BTCUSDT",  // Force BTC only for now
                                           // Jika false: switching antara BTC dan PEPE
   PAIR_SELECTION_INTERVAL:  300000,     // 5 menit - interval evaluasi ulang pair
-
+//tes/
   // ═══ BIG WIN PROTECTION CONFIG ═══
   BIG_WIN_THRESHOLD_PCT:   0.8,       // Profit % to trigger big win protection (≥0.8%)
   COOLDOWN_MINUTES:         10,        // Cooldown period after big win (5-15 min)

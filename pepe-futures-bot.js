@@ -225,7 +225,19 @@ const CONFIG = {
   REVENGE_PROTECTION_THRESHOLD: 2,    // Activate protection at 2 consecutive losses
   REVENGE_DEFENSIVE_THRESHOLD: 3,     // Activate defensive at 3 consecutive losses
   REVENGE_CONFIDENCE_BOOST: 10,       // Confidence boost in loss mode
-  REVENGE_POSITION_REDUCTION: 0.5,    // Position size reduction in defensive mode (50%)
+  REVENGE_POSITION_REDUCTION: 0.5,   // Position size reduction in defensive mode (50%)
+
+  // ═══ MARKET PHASE CONTROLLER CONFIG ═══
+  CHOP_ATR_THRESHOLD: 0.12,            // ATR below = CHOP market
+  TRENDING_ATR_THRESHOLD: 0.15,       // ATR above = TRENDING market
+  MIN_ENTRY_SCORE: 75,                // Minimum entry score (Rule 3)
+  FAST_LOSS_DURATION_MIN: 3,         // Fast loss = < 3 minutes
+  FAST_LOSS_BLOCK_MIN: 5,             // Block after fast loss
+  POST_WIN_COOLDOWN_MIN: 8,           // Wait 5-10 min after win
+  REVENGE_BLOCK_MIN: 5,               // Wait 5 min after loss
+  OVERTRADE_BLOCK_MIN: 10,            // If trade < 10 min ago, block unless score ≥ 85
+  OVERTRADE_HIGH_SCORE: 85,           // High score threshold for overtrade
+  DIRECTION_LOCK_WINS: 2,             // Lock direction after 2 wins same direction
 
   BTC_SPECIFIC_CONFIG: {
     STOP_LOSS_PCT:    1.5,    // BTC: structure SL ~1.5% (tighter — BTC less volatile)
@@ -332,6 +344,14 @@ let state = {
   lastTradeProfitUSDT: 0,            // Profit USDT of last trade
   doubleLossCount:     0,            // Losses in quick succession window
   doubleLossWindowStart: 0,          // Start time of double loss window
+
+  // ═══ MARKET PHASE CONTROLLER ═══
+  lastTradeDurationMs:  0,            // Duration of last trade in ms
+  fastLossBlockUntil:  0,             // Block until this time after fast loss
+  marketPhase:         "UNKNOWN",     // "TRENDING" or "CHOP"
+  directionLocked:      null,          // "LONG" or "SHORT" if locked
+  directionLockCount:  0,             // Consecutive wins in same direction
+  lastWinDirection:    null,          // Direction of last winning trade
 
   // ═══ REVENGE TRADING PREVENTION ═══
   lossModeActive:      false,        // Active after a loss
@@ -615,13 +635,14 @@ function checkTradingBehavior(state, config, indicators) {
  * @param {Object} config - Bot config
  * @param {number} pnlPct - Profit/loss percentage
  * @param {number} pnlUSDT - Profit/loss in USDT
- */
-function recordTradeResult(state, config, pnlPct, pnlUSDT) {
+  */
+function recordTradeResult(state, config, pnlPct, pnlUSDT, tradeSide = null) {
   const now = Date.now();
   const BIG_WIN_PCT = config.BIG_WIN_THRESHOLD_PCT_V2 || 0.5;
   const BIG_WIN_USDT = config.BIG_WIN_THRESHOLD_USDT || 0.3;
   const COOLDOWN_MIN = config.COOLDOWN_MINUTES_V2 || 8;
   const DOUBLE_LOSS_WINDOW = config.DOUBLE_LOSS_WINDOW_MIN || 10;
+  const DIRECTION_LOCK_WINS = config.DIRECTION_LOCK_WINS || 2;
   
   // Update last trade info
   state.lastTradeTime = now;
@@ -634,6 +655,21 @@ function recordTradeResult(state, config, pnlPct, pnlUSDT) {
     state.doubleLossCount = 0;
     state.doubleLossWindowStart = 0;
     
+    // RULE 9: DIRECTION LOCK - track consecutive wins same direction
+    if (tradeSide) {
+      if (state.lastWinDirection === tradeSide) {
+        state.directionLockCount = (state.directionLockCount || 0) + 1;
+      } else {
+        state.directionLockCount = 1;
+      }
+      state.lastWinDirection = tradeSide;
+      
+      if (state.directionLockCount >= DIRECTION_LOCK_WINS) {
+        state.directionLocked = tradeSide;
+        log("BEHAVIOR", `[DIRECTION LOCK] ${DIRECTION_LOCK_WINS} consecutive ${tradeSide} wins → LOCKED`);
+      }
+    }
+    
     // RULE 1: BIG WIN DETECTION - activate cooling
     if (pnlPct >= BIG_WIN_PCT || pnlUSDT >= BIG_WIN_USDT) {
       state.cooldownActive = true;
@@ -643,6 +679,9 @@ function recordTradeResult(state, config, pnlPct, pnlUSDT) {
   } else {
     // LOSS
     state.lastTradeResult = "LOSS";
+    state.directionLocked = null;
+    state.directionLockCount = 0;
+    state.lastWinDirection = null;
     
     // RULE 6: Track double loss
     if (state.doubleLossCount === 0) {
@@ -659,6 +698,215 @@ function recordTradeResult(state, config, pnlPct, pnlUSDT) {
       }
     }
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MARKET PHASE CONTROLLER
+// Detect market condition and prevent bad trades
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Detect market phase (TRENDING or CHOP)
+ * @param {Object} indicators - RSI, EMA, ATR, etc
+ * @param {Array} klines - Price candles
+ * @param {string} tradeSide - Current trade direction
+ * @returns {{phase: string, reason: string}}
+ */
+function detectMarketPhase(indicators, klines, tradeSide) {
+  const rsi = indicators.rsi || 50;
+  const ema9 = indicators.ema9 || 0;
+  const ema21 = indicators.ema21 || 0;
+  const atrPct = indicators.atrPct || 0;
+  
+  const ATR_CHOP = 0.12;
+  const ATR_TRENDING = 0.15;
+  
+  // Check EMA alignment
+  const emaAligned = tradeSide === "BULLISH" ? ema9 > ema21 : ema9 < ema21;
+  
+  // Check for clear higher highs / lower lows in recent candles
+  let clearDirection = false;
+  if (klines && klines.length >= 5) {
+    const recent = klines.slice(-5);
+    const highs = recent.map(c => c.high);
+    const lows = recent.map(c => c.low);
+    
+    const higherHighs = highs.slice(1).every((h, i) => h > highs[i]);
+    const lowerLows = lows.slice(1).every((l, i) => l < lows[i]);
+    clearDirection = higherHighs || lowerLows;
+  }
+  
+  // Determine phase
+  let phase = "CHOP";
+  let reason = "";
+  
+  if (atrPct >= ATR_TRENDING && emaAligned && clearDirection) {
+    phase = "TRENDING";
+    reason = `ATR:${atrPct.toFixed(2)}% aligned EMA clear direction`;
+  } else if (atrPct < ATR_CHOP) {
+    phase = "CHOP";
+    reason = `ATR:${atrPct.toFixed(2)}% < ${ATR_CHOP}% (low volatility)`;
+  } else if (!emaAligned) {
+    phase = "CHOP";
+    reason = "EMA crossing frequently (no clear trend)";
+  } else {
+    phase = "CHOP";
+    reason = "No clear higher high / lower low";
+  }
+  
+  return { phase, reason };
+}
+
+/**
+ * Final trade decision filter - THE FINAL DECISION LAYER
+ * @param {Object} state - Bot state
+ * @param {Object} config - Bot config
+ * @param {Object} indicators - Market indicators
+ * @param {Array} klines - Price candles
+ * @param {string} tradeSide - Proposed trade direction
+ * @param {number} entryScore - Entry quality score
+ * @returns {{allow_trade: boolean, mode: string, reason: string}}
+ */
+function marketPhaseController(state, config, indicators, klines, tradeSide, entryScore) {
+  const now = Date.now();
+  
+  const MIN_ENTRY_SCORE = config.MIN_ENTRY_SCORE || 75;
+  const FAST_LOSS_DURATION = (config.FAST_LOSS_DURATION_MIN || 3) * 60 * 1000;
+  const FAST_LOSS_BLOCK = (config.FAST_LOSS_BLOCK_MIN || 5) * 60 * 1000;
+  const POST_WIN_COOLDOWN = (config.POST_WIN_COOLDOWN_MIN || 8) * 60 * 1000;
+  const REVENGE_BLOCK = (config.REVENGE_BLOCK_MIN || 5) * 60 * 1000;
+  const OVERTRADE_BLOCK = (config.OVERTRADE_BLOCK_MIN || 10) * 60 * 1000;
+  const OVERTRADE_HIGH_SCORE = config.OVERTRADE_HIGH_SCORE || 85;
+  const ATR_CHOP = config.CHOP_ATR_THRESHOLD || 0.12;
+  
+  // ═══ RULE 1: MARKET PHASE FILTER ═══
+  const marketPhase = detectMarketPhase(indicators, klines, tradeSide);
+  state.marketPhase = marketPhase.phase;
+  
+  if (marketPhase.phase === "CHOP") {
+    return {
+      allow_trade: false,
+      mode: "BLOCKED",
+      reason: `CHOP market - ${marketPhase.reason}`
+    };
+  }
+  
+  // ═══ RULE 2: TREND ALIGNMENT ═══
+  const htfTrend = indicators.htfTrend || "";
+  if (tradeSide === "BULLISH" && htfTrend === "BEARISH") {
+    return {
+      allow_trade: false,
+      mode: "BLOCKED",
+      reason: "Counter-trend: HTF bearish, rejecting LONG"
+    };
+  }
+  if (tradeSide === "SHORT" && htfTrend === "BULLISH") {
+    return {
+      allow_trade: false,
+      mode: "BLOCKED",
+      reason: "Counter-trend: HTF bullish, rejecting SHORT"
+    };
+  }
+  
+  // ═══ RULE 3: SNIPER QUALITY GATE ═══
+  if (entryScore < MIN_ENTRY_SCORE) {
+    return {
+      allow_trade: false,
+      mode: "BLOCKED",
+      reason: `Entry score ${entryScore} < min ${MIN_ENTRY_SCORE}`
+    };
+  }
+  
+  // ═══ RULE 4: POST WIN CONTROL ═══
+  if (state.lastTradeResult === "WIN" && state.lastTradeTime > 0) {
+    const minSinceWin = (now - state.lastTradeTime) / 60000;
+    if (minSinceWin < 8 && state.lastTradeProfitUSDT >= 0.3) {
+      return {
+        allow_trade: false,
+        mode: "COOLDOWN",
+        reason: `Post-win: wait ${(8 - minSinceWin).toFixed(1)}min more`
+      };
+    }
+  }
+  
+  // ═══ RULE 5: ANTI REVENGE SYSTEM ═══
+  if (state.lastTradeResult === "LOSS" && state.lastTradeTime > 0) {
+    const minSinceLoss = (now - state.lastTradeTime) / 60000;
+    if (minSinceLoss < 5) {
+      return {
+        allow_trade: false,
+        mode: "BLOCKED",
+        reason: `Anti-revenge: last loss ${minSinceLoss.toFixed(1)}min ago`
+      };
+    }
+    
+    // Check for 2 consecutive losses for 30 min pause
+    if ((stats.lossStreak || 0) >= 2) {
+      return {
+        allow_trade: false,
+        mode: "BLOCKED",
+        reason: `2 losses in row - pause 30min (lossStreak: ${stats.lossStreak})`
+      };
+    }
+  }
+  
+  // ═══ RULE 6: FAST LOSS BLOCK ═══
+  if (state.fastLossBlockUntil && now < state.fastLossBlockUntil) {
+    const remaining = Math.ceil((state.fastLossBlockUntil - now) / 60000);
+    return {
+      allow_trade: false,
+      mode: "BLOCKED",
+      reason: `Fast loss block: wait ${remaining}min`
+    };
+  }
+  
+  // ═══ RULE 7: TRADE LIMIT CONTROL ═══
+  const dailyLimit = config.SNIPER_MODE ? config.MAX_SNIPER_TRADES : config.MAX_TRADES_PER_DAY;
+  if ((state.dailyTradeCount || 0) >= dailyLimit) {
+    return {
+      allow_trade: false,
+      mode: "BLOCKED",
+      reason: `Daily limit reached: ${state.dailyTradeCount}/${dailyLimit}`
+    };
+  }
+  
+  // ═══ RULE 8: ANTI OVERTRADING ═══
+  if (state.lastTradeTime > 0) {
+    const minSinceLastTrade = (now - state.lastTradeTime) / 60000;
+    if (minSinceLastTrade < 10 && entryScore < OVERTRADE_HIGH_SCORE) {
+      return {
+        allow_trade: false,
+        mode: "BLOCKED",
+        reason: `Overtrade: last trade ${minSinceLastTrade.toFixed(1)}min ago, score ${entryScore} < ${OVERTRADE_HIGH_SCORE}`
+      };
+    }
+  }
+  
+  // ═══ RULE 9: DIRECTION LOCK ═══
+  if (state.directionLocked && tradeSide !== state.directionLocked) {
+    return {
+      allow_trade: false,
+      mode: "LOCKED",
+      reason: `Direction locked: only ${state.directionLocked} allowed`
+    };
+  }
+  
+  // ═══ RULE 10: VOLATILITY FILTER ═══
+  const atrValue = indicators.atrPct || 0;
+  if (atrValue < ATR_CHOP) {
+    return {
+      allow_trade: false,
+      mode: "BLOCKED",
+      reason: `ATR ${atrValue.toFixed(2)}% < ${ATR_CHOP}% (market too weak)`
+    };
+  }
+  
+  // All checks passed
+  return {
+    allow_trade: true,
+    mode: "NORMAL",
+    reason: `TRENDING market, aligned with HTF, score ${entryScore} ≥ ${MIN_ENTRY_SCORE}`
+  };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1944,7 +2192,21 @@ async function closePosition(reason, currentPrice, symbol = null) {
   recordBigWinTrade(state, CONFIG, pnlPct);
 
   // ═══ TRADING BEHAVIOR CONTROLLER: Record trade result ═══
-  recordTradeResult(state, CONFIG, pnlPct, pnlUSDT);
+  // Get trade side from position for direction lock
+  const tradeSide = pos ? pos.side : null;
+  recordTradeResult(state, CONFIG, pnlPct, pnlUSDT, tradeSide);
+
+  // ═══ MARKET PHASE CONTROLLER: Check for fast loss ═══
+  if (pos && pos.openTime) {
+    const tradeDurationMs = Date.now() - new Date(pos.openTime).getTime();
+    state.lastTradeDurationMs = tradeDurationMs;
+    
+    // RULE 6: FAST LOSS BLOCK - if loss < 3 min
+    if (pnlPct < 0 && tradeDurationMs < (CONFIG.FAST_LOSS_DURATION_MIN || 3) * 60 * 1000) {
+      state.fastLossBlockUntil = Date.now() + ((CONFIG.FAST_LOSS_BLOCK_MIN || 5) * 60 * 1000);
+      log("BEHAVIOR", `[FAST LOSS] Duration: ${(tradeDurationMs/60000).toFixed(1)}min → blocking next trade 5min`);
+    }
+  }
 
   // SMC: Daily loss accumulation
   const todayD = new Date().toISOString().slice(0, 10);
@@ -6372,6 +6634,22 @@ async function tradingLoop() {
       }
 
       // ════════════════════════════════════════════════════════════
+      // MARKET PHASE CONTROLLER — Final Decision Layer
+      // ════════════════════════════════════════════════════════════
+      {
+        const decision = marketPhaseController(state, CONFIG, indicators, klines, tradeSide, entryScore);
+        if (!decision.allow_trade) {
+          if (state.tickCount % 6 === 0) {
+            log("FILTER", `[MARKET PHASE] ${decision.mode}: ${decision.reason} → BLOCKED`);
+          }
+          return;
+        }
+        if (decision.mode !== "NORMAL" && state.tickCount % 12 === 0) {
+          log("INFO", `[MARKET PHASE] ${decision.mode}: ${decision.reason}`);
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════
       // CONSECUTIVE LOSS PAUSE — stop after 2 losses, require fresh structure
       // ════════════════════════════════════════════════════════════
       if ((stats.lossStreak || 0) >= CONFIG.MAX_CONSEC_LOSSES) {
@@ -7042,6 +7320,13 @@ function saveState() {
     lastTradeProfitUSDT: state.lastTradeProfitUSDT || 0,
     doubleLossCount:  state.doubleLossCount || 0,
     doubleLossWindowStart: state.doubleLossWindowStart || 0,
+    // Market Phase Controller state
+    lastTradeDurationMs: state.lastTradeDurationMs || 0,
+    fastLossBlockUntil: state.fastLossBlockUntil || 0,
+    marketPhase:      state.marketPhase || "UNKNOWN",
+    directionLocked:   state.directionLocked || null,
+    directionLockCount: state.directionLockCount || 0,
+    lastWinDirection:  state.lastWinDirection || null,
     // Revenge Trading Prevention state
     lossModeActive:   state.lossModeActive,
     lossModeUntil:    state.lossModeUntil,

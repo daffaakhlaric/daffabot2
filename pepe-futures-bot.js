@@ -4076,7 +4076,7 @@ async function openPosition(side, leverage, price, overrideQty = null, symbol = 
   }
   
   // Log untuk debugging
-  log("INFO", `📊 Order: Symbol=${tradeSymbol} isPepe=${isPepe} Price=${price} Lev=${leverage}`);
+  log("INFO", `📊 Order: Symbol=${tradeSymbol} BTC_ONLY Price=${price} Lev=${leverage}`);
   
   const qty = overrideQty || calcOrderSize(price, leverage);
   const liqPrice = calcLiquidationPrice(side, orderPrice, leverage);

@@ -288,6 +288,35 @@ const CONFIG = {
     SHORT_RANGE: [40, 55],        // RSI pullback for SHORT entry
   },
 
+  // ═══ ANTI FAKE BREAKOUT CONFIG ═══
+  ANTI_FAKE_BREAKOUT: {
+    ENABLED: true,
+    // Candle body must be ≥ 60% of range
+    MIN_BODY_RATIO: 0.60,
+    // Wick must be < body (small wick)
+    WICK_LESS_THAN_BODY: true,
+    // For LONG: close must be near high (≥ 70% from low to high)
+    CLOSE_NEAR_HIGH_RATIO: 0.70,
+    // Volume must be ≥ 1.3x AND sustained (not 1 spike)
+    MIN_VOLUME_RATIO: 1.3,
+    SUSTAINED_VOLUME_BARS: 2,    // Volume must persist for 2+ bars
+  },
+
+  // ═══ EXHAUSTION MOVE BLOCK CONFIG ═══
+  EXHAUSTION_BLOCK: {
+    ENABLED: true,
+    RSI_EXHAUSTION_LONG: 65,     // RSI > 65 = LONG exhaustion
+    RSI_EXHAUSTION_SHORT: 35,    // RSI < 35 = SHORT exhaustion
+    PRICE_DIST_EMA_THRESHOLD: 0.5, // Price distance from EMA20 > 0.5% = late entry
+  },
+
+  // ═══ FOMO ENTRY BLOCK CONFIG ═══
+  FOMO_BLOCK: {
+    ENABLED: true,
+    PRICE_MOVE_THRESHOLD: 0.5,   // If price moved > 0.5% without pullback = FOMO
+    REQUIRE_PULLBACK: true,       // Require pullback before entry
+  },
+
   // ═══ MARKET PHASE DETECTOR ═══
   MARKET_PHASE: {
     TREND: {
@@ -1561,6 +1590,286 @@ function updateChopConfirmation(state, isChop) {
       state.chopModeActive = false;
     }
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ANTI FAKE BREAKOUT SYSTEM
+// Validate breakouts to prevent false entries
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Validate breakout to prevent fake breakout entries
+ * @param {Array} klines - Price candles
+ * @param {Object} indicators - Market indicators
+ * @param {Object} config - Bot config
+ * @param {string} side - "LONG" or "SHORT"
+ * @returns {{valid: boolean, isFakeBreakout: boolean, reason: string}}
+ */
+function validateBreakout(klines, indicators, config, side) {
+  const antiFakeConfig = (config.ANTI_FAKE_BREAKOUT || {});
+  
+  if (!antiFakeConfig.ENABLED) {
+    return { valid: true, isFakeBreakout: false, reason: "Anti-fake disabled" };
+  }
+  
+  if (!klines || klines.length < 3) {
+    return { valid: false, isFakeBreakout: true, reason: "Insufficient candles" };
+  }
+  
+  const lastCandle = klines[klines.length - 1];
+  const prevCandle = klines[klines.length - 2];
+  const volRatio = indicators.volumeRatio || 1;
+  
+  // Calculate candle properties
+  const range = lastCandle.high - lastCandle.low;
+  const body = Math.abs(lastCandle.close - lastCandle.open);
+  const bodyRatio = range > 0 ? body / range : 0;
+  
+  // Upper/lower wick
+  const upperWick = lastCandle.high - Math.max(lastCandle.open, lastCandle.close);
+  const lowerWick = Math.min(lastCandle.open, lastCandle.close) - lastCandle.low;
+  
+  // Check body ratio (must be ≥ 60%)
+  if (bodyRatio < (antiFakeConfig.MIN_BODY_RATIO || 0.60)) {
+    return {
+      valid: false,
+      isFakeBreakout: true,
+      reason: `FAKE: Body ${(bodyRatio * 100).toFixed(0)}% < ${((antiFakeConfig.MIN_BODY_RATIO || 0.60) * 100).toFixed(0)}% required`
+    };
+  }
+  
+  // Check wick size (wick must be < body for valid breakout)
+  if (antiFakeConfig.WICK_LESS_THAN_BODY) {
+    const maxWick = Math.max(upperWick, lowerWick);
+    if (maxWick >= body) {
+      return {
+        valid: false,
+        isFakeBreakout: true,
+        reason: `FAKE: Wick ${maxWick.toFixed(0)} >= Body ${body.toFixed(0)}`
+      };
+    }
+  }
+  
+  // For LONG: close must be near high (≥ 70% from low to high)
+  // For SHORT: close must be near low (≤ 30% from low to high)
+  if (side === "LONG") {
+    const closePosition = range > 0 ? (lastCandle.close - lastCandle.low) / range : 0;
+    if (closePosition < (antiFakeConfig.CLOSE_NEAR_HIGH_RATIO || 0.70)) {
+      return {
+        valid: false,
+        isFakeBreakout: true,
+        reason: `FAKE: Close position ${(closePosition * 100).toFixed(0)}% < ${((antiFakeConfig.CLOSE_NEAR_HIGH_RATIO || 0.70) * 100).toFixed(0)}% (not near high)`
+      };
+    }
+  } else {
+    const closePosition = range > 0 ? (lastCandle.close - lastCandle.low) / range : 0;
+    if (closePosition > (1 - (antiFakeConfig.CLOSE_NEAR_HIGH_RATIO || 0.70))) {
+      return {
+        valid: false,
+        isFakeBreakout: true,
+        reason: `FAKE: Close position ${(closePosition * 100).toFixed(0)}% > ${((1 - (antiFakeConfig.CLOSE_NEAR_HIGH_RATIO || 0.70)) * 100).toFixed(0)}% (not near low)`
+      };
+    }
+  }
+  
+  // Check volume (must be ≥ 1.3x AND sustained)
+  const sustainedBars = antiFakeConfig.SUSTAINED_VOLUME_BARS || 2;
+  let volumeSustained = true;
+  if (sustainedBars > 1 && klines.length >= sustainedBars + 1) {
+    for (let i = 1; i <= sustainedBars; i++) {
+      const idx = klines.length - 1 - i;
+      const avgVol = indicators.avgVolumeRatio || 1;
+      const candleVol = klines[idx].volume;
+      const prevCandleVol = klines[idx - 1]?.volume || candleVol;
+      if (candleVol < avgVol * (antiFakeConfig.MIN_VOLUME_RATIO || 1.3)) {
+        volumeSustained = false;
+        break;
+      }
+    }
+  }
+  
+  if (volRatio < (antiFakeConfig.MIN_VOLUME_RATIO || 1.3) || !volumeSustained) {
+    return {
+      valid: false,
+      isFakeBreakout: true,
+      reason: `FAKE: Volume ${volRatio.toFixed(1)}x < ${antiFakeConfig.MIN_VOLUME_RATIO || 1.3}x or not sustained`
+    };
+  }
+  
+  return { valid: true, isFakeBreakout: false, reason: "Breakout VALID" };
+}
+
+/**
+ * Check for exhaustion move (late entry after strong move)
+ * @param {Object} indicators - Market indicators
+ * @param {number} price - Current price
+ * @param {Object} config - Bot config
+ * @param {string} side - "LONG" or "SHORT"
+ * @returns {{blocked: boolean, reason: string}}
+ */
+function checkExhaustionMove(indicators, price, config, side) {
+  const exhaustionConfig = (config.EXHAUSTION_BLOCK || {});
+  
+  if (!exhaustionConfig.ENABLED) {
+    return { blocked: false, reason: "Exhaustion check disabled" };
+  }
+  
+  const rsi = indicators.rsi || 50;
+  const ema9 = indicators.ema9 || price;
+  const ema21 = indicators.ema21 || price;
+  
+  // Calculate price distance from EMA9
+  const priceDistEma = Math.abs(price - ema9) / price * 100;
+  
+  if (side === "LONG") {
+    // Block if RSI > 65 AND price distance from EMA > threshold
+    if (rsi > (exhaustionConfig.RSI_EXHAUSTION_LONG || 65) && 
+        priceDistEma > (exhaustionConfig.PRICE_DIST_EMA_THRESHOLD || 0.5)) {
+      return {
+        blocked: true,
+        reason: `EXHAUSTION: RSI ${rsi.toFixed(0)} > ${exhaustionConfig.RSI_EXHAUSTION_LONG || 65} + price dist ${priceDistEma.toFixed(2)}% > ${exhaustionConfig.PRICE_DIST_EMA_THRESHOLD || 0.5}%`
+      };
+    }
+  } else {
+    // Block if RSI < 35 AND price distance from EMA > threshold
+    if (rsi < (exhaustionConfig.RSI_EXHAUSTION_SHORT || 35) && 
+        priceDistEma > (exhaustionConfig.PRICE_DIST_EMA_THRESHOLD || 0.5)) {
+      return {
+        blocked: true,
+        reason: `EXHAUSTION: RSI ${rsi.toFixed(0)} < ${exhaustionConfig.RSI_EXHAUSTION_SHORT || 35} + price dist ${priceDistEma.toFixed(2)}% > ${exhaustionConfig.PRICE_DIST_EMA_THRESHOLD || 0.5}%`
+      };
+    }
+  }
+  
+  return { blocked: false, reason: "No exhaustion" };
+}
+
+/**
+ * Check for FOMO entry (chasing after price already moved)
+ * @param {Array} klines - Price candles
+ * @param {Object} indicators - Market indicators
+ * @param {Object} config - Bot config
+ * @param {string} side - "LONG" or "SHORT"
+ * @returns {{blocked: boolean, reason: string}}
+ */
+function checkFomoEntry(klines, indicators, config, side) {
+  const fomoConfig = (config.FOMO_BLOCK || {});
+  
+  if (!fomoConfig.ENABLED || !fomoConfig.REQUIRE_PULLBACK) {
+    return { blocked: false, reason: "FOMO check disabled" };
+  }
+  
+  if (!klines || klines.length < 5) {
+    return { blocked: false, reason: "Insufficient candles for FOMO check" };
+  }
+  
+  const lastCandle = klines[klines.length - 1];
+  const prevCandle = klines[klines.length - 2];
+  const moveThreshold = fomoConfig.PRICE_MOVE_THRESHOLD || 0.5;
+  
+  // Calculate how much price has moved since last pullback
+  let moveFromPullback = 0;
+  
+  // Find last pullback candle (smaller body, opposite direction bias)
+  for (let i = 2; i <= 5; i++) {
+    const idx = klines.length - i;
+    if (idx < 0) break;
+    const candle = klines[idx];
+    const range = candle.high - candle.low;
+    const body = Math.abs(candle.close - candle.open);
+    const bodyRatio = range > 0 ? body / range : 0;
+    
+    // Pullback candle: small body (< 50% of range)
+    if (bodyRatio < 0.5) {
+      // Calculate move from this pullback
+      if (side === "LONG") {
+        moveFromPullback = (lastCandle.close - candle.low) / candle.low * 100;
+      } else {
+        moveFromPullback = (candle.high - lastCandle.close) / candle.high * 100;
+      }
+      break;
+    }
+  }
+  
+  if (moveFromPullback > moveThreshold) {
+    return {
+      blocked: true,
+      reason: `FOMO: Price moved ${moveFromPullback.toFixed(2)}% without pullback > ${moveThreshold}% threshold`
+    };
+  }
+  
+  return { blocked: false, reason: "No FOMO detected" };
+}
+
+/**
+ * Check if we should wait for next candle confirmation (do NOT enter on breakout candle)
+ * @param {Array} klines - Price candles
+ * @param {Object} indicators - Market indicators
+ * @param {Object} config - Bot config
+ * @param {string} side - "LONG" or "SHORT"
+ * @param {boolean} breakoutDetected - Whether breakout was detected
+ * @returns {{waitForConfirm: boolean, reason: string}}
+ */
+function checkBreakoutConfirmationRequired(klines, indicators, config, side, breakoutDetected) {
+  if (!breakoutDetected) {
+    return { waitForConfirm: false, reason: "No breakout detected" };
+  }
+  
+  if (!klines || klines.length < 2) {
+    return { waitForConfirm: true, reason: "Need more candles for confirmation" };
+  }
+  
+  const lastCandle = klines[klines.length - 1];
+  const range = lastCandle.high - lastCandle.low;
+  const body = Math.abs(lastCandle.close - lastCandle.open);
+  const bodyRatio = range > 0 ? body / range : 0;
+  
+  // If last candle is a breakout candle (large body, close near high/low)
+  // We need to wait for the NEXT candle
+  if (bodyRatio >= 0.6) {
+    // This is a breakout candle - do NOT enter now
+    return {
+      waitForConfirm: true,
+      reason: "BREAKOUT CANDLE - Must wait for next candle confirmation"
+    };
+  }
+  
+  // Check if this is the confirmation candle (after breakout)
+  // For LONG: need bullish candle + higher low + holding above breakout
+  // For SHORT: need bearish candle + lower high + holding below breakout
+  const prevCandle = klines[klines.length - 2];
+  const prevRange = prevCandle.high - prevCandle.low;
+  const prevBody = Math.abs(prevCandle.close - prevCandle.open);
+  const prevBodyRatio = prevRange > 0 ? prevBody / prevRange : 0;
+  
+  // If previous candle was the breakout candle, this should be confirmation
+  if (prevBodyRatio >= 0.6) {
+    if (side === "LONG") {
+      const isBullish = lastCandle.close > lastCandle.open;
+      const higherLow = lastCandle.low > prevCandle.low;
+      const holdsAbove = lastCandle.close > prevCandle.low;
+      
+      if (!isBullish || !higherLow || !holdsAbove) {
+        return {
+          waitForConfirm: true,
+          reason: `CONFIRM NEEDED: Bullish=${isBullish} HigherLow=${higherLow} HoldsAbove=${holdsAbove}`
+        };
+      }
+    } else {
+      const isBearish = lastCandle.close < lastCandle.open;
+      const lowerHigh = lastCandle.high < prevCandle.high;
+      const holdsBelow = lastCandle.close < prevCandle.high;
+      
+      if (!isBearish || !lowerHigh || !holdsBelow) {
+        return {
+          waitForConfirm: true,
+          reason: `CONFIRM NEEDED: Bearish=${isBearish} LowerHigh=${lowerHigh} HoldsBelow=${holdsBelow}`
+        };
+      }
+    }
+  }
+  
+  return { waitForConfirm: false, reason: "Confirmation candle detected" };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -8729,6 +9038,62 @@ async function tradingLoop() {
         // Log trend status
         if (state.tickCount % 12 === 0) {
           log("SNIPER", `[MARKET PHASE] ${trendPhase.phase} (${trendPhase.trendStrength}) | ${trendPhase.reason}`);
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // 🚨 ANTI FAKE BREAKOUT: Validate breakout before entry
+      // ════════════════════════════════════════════════════════════
+      {
+        const breakoutValidation = validateBreakout(klines, indicators, CONFIG, tradeSide === "BULLISH" ? "LONG" : "SHORT");
+        if (breakoutValidation.isFakeBreakout) {
+          if (state.tickCount % 6 === 0) {
+            log("FILTER", `[FAKE BREAKOUT] ${breakoutValidation.reason} → HOLD`);
+          }
+          return;
+        }
+        
+        if (breakoutDetected && state.tickCount % 12 === 0) {
+          log("SNIPER", `[BREAKOUT VALID] ✅ ${breakoutValidation.reason}`);
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // 🚨 EXHAUSTION MOVE BLOCK: Prevent late entry after strong move
+      // ════════════════════════════════════════════════════════════
+      {
+        const exhaustionCheck = checkExhaustionMove(indicators, price, CONFIG, tradeSide === "BULLISH" ? "LONG" : "SHORT");
+        if (exhaustionCheck.blocked) {
+          if (state.tickCount % 6 === 0) {
+            log("FILTER", `[EXHAUSTION] ${exhaustionCheck.reason} → HOLD`);
+          }
+          return;
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // 🚨 FOMO ENTRY BLOCK: Prevent chasing after price moved
+      // ════════════════════════════════════════════════════════════
+      {
+        const fomoCheck = checkFomoEntry(klines, indicators, CONFIG, tradeSide === "BULLISH" ? "LONG" : "SHORT");
+        if (fomoCheck.blocked) {
+          if (state.tickCount % 6 === 0) {
+            log("FILTER", `[FOMO BLOCK] ${fomoCheck.reason} → HOLD`);
+          }
+          return;
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════
+      // 🚨 BREAKOUT CONFIRMATION REQUIRED: DO NOT ENTER on breakout candle
+      // ════════════════════════════════════════════════════════════
+      {
+        const confirmRequired = checkBreakoutConfirmationRequired(klines, indicators, CONFIG, tradeSide === "BULLISH" ? "LONG" : "SHORT", breakoutDetected);
+        if (confirmRequired.waitForConfirm) {
+          if (state.tickCount % 6 === 0) {
+            log("FILTER", `[BREAKOUT CONFIRM] ${confirmRequired.reason} → WAIT`);
+          }
+          return;
         }
       }
 

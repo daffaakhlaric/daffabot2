@@ -237,7 +237,9 @@ const CONFIG = {
   REVENGE_BLOCK_MIN: 5,               // Wait 5 min after loss
   OVERTRADE_BLOCK_MIN: 10,            // If trade < 10 min ago, block unless score ≥ 85
   OVERTRADE_HIGH_SCORE: 85,           // High score threshold for overtrade
-  DIRECTION_LOCK_WINS: 2,             // Lock direction after 2 wins same direction
+  POST_WIN_LOCK_PROFIT: 0.3,          // Min profit % to trigger direction lock
+  POST_WIN_LOCK_DURATION: 10,        // Direction lock duration in minutes
+  DIRECTION_LOCK_WINS: 1,            // Lock direction after 1 win (Rule 2)
 
   BTC_SPECIFIC_CONFIG: {
     STOP_LOSS_PCT:    1.5,    // BTC: structure SL ~1.5% (tighter — BTC less volatile)
@@ -350,6 +352,7 @@ let state = {
   fastLossBlockUntil:  0,             // Block until this time after fast loss
   marketPhase:         "UNKNOWN",     // "TRENDING" or "CHOP"
   directionLocked:      null,          // "LONG" or "SHORT" if locked
+  directionLockedUntil: 0,            // Timestamp when lock expires
   directionLockCount:  0,             // Consecutive wins in same direction
   lastWinDirection:    null,          // Direction of last winning trade
 
@@ -642,7 +645,9 @@ function recordTradeResult(state, config, pnlPct, pnlUSDT, tradeSide = null) {
   const BIG_WIN_USDT = config.BIG_WIN_THRESHOLD_USDT || 0.3;
   const COOLDOWN_MIN = config.COOLDOWN_MINUTES_V2 || 8;
   const DOUBLE_LOSS_WINDOW = config.DOUBLE_LOSS_WINDOW_MIN || 10;
-  const DIRECTION_LOCK_WINS = config.DIRECTION_LOCK_WINS || 2;
+  const DIRECTION_LOCK_WINS = config.DIRECTION_LOCK_WINS || 1;
+  const POST_WIN_LOCK_PROFIT = config.POST_WIN_LOCK_PROFIT || 0.3;
+  const POST_WIN_LOCK_DURATION = (config.POST_WIN_LOCK_DURATION || 10) * 60 * 1000; // minutes to ms
   
   // Update last trade info
   state.lastTradeTime = now;
@@ -655,6 +660,13 @@ function recordTradeResult(state, config, pnlPct, pnlUSDT, tradeSide = null) {
     state.doubleLossCount = 0;
     state.doubleLossWindowStart = 0;
     
+    // RULE 2: POST WIN LOCK - lock direction after win ≥ 0.3%
+    if (tradeSide && pnlPct >= POST_WIN_LOCK_PROFIT) {
+      state.directionLocked = tradeSide;
+      state.directionLockedUntil = now + POST_WIN_LOCK_DURATION;
+      log("BEHAVIOR", `[POST WIN LOCK] ${tradeSide} locked for ${POST_WIN_LOCK_DURATION/60000}min after +${pnlPct.toFixed(2)}% win`);
+    }
+    
     // RULE 9: DIRECTION LOCK - track consecutive wins same direction
     if (tradeSide) {
       if (state.lastWinDirection === tradeSide) {
@@ -666,6 +678,7 @@ function recordTradeResult(state, config, pnlPct, pnlUSDT, tradeSide = null) {
       
       if (state.directionLockCount >= DIRECTION_LOCK_WINS) {
         state.directionLocked = tradeSide;
+        state.directionLockedUntil = now + POST_WIN_LOCK_DURATION;
         log("BEHAVIOR", `[DIRECTION LOCK] ${DIRECTION_LOCK_WINS} consecutive ${tradeSide} wins → LOCKED`);
       }
     }
@@ -680,6 +693,7 @@ function recordTradeResult(state, config, pnlPct, pnlUSDT, tradeSide = null) {
     // LOSS
     state.lastTradeResult = "LOSS";
     state.directionLocked = null;
+    state.directionLockedUntil = 0;
     state.directionLockCount = 0;
     state.lastWinDirection = null;
     
@@ -882,13 +896,20 @@ function marketPhaseController(state, config, indicators, klines, tradeSide, ent
     }
   }
   
-  // ═══ RULE 9: DIRECTION LOCK ═══
+  // ═══ RULE 9: DIRECTION LOCK (with timeout) ═══
+  const now = Date.now();
   if (state.directionLocked && tradeSide !== state.directionLocked) {
-    return {
-      allow_trade: false,
-      mode: "LOCKED",
-      reason: `Direction locked: only ${state.directionLocked} allowed`
-    };
+    // Check if lock has expired
+    if (state.directionLockedUntil && now > state.directionLockedUntil) {
+      state.directionLocked = null;
+      state.directionLockedUntil = 0;
+    } else {
+      return {
+        allow_trade: false,
+        mode: "LOCKED",
+        reason: `Direction locked: only ${state.directionLocked} allowed`
+      };
+    }
   }
   
   // ═══ RULE 10: VOLATILITY FILTER ═══
@@ -7324,6 +7345,7 @@ function saveState() {
     fastLossBlockUntil: state.fastLossBlockUntil || 0,
     marketPhase:      state.marketPhase || "UNKNOWN",
     directionLocked:   state.directionLocked || null,
+    directionLockedUntil: state.directionLockedUntil || 0,
     directionLockCount: state.directionLockCount || 0,
     lastWinDirection:  state.lastWinDirection || null,
     // Revenge Trading Prevention state

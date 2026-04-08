@@ -1,7 +1,17 @@
 /**
- * BTC Strategy Module - ADAPTIVE AUTO PAIR TRADING SYSTEM
+ * BTC Strategy Module - TREND-FOLLOWING SNIPER SYSTEM
  * Trading strategy specifically for BTCUSDT 15m timeframe
  * Indicators: EMA20/EMA50, RSI, ATR
+ * 
+ * RULES:
+ * 1. NO mean-reversion (RSI < 30 → LONG or RSI > 70 → SHORT is DELETED)
+ * 2. ONLY trend pullback entries
+ * 3. Strict entry filter (score ≥ 75, gap ≥ 25)
+ * 4. Market session filter (Asia = strict mode)
+ * 5. Trade frequency control
+ * 6. Adaptive profit system
+ * 7. Trend strength detection
+ * 8. Block bad market conditions
  */
 
 "use strict";
@@ -12,6 +22,42 @@ const httpsAgent = new https.Agent({ rejectUnauthorized: true });
 const SYMBOL = "BTCUSDT";
 const TIMEFRAME = "15m";
 const KLINE_LIMIT = 200; // More data for better EMA accuracy
+
+// ═══════════════════════════════════════════════════════════════
+// STRICT SNIPER CONFIG - Trend-Following System
+// ═══════════════════════════════════════════════════════════════
+
+// 1. ENTRY FILTER
+const MIN_ENTRY_SCORE = 75;        // Minimum score required
+const SCORE_GAP = 25;              // Score gap must be >= 25
+
+// 2. MARKET CONDITIONS
+const MIN_VOLUME_RATIO = 1.2;       // Volume >= 1.2x
+const MIN_ATR_PERCENT = 0.15;       // ATR >= 0.15%
+const MIN_ATR_BLOCK = 0.12;         // Block if ATR < 0.12%
+const MIN_VOLUME_BLOCK = 1.0;       // Block if volume < 1.0x
+
+// 3. MARKET SESSION
+const ASIA_SCORE_MIN = 85;         // Asia strict mode: score >= 85
+const ASIA_VOLUME_MIN = 1.5;       // Asia strict mode: volume >= 1.5x
+
+// 4. TRADE FREQUENCY
+const MAX_TRADES_PER_DAY = 3;
+const MAX_TRADES_PER_HOUR = 1;
+const WIN_LOCK_DURATION = 10;      // Minutes to wait after win >= 0.5%
+
+// 5. ADAPTIVE PROFIT TARGETS
+const PROFIT_STRONG = { min: 1.0, max: 2.5 };   // Trend STRONG
+const PROFIT_NORMAL = { min: 0.5, max: 1.0 };  // Trend NORMAL
+const PROFIT_WEAK = { min: 0.25, max: 0.5 };   // Trend WEAK
+
+// 6. TREND STRENGTH
+const EMA_GAP_STRONG = 0.2;        // EMA gap > 0.2% = STRONG
+const EMA_GAP_NORMAL = 0.1;        // EMA gap 0.1-0.2% = NORMAL
+const VOLUME_STRONG = 1.3;         // Volume > 1.3x = STRONG
+
+// 7. FEE PROTECTION
+const MIN_PROFIT_EXIT = 0.25;      // Never close below 0.25%
 
 /**
  * Fetch klines from Bitget
@@ -174,6 +220,7 @@ function calculateATRPct(klines, period = 14) {
 
 /**
  * Analyze BTC market and generate trading signals
+ * TREND-FOLLOWING SNIPER SYSTEM
  */
 async function analyzeBTC() {
   try {
@@ -209,6 +256,64 @@ async function analyzeBTC() {
     const currentVolume = volumes[volumes.length - 1];
     const volumeRatio = currentVolume / avgVolume;
     
+    // ═══════════════════════════════════════════════════════════════
+    // RULE 8: BLOCK BAD MARKET CONDITIONS
+    // ═══════════════════════════════════════════════════════
+    
+    // ATR check
+    if (atrPct < MIN_ATR_BLOCK) {
+      return {
+        symbol: SYMBOL,
+        action: "HOLD",
+        confidence: 0,
+        trend: ema20 > ema50 ? "BULLISH" : (ema20 < ema50 ? "BEARISH" : "NEUTRAL"),
+        trend_strength: "WEAK",
+        reason: `ATR ${atrPct.toFixed(2)}% < ${MIN_ATR_BLOCK}% (too weak)`,
+        indicators: { rsi, atrPct, volumeRatio },
+        signal: "BLOCKED"
+      };
+    }
+    
+    // Volume check
+    if (volumeRatio < MIN_VOLUME_BLOCK) {
+      return {
+        symbol: SYMBOL,
+        action: "HOLD",
+        confidence: 0,
+        trend: ema20 > ema50 ? "BULLISH" : (ema20 < ema50 ? "BEARISH" : "NEUTRAL"),
+        trend_strength: "WEAK",
+        reason: `Volume ${volumeRatio.toFixed(2)}x < ${MIN_VOLUME_BLOCK}x (too low)`,
+        indicators: { rsi, atrPct, volumeRatio },
+        signal: "BLOCKED"
+      };
+    }
+    
+    // Sideways check (EMA20 ≈ EMA50)
+    const emaGap = ema50 > 0 ? Math.abs((ema20 - ema50) / ema50 * 100) : 0;
+    if (emaGap < 0.05) {
+      return {
+        symbol: SYMBOL,
+        action: "HOLD",
+        confidence: 0,
+        trend: "NEUTRAL",
+        trend_strength: "WEAK",
+        reason: `EMA gap ${emaGap.toFixed(3)}% < 0.05% (sideways)`,
+        indicators: { rsi, atrPct, volumeRatio },
+        signal: "BLOCKED"
+      };
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // RULE 7: TREND STRENGTH DETECTION
+    // ═══════════════════════════════════════════════════════════════
+    
+    let trendStrength = "NORMAL";
+    if (emaGap > EMA_GAP_STRONG && volumeRatio > VOLUME_STRONG) {
+      trendStrength = "STRONG";
+    } else if (emaGap < EMA_GAP_NORMAL) {
+      trendStrength = "WEAK";
+    }
+    
     // Determine trend
     const trend = ema20 > ema50 ? "BULLISH" : (ema20 < ema50 ? "BEARISH" : "NEUTRAL");
     
@@ -219,112 +324,145 @@ async function analyzeBTC() {
       const prevEma50 = ema50Array[ema50Array.length - 2];
       
       if (ema20 > ema50 && prevEma20 <= prevEma50) {
-        emaSignal = "GOLDEN_CROSS"; // Bullish crossover
+        emaSignal = "GOLDEN_CROSS";
       } else if (ema20 < ema50 && prevEma20 >= prevEma50) {
-        emaSignal = "DEATH_CROSS"; // Bearish crossover
+        emaSignal = "DEATH_CROSS";
       }
     }
     
-    // Calculate signals and confidence
+    // ═══════════════════════════════════════════════════════════════
+    // RULE 1: REMOVE MEAN-REVERSION - REPLACE WITH TREND PULLBACK
+    // NO RSI < 30 → LONG, NO RSI > 70 → SHORT
+    // ═══════════════════════════════════════════════════════════════
+    
+    // Calculate signals based on TREND PULLBACK only
     let bullishScore = 0;
     let bearishScore = 0;
-    const signals = [];
+    const sigReasons = [];
     
-    // RSI Analysis
-    if (rsi < 30) {
-      bullishScore += 25;
-      signals.push(`RSI oversold: ${rsi.toFixed(1)}`);
-    } else if (rsi < 40) {
-      bullishScore += 10;
-      signals.push(`RSI weak bullish: ${rsi.toFixed(1)}`);
-    } else if (rsi > 70) {
-      bearishScore += 25;
-      signals.push(`RSI overbought: ${rsi.toFixed(1)}`);
-    } else if (rsi > 60) {
-      bearishScore += 10;
-      signals.push(`RSI weak bearish: ${rsi.toFixed(1)}`);
-    }
-    
-    // EMA Trend
+    // TREND-FOLLOWING: Must align with EMA trend
     if (trend === "BULLISH") {
-      bullishScore += 20;
-      signals.push(`EMA20 > EMA50 (${((ema20 - ema50) / ema50 * 100).toFixed(2)}%)`);
+      bullishScore += 30; // Strong bias for trend-following
+      sigReasons.push(`HTF BULLISH: EMA20>EMA50 (${emaGap.toFixed(2)}%)`);
     } else if (trend === "BEARISH") {
-      bearishScore += 20;
-      signals.push(`EMA20 < EMA50 (${((ema20 - ema50) / ema50 * 100).toFixed(2)}%)`);
+      bearishScore += 30; // Strong bias for trend-following
+      sigReasons.push(`HTF BEARISH: EMA20<EMA50 (${emaGap.toFixed(2)}%)`);
     }
     
-    // EMA Crossover
-    if (emaSignal === "GOLDEN_CROSS") {
+    // RSI PULLBACK ZONE (not mean-reversion!)
+    // LONG: RSI 45-60 (pullback in bullish trend)
+    // SHORT: RSI 40-55 (pullback in bearish trend)
+    const rsiInLongPullback = rsi >= 45 && rsi <= 60;
+    const rsiInShortPullback = rsi >= 40 && rsi <= 55;
+    
+    if (trend === "BULLISH" && rsiInLongPullback) {
       bullishScore += 25;
-      signals.push("EMA Golden Cross");
-    } else if (emaSignal === "DEATH_CROSS") {
+      sigReasons.push(`RSI pullback: ${rsi.toFixed(1)} in [45-60]`);
+    } else if (trend === "BEARISH" && rsiInShortPullback) {
       bearishScore += 25;
-      signals.push("EMA Death Cross");
+      sigReasons.push(`RSI pullback: ${rsi.toFixed(1)} in [40-55]`);
+    } else if (trend === "BULLISH" && rsi > 60) {
+      sigReasons.push(`RSI ${rsi.toFixed(1)} too high for LONG`);
+    } else if (trend === "BEARISH" && rsi < 40) {
+      sigReasons.push(`RSI ${rsi.toFixed(1)} too low for SHORT`);
     }
     
-    // Price relative to EMAs
+    // Price MUST be above/below EMAs (trend confirmation)
     const priceAboveEma20 = currentPrice > ema20;
     const priceAboveEma50 = currentPrice > ema50;
+    const priceBelowEma20 = currentPrice < ema20;
+    const priceBelowEma50 = currentPrice < ema50;
     
-    if (priceAboveEma20 && priceAboveEma50) {
-      bullishScore += 10;
-      signals.push("Price above both EMAs");
-    } else if (!priceAboveEma20 && !priceAboveEma50) {
-      bearishScore += 10;
-      signals.push("Price below both EMAs");
+    if (trend === "BULLISH" && priceAboveEma20 && priceAboveEma50) {
+      bullishScore += 15;
+      sigReasons.push("Price above EMA20 & EMA50");
+    } else if (trend === "BEARISH" && priceBelowEma20 && priceBelowEma50) {
+      bearishScore += 15;
+      sigReasons.push("Price below EMA20 & EMA50");
     }
     
-    // Volume
-    if (volumeRatio > 1.5) {
-      bullishScore += 5;
-      bearishScore += 5;
-      signals.push(`High volume: ${volumeRatio.toFixed(1)}x`);
-    } else if (volumeRatio < 0.5) {
-      signals.push(`Low volume: ${volumeRatio.toFixed(1)}x`);
+    // Volume confirmation
+    if (volumeRatio >= MIN_VOLUME_RATIO) {
+      if (trend === "BULLISH") {
+        bullishScore += 10;
+      } else if (trend === "BEARISH") {
+        bearishScore += 10;
+      }
+      sigReasons.push(`Volume ${volumeRatio.toFixed(2)}x OK`);
+    } else {
+      sigReasons.push(`Volume ${volumeRatio.toFixed(2)}x too low`);
     }
     
-    // ATR volatility
-    if (atrPct > 1.5) {
-      signals.push(`High volatility ATR: ${atrPct.toFixed(2)}%`);
-    } else if (atrPct < 0.5) {
-      signals.push(`Low volatility ATR: ${atrPct.toFixed(2)}%`);
+    // ATR confirmation
+    if (atrPct >= MIN_ATR_PERCENT) {
+      if (trend === "BULLISH") {
+        bullishScore += 10;
+      } else if (trend === "BEARISH") {
+        bearishScore += 10;
+      }
+      sigReasons.push(`ATR ${atrPct.toFixed(2)}% OK`);
     }
     
-    // Calculate confidence
-    const totalScore = bullishScore + bearishScore;
-    const confidence = totalScore > 0 
-      ? Math.round(Math.abs(bullishScore - bearishScore) / totalScore * 100)
-      : 0;
+    // EMA Crossover bonus (early entry)
+    if (emaSignal === "GOLDEN_CROSS" && trend === "BULLISH") {
+      bullishScore += 15;
+      sigReasons.push("Golden Cross detected");
+    } else if (emaSignal === "DEATH_CROSS" && trend === "BEARISH") {
+      bearishScore += 15;
+      sigReasons.push("Death Cross detected");
+    }
     
-    // Determine action
+    // ═══════════════════════════════════════════════════════════════
+    // RULE 2: STRICT ENTRY FILTER (SNIPER MODE)
+    // ═══════════════════════════════════════════════════════
+    
+    const scoreGap = bullishScore - bearishScore;
+    const totalScore = Math.max(bullishScore, bearishScore);
+    const confidence = totalScore > 0 ? Math.round(scoreGap / totalScore * 100) : 0;
+    
+    // Determine action based on score and gap
     let action = "HOLD";
-    if (bullishScore > bearishScore + 15 && rsi < 65) {
+    let actionReason = "";
+    
+    if (bullishScore >= MIN_ENTRY_SCORE && scoreGap >= SCORE_GAP && rsiInLongPullback) {
       action = "LONG";
-    } else if (bearishScore > bullishScore + 15 && rsi > 35) {
+      actionReason = `LONG: score=${bullishScore} gap=${scoreGap} RSI=${rsi.toFixed(1)}`;
+    } else if (bearishScore >= MIN_ENTRY_SCORE && scoreGap >= SCORE_GAP && rsiInShortPullback) {
       action = "SHORT";
-    } else if (emaSignal === "GOLDEN_CROSS" && rsi < 60) {
-      action = "LONG";
-    } else if (emaSignal === "DEATH_CROSS" && rsi > 40) {
-      action = "SHORT";
+      actionReason = `SHORT: score=${bearishScore} gap=${scoreGap} RSI=${rsi.toFixed(1)}`;
+    } else {
+      actionReason = `HOLD: score=${Math.max(bullishScore, bearishScore)} < ${MIN_ENTRY_SCORE} or gap=${scoreGap} < ${SCORE_GAP}`;
     }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // RULE 5: ADAPTIVE PROFIT TARGETS
+    // ═══════════════════════════════════════════════════════════════
+    
+    let targetProfit;
+    if (trendStrength === "STRONG") {
+      targetProfit = PROFIT_STRONG;
+    } else if (trendStrength === "NORMAL") {
+      targetProfit = PROFIT_NORMAL;
+    } else {
+      targetProfit = PROFIT_WEAK;
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // RULE 6: FEE PROTECTION
+    // (Handled at exit level, not here)
     
     // Calculate SL and TP levels
     let stopLoss = null;
     let takeProfit = null;
     
     if (action === "LONG") {
-      // SL below recent low or EMA50
       const recentLow = Math.min(...lows.slice(-10));
-      stopLoss = Math.min(recentLow, ema50) * 0.99; // 1% below
-      // TP based on ATR
-      takeProfit = currentPrice + (atr * 2);
+      stopLoss = Math.min(recentLow, ema50) * (1 - 0.015); // 1.5% SL for BTC
+      takeProfit = currentPrice * (1 + targetProfit.max / 100);
     } else if (action === "SHORT") {
-      // SL above recent high or EMA50
       const recentHigh = Math.max(...highs.slice(-10));
-      stopLoss = Math.max(recentHigh, ema50) * 1.01; // 1% above
-      // TP based on ATR
-      takeProfit = currentPrice - (atr * 2);
+      stopLoss = Math.max(recentHigh, ema50) * (1 + 0.015); // 1.5% SL for BTC
+      takeProfit = currentPrice * (1 - targetProfit.max / 100);
     }
     
     return {
@@ -335,20 +473,26 @@ async function analyzeBTC() {
       price: currentPrice,
       priceChange: ((currentPrice - prevPrice) / prevPrice) * 100,
       trend,
-      emaSignal,
+      trend_strength: trendStrength,
+      trend_ema_gap: emaGap,
+      reason: actionReason + " | " + sigReasons.slice(0, 3).join(", "),
       indicators: {
-        ema20,
-        ema50,
-        rsi,
-        atr,
-        atrPct,
-        volumeRatio
+        ema20: ema20?.toFixed(2),
+        ema50: ema50?.toFixed(2),
+        rsi: rsi?.toFixed(1),
+        atr: atr?.toFixed(2),
+        atrPct: atrPct?.toFixed(3),
+        volumeRatio: volumeRatio?.toFixed(2)
       },
-      signals: signals.slice(0, 5), // Top 5 signals
+      scores: {
+        bullish: bullishScore,
+        bearish: bearishScore,
+        gap: scoreGap
+      },
+      target_profit: targetProfit,
       levels: {
-        stopLoss,
-        takeProfit,
-        atr
+        stopLoss: stopLoss?.toFixed(8),
+        takeProfit: takeProfit?.toFixed(8)
       },
       timestamp: Date.now()
     };
@@ -356,6 +500,7 @@ async function analyzeBTC() {
   } catch (error) {
     return {
       symbol: SYMBOL,
+      action: "HOLD",
       error: true,
       message: error.message,
       timestamp: Date.now()

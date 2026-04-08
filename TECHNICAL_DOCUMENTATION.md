@@ -1,6 +1,6 @@
 # 🤖 DaffaBot2 - Technical Documentation
 
-## AI Self-Learning Futures Trading System
+## AI Self-Learning Futures Trading System (BTC Only)
 
 ---
 
@@ -22,17 +22,18 @@
 
 ## 1. System Overview
 
-**DaffaBot** is an AI-powered futures trading bot for Bitget USDT-M perpetual contracts. It combines:
+**DaffaBot** is an AI-powered BTC futures trading bot for Bitget USDT-M perpetual contracts. It combines:
 - **Smart Money Concepts (SMC)** for market structure analysis
+- **BTC Strategy** for trend pullback trading
 - **Claude AI** for decision making and sentiment analysis
 - **Self-Learning Engine** that improves from historical trades
 - **Professional Risk Management** with dynamic position sizing
 
 ### Supported Assets
-| Asset | Symbol | Timeframe | Volatility |
-|-------|--------|-----------|------------|
-| Bitcoin | BTCUSDT | 15m | Lower |
-| Pepe | PEPEUSDT | 1m | Higher |
+| Asset | Symbol | Timeframe | Status |
+|-------|--------|-----------|--------|
+| Bitcoin | BTCUSDT | 15m | ✅ Active (BTC Only) |
+| Pepe | PEPEUSDT | 1m | ❌ Disabled |
 
 ### Trading Mode
 - **DRY RUN**: Simulation (default)
@@ -70,8 +71,8 @@
 │     │                       │                       │        │
 │     ▼                       ▼                       ▼        │
 │  ┌────────┐           ┌────────────┐          ┌──────────┐   │
-│  │  btc   │           │   pair    │          │   hype   │   │
-│  │strategy│           │  selector  │          │ detector │   │
+│  │  btc   │           │   phase   │          │  entry   │   │
+│  │strategy│           │  analysis │          │  filters │   │
 │  └────────┘           └────────────┘          └──────────┘   │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
@@ -91,39 +92,38 @@ External APIs:
 
 | File | Purpose |
 |------|---------|
-| `pepe-futures-bot.js` | Main trading engine (6000+ lines) |
+| `pepe-futures-bot.js` | Main trading engine (7000+ lines) |
 | `btcStrategy.js` | BTC 15m strategy with pullback logic |
 | `learningEngine.js` | Self-learning from profitable trades |
 | `supabaseClient.js` | Cloud data persistence |
-| `pairSelector.js` | Adaptive pair selection |
 | `phaseIndicator.js` | Market phase detection |
-| `hypeDetector.js` | Trending coin detection |
 
 ---
 
 ## 4. Trading Strategy
 
-### Entry Conditions (Pullback Strategy)
+### Entry Conditions (BTC Pullback Strategy)
 
 ```
 LONG Entry:
 ├── HTF BULLISH (EMA20 > EMA50 on 15m)
 ├── EMA9 > EMA21 (short-term trend)
-├── RSI pullback: 45-52 (oversold recovery)
-├── Price near EMA21 (< 0.15% distance)
+├── RSI pullback: 42-52 (oversold recovery)
+├── Price near EMA21
 └── Volume ≥ 0.8x average
 
 SHORT Entry:
 ├── HTF BEARISH (EMA20 < EMA50 on 15m)
 ├── EMA9 < EMA21
-├── RSI pullback: 48-55 (overbought recovery)
-├── Price near EMA21 (< 0.15% distance)
+├── RSI pullback: 48-58 (overbought recovery)
+├── Price near EMA21
 └── Volume ≥ 0.8x average
 ```
 
 ### Anti-Counter-Trend Filters
 - Block entries when momentum contradicts HTF trend
 - Require price action confirmation (3+ green/red candles)
+- Funding rate alignment check
 
 ### ATR Gate
 - Block entry if ATR < 0.15% (insufficient volatility)
@@ -162,21 +162,20 @@ Confidence multiplier:
 └─ >70% → 1.2x
 ```
 
-### Stop Loss & Take Profit
+### Stop Loss & Take Profit (BTC)
 
-| Asset | SL | TP | Trailing |
-|-------|----|----|----------|
-| BTC | 1.5% | 3.0% | 0.5% |
-| PEPE | 2.5% | 5.0% | 0.8% |
+| Asset | SL | TP1 | TP2 | Trailing |
+|-------|----|----|----|----------|
+| BTC | 1.5% | 0.5% | 2.0% | 0.5% |
 
 ### Exit Rules
 
 1. **Fee Gate**: Never close with profit < 0.24% (2x fee)
-2. **Hard SL**: Force close if loss > 0.5% raw or > $0.20
+2. **Hard SL**: Force close if loss > 3.0% raw
 3. **Breakeven**: Move SL to entry + 0.03% at 0.15% profit
 4. **Runner Mode**: Activate at 0.4% profit (tight trailing)
 5. **Timeout**: 45min normal, 60min max hold
-6. **Micro Profit**: Hold unless strong reversal (engulf + vol spike + RSI div)
+6. **Dead Trade**: Exit if no momentum after confirmation
 
 ---
 
@@ -192,7 +191,6 @@ Confidence multiplier:
 - Orderbook bid/ask ratio, spread
 - Funding rate
 - Fear & Greed Index (value, classification, avg7d, trend)
-- CoinGecko data (PEPE trending, volume)
 - BTC context (trend, EMA, ATR, momentum)
 - Multi-timeframe analysis (1m, 5m, 15m)
 - Bollinger Bands (%B, squeeze status)
@@ -202,11 +200,11 @@ Confidence multiplier:
 ```json
 {
   "action": "LONG|SHORT|CLOSE|HOLD",
-  "leverage": "10-20",
+  "leverage": "3-10",
   "confidence": 0-100,
   "sentiment": "BULLISH|BEARISH|NEUTRAL|VOLATILE",
   "stop_loss_pct": "0.5-2.0",
-  "take_profit_pct": "2.0-5.0",
+  "take_profit_pct": "1.5-3.0",
   "reasoning": "<30 kata"
 }
 ```
@@ -313,25 +311,26 @@ phase, entry_smc_score, entry_htf_trend
 
 ## 9. Configuration
 
-### Key Parameters
+### Key Parameters (BTC Mode)
 
 ```javascript
 // Trading
-SYMBOL: "PEPEUSDT"
+SYMBOL: "BTCUSDT"              // BTC only
 PRODUCT_TYPE: "usdt-futures"
-DEFAULT_LEVERAGE: 5
-MAX_LEVERAGE: 7
+DEFAULT_LEVERAGE: 7
+MAX_LEVERAGE: 10
 
 // Position
-POSITION_SIZE_USDT: 2
+POSITION_SIZE_USDT: 15
 MAX_POSITIONS: 1
 
-// Risk
-STOP_LOSS_PCT: 2.5
-TAKE_PROFIT_PCT: 5.0
-MAX_LOSS_PCT: 8.0
+// Risk (BTC-Optimized)
+STOP_LOSS_PCT: 1.5
+TAKE_PROFIT_PCT: 2.0
+TP1_PCT: 0.5
+MAX_LOSS_PCT: 3.0
 HARD_STOP_TOTAL: 20.0
-MIN_SL_PCT: 0.5
+MIN_SL_PCT: 0.3
 
 // Entry
 SNIPER_MODE: true
@@ -343,8 +342,16 @@ ATR_MIN_PERCENT: 0.15
 CHECK_INTERVAL_MS: 10000  // 10 seconds
 CLAUDE_ANALYSIS_INTERVAL: 6  // every 60 seconds
 
-// Learning (optional)
-SELF_LEARNING_ENABLED: false  // future feature
+// BTC Strategy
+BTC_SPECIFIC_CONFIG: {
+  STOP_LOSS_PCT: 1.5,
+  TAKE_PROFIT_PCT: 2.0,
+  TP1_PCT: 0.5,
+  TRAILING_OFFSET: 0.5,
+  POSITION_SIZE_USDT: 15,
+  MIN_SL_PCT: 0.3,
+  MAX_SL_PCT: 2.0,
+}
 ```
 
 ---
@@ -368,7 +375,7 @@ SELF_LEARNING_ENABLED: false  // future feature
 
 | API | Data |
 |-----|------|
-| CoinGecko | PEPE price, volume, trending |
+| CoinGecko | Market data |
 | alternative.me | Fear & Greed Index |
 
 ---
@@ -411,6 +418,7 @@ http://localhost:4000
 4. **Error Recovery**: Try-catch with fallbacks
 5. **Dry Run First**: Default mode is simulation
 6. **Learning Gate**: Only activate with sufficient data
+7. **BTC Only Mode**: Simplified focus for better results
 
 ---
 
@@ -425,5 +433,5 @@ http://localhost:4000
 
 ---
 
-*Documentation Version: 2.0*
-*Last Updated: 2026-04-06*
+*Documentation Version: 3.0*
+*Last Updated: 2026-04-08*

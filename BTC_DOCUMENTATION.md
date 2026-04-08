@@ -1,24 +1,24 @@
-# 🤖 DaffaBot - BTC Futures Trading Bot (FINAL CLEAN VERSION)
-
-## 📊 Overview
-
-| Parameter | Value |
-|-----------|-------|
-| **Symbol** | BTCUSDT |
-| **Timeframe** | 15m |
-| **Exchange** | Bitget USDT-M Perpetual |
-| **Mode** | BTC Only (No Multi-Pair) |
-| **Philosophy** | TREND FOLLOWING ONLY, QUALITY > QUANTITY, BIG WIN > MANY SMALL |
-
----
+# 🤖 BTC AI TRADING ENGINE — FINAL CLEAN VERSION
 
 ## 🎯 CORE PHILOSOPHY
 
-```
-- TREND FOLLOWING ONLY (NO MEAN REVERSION)
-- QUALITY > QUANTITY
-- BIG WIN > MANY SMALL TRADES
-- OPPORTUNITY WITH CONTROL (NOT OVERTRADING)
+- **TREND FOLLOWING ONLY (NO MEAN REVERSION)**
+- **QUALITY > QUANTITY**
+- **BIG WIN > MANY SMALL TRADES**
+- **OPPORTUNITY WITH CONTROL (NOT OVERTRADING)**
+
+---
+
+## 🧠 DECISION OUTPUT FORMAT
+
+```json
+{
+  "action": "LONG | SHORT | HOLD",
+  "confidence": 0-100,
+  "trend": "BULLISH | BEARISH | NEUTRAL",
+  "trend_strength": "WEAK | NORMAL | STRONG",
+  "reason": "clear explanation"
+}
 ```
 
 ---
@@ -38,15 +38,15 @@
 
 ## 1️⃣ MARKET PHASE (FIRST FILTER — ABSOLUTE)
 
-### TREND:
+**TREND:**
 - EMA gap ≥ 0.15%
 - ATR ≥ 0.15%
 
-### CHOP:
+**CHOP:**
 - EMA gap < 0.10%
 - RSI ranging 45–55
 
-### RULE:
+**RULE:**
 ```
 IF CHOP:
   IF STRONG TREND + BREAKOUT:
@@ -59,12 +59,18 @@ IF CHOP:
 
 ## 2️⃣ PRIORITY DETECTION
 
-| Priority | Condition |
-|----------|-----------|
-| **P1 (HIGHEST)** | STRONG TREND + BREAKOUT |
-| **P2** | NORMAL TREND + HIGH SCORE |
-| **P3** | AFTER WIN / SAFE MODE |
-| **P4 (LOWEST)** | DEFENSE MODE |
+**PRIORITY 1 (HIGHEST):**
+- STRONG TREND + BREAKOUT
+- (EMA gap > 0.25% + volume ≥1.5x + momentum up)
+
+**PRIORITY 2:**
+- NORMAL TREND + HIGH SCORE
+
+**PRIORITY 3:**
+- AFTER WIN / SAFE MODE
+
+**PRIORITY 4:**
+- DEFENSE MODE
 
 ---
 
@@ -82,15 +88,15 @@ IF CHOP:
 
 ### RSI PULLBACK ONLY
 
-- **LONG:** RSI 45–60
-- **SHORT:** RSI 40–55
+**LONG:** RSI 45–60
+**SHORT:** RSI 40–55
 
 ### CORE FILTER
 
 - Volume ≥ 1.2x
 - ATR ≥ 0.15%
 
-### EXPECTED MOVE
+### EXPECTED MOVE (CLEAN VERSION)
 
 - **STRONG trend:** ≥ 0.30%
 - **NORMAL trend:** ≥ 0.40%
@@ -98,13 +104,18 @@ IF CHOP:
 
 ### ENTRY QUALITY
 
-- Score ≥ 75 (min 70 ONLY for P1)
+- Score ≥ 75 (dynamic allowed min 70 ONLY for PRIORITY 1)
 - Score gap ≥ 25
 
 ### CONFIRMATION
 
-**LONG:** Bullish candle + Higher low
-**SHORT:** Bearish candle + Lower high
+**LONG:**
+- bullish candle
+- higher low confirmed
+
+**SHORT:**
+- bearish candle
+- lower high confirmed
 
 ---
 
@@ -112,12 +123,14 @@ IF CHOP:
 
 **MAX 1 OVERRIDE PER TRADE**
 
-**Allowed ONLY if STRONG BREAKOUT:**
+Allowed override ONLY if:
+
+**STRONG BREAKOUT:**
 - volume ≥ 1.5x
 - EMA gap widening
 - momentum accelerating
 
-**If override used:**
+If override used:
 - confidence -10
 - position size -20%
 - DISABLE all other overrides
@@ -129,26 +142,39 @@ IF CHOP:
 IF last trade = WIN:
 ```
 → NO ENTRY for 15 minutes
-→ EXCEPTION: ONLY if P1 (STRONG TREND)
-→ REQUIRE: fresh pullback + new confirmation candle
+→ EXCEPTION:
+    ONLY if PRIORITY 1 (STRONG TREND)
+
+→ REQUIRE:
+    fresh pullback + new confirmation candle
 ```
 
 ---
 
-## 6️⃣ POSITION SIZING
+## 6️⃣ POSITION SIZING (CLEAN)
 
-| Trend | Size Adjustment |
-|-------|-----------------|
-| **STRONG** | +30% |
-| **NORMAL** | base size |
-| **WEAK** | -30% |
-| **DEFENSE MODE** | -50% |
+- **STRONG trend:** +30%
+- **NORMAL:** base size
+- **WEAK:** -30%
+- **DEFENSE MODE:** size -50%
 
 ---
 
-## 7️⃣ EXIT ENGINE (SINGLE SYSTEM — NO OVERLAP)
+## 7️⃣ FINAL DECISION
 
-**ORDER:**
+```
+IF all filters pass:
+  → EXECUTE TRADE
+
+ELSE:
+  → HOLD
+```
+
+---
+
+## 🛡️ EXIT ENGINE (SINGLE SYSTEM — NO OVERLAP)
+
+**FOLLOW THIS EXACT ORDER:**
 
 1. **STOP LOSS (1.5%)**
 
@@ -206,38 +232,61 @@ WAIT → CONFIRM → EXECUTE
 
 ---
 
+## 🚀 SYSTEM GOAL
+
+- Catch BIG trend moves
+- Avoid chop completely
+- Reduce fake entries
+- Maximize runner profit
+- Maintain consistency
+
+---
+
 ## 📊 CONFIG SUMMARY
 
 | Parameter | Value |
 |-----------|-------|
-| Symbol | BTCUSDT |
-| Stop Loss | 1.5% |
-| Take Profit | 2.0% |
-| Trailing Offset | 0.5% |
-| Peak Drop Exit | 25% |
-| MAX Trades/Day | 3 |
-| MAX Trades/Hour | 1 |
-| ATR Hard Block | < 0.12% |
-| Volume Min | 1.2x |
-| RSI LONG | 45-60 |
-| RSI SHORT | 40-55 |
-| Defense Mode | After 2 losses |
+| **Symbol** | BTCUSDT |
+| **Timeframe** | 15m |
+| **Stop Loss** | 1.5% |
+| **Trailing Offset** | 0.5% |
+| **Peak Drop Exit** | 25% |
+| **MAX Trades/Day** | 3 |
+| **MAX Trades/Hour** | 1 |
+| **Defense Mode** | After 2 losses |
+| **ATR Hard Block** | < 0.12% |
+| **Volume Min** | 1.2x |
+| **RSI LONG** | 45-60 |
+| **RSI SHORT** | 40-55 |
 
 ---
 
-## 🛡️ EXIT LEVELS
+## 🔒 KILLER EXIT LEVELS
 
-| Profit | Action |
-|--------|--------|
-| 0.5% | Trailing starts (0.5% offset) |
-| 1.0% | Lock 30%, Partial close 30% |
-| 2.0% | Lock 50%, Partial close 30% |
-| 3.0% | Lock 70% |
-| Peak -25% | EXIT |
+```
+Trailing Start:    0.5% profit
+Lock 30%:          1.0% profit
+Lock 50%:          2.0% profit
+Lock 70%:          3.0% profit
+Peak Drop Exit:    25% from peak
+```
 
 ---
 
-## 🔒 DEFENSE MODE
+## 🎯 PARTIAL CLOSE
+
+```
+LEVEL 1: 1.0% profit → Close 30%
+LEVEL 2: 2.0% profit → Close 30%
+RUNNER:  Remaining 40% → Let it run!
+
+SKIP if STRONG + BREAKOUT at ≥1.5%
+→ Hold for bigger move
+```
+
+---
+
+## 🛡️ DEFENSE MODE
 
 After 2 consecutive losses:
 ```
@@ -249,7 +298,7 @@ After 2 consecutive losses:
 
 ---
 
-## 📋 DOCUMENTED FEATURES
+## 📝 DOCUMENTED BEHAVIOR
 
 ✅ TREND FOLLOWING ONLY (no mean reversion)
 ✅ RSI PULLBACK entry (45-60 LONG, 40-55 SHORT)
@@ -264,16 +313,3 @@ After 2 consecutive losses:
 ✅ Peak Drop 25% exit
 ✅ Trailing 0.5% offset
 ✅ Profit Lock 30%/50%/70% at 1%/2%/3%
-✅ Intelligent Exit (breakout hold, rejection exit early)
-✅ No multi-pair (BTC only)
-✅ No RSI Reversal exit
-
----
-
-## 🚀 SYSTEM GOAL
-
-- Catch BIG trend moves
-- Avoid chop completely
-- Reduce fake entries
-- Maximize runner profit
-- Maintain consistency

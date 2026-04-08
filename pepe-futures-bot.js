@@ -90,7 +90,7 @@ const CONFIG = {
   REQUIRE_LIQ_SWEEP:    true,   // wajib ada liquidity sweep sebelum entry
   MIN_PRICE_MOVE_PCT:   0.3,    // reject jika price move pemicu < 0.3%
   REQUIRE_HTF_ALIGN:    true,   // wajib HTF 4H/1D aligned
-  BLOCK_MID_ASIA:       true,   // block mid-session 10:00–16:00 WIB
+  BLOCK_MID_ASIA:       false,  // allow mid-session trading
 
   // Funding rate threshold
   FUNDING_RATE_THRESHOLD: 0.001, // 0.1% = pertimbangkan tutup
@@ -110,7 +110,7 @@ const CONFIG = {
   // Mode 9: Market filter
   MIN_VOLUME_RATIO:   0.8,   // block entry kalau vol < 0.8x
   ENTRY_MIN_VOLUME:   1.2,   // entry hanya kalau vol ≥ 1.2x
-  BLOCK_ASIA_SESSION: true,  // jangan entry saat ASIA (mode 9)
+  BLOCK_ASIA_SESSION: false,  // allow all sessions including ASIA
 
   // ATR Filter
   ATR_MIN_PERCENT:    0.15,
@@ -129,7 +129,7 @@ const CONFIG = {
 
   // Mode 8: Daily / hourly trade limit
   MAX_TRADES_PER_DAY:  5,    // normal mode
-  MAX_SNIPER_TRADES:   3,    // sniper mode
+  MAX_SNIPER_TRADES:   8,    // sniper mode
   MAX_TRADES_PER_HOUR: 3,    // max 3 trades per rolling hour
   MIN_NET_PROFIT_USDT: 0.005, // never close a position for < this net USDT
   TRADE_COOLDOWN_MIN:  15,   // minimum 15 min between trades
@@ -6809,8 +6809,7 @@ async function tradingLoop() {
       const sniperVolOk     = indicators.volumeRatio >= CONFIG.ENTRY_MIN_VOLUME;
       const sniperEmaOk     = trendAligned; // EMA9 > EMA21 (LONG) or EMA9 < EMA21 (SHORT)
       const sniperAtrOk     = atrPct >= CONFIG.ATR_MIN_PERCENT;
-      const sniperSessionOk = session.session === "LONDON" || session.session === "NEW_YORK"
-                              || session.session === "ALL_SESSIONS";
+      const sniperSessionOk = true; // all sessions allowed for 24/7 trading
       const sniperSideways  = !squeezeActive || squeezeSafe;
 
       const sniperFails = [

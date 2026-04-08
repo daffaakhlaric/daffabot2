@@ -3809,8 +3809,8 @@ function isActiveSession() {
   const inNY      = t >= 13 && t < 22;   // NY: 1pm-10pm UTC
   const inOverlap = t >= 13 && t < 16;   // Overlap: 1pm-4pm UTC (BEST)
   return {
-    active:     inLondon || inNY,
-    session:    inOverlap ? "OVERLAP(TERBAIK)" : inNY ? "NEW_YORK" : inLondon ? "LONDON" : "ASIA(SKIP)",
+    active:     true,  // always active for 24/7 trading
+    session:    inOverlap ? "OVERLAP(TERBAIK)" : inNY ? "NEW_YORK" : inLondon ? "LONDON" : "ASIA",
     inLondon, inNY, inOverlap,
     wibHour:    (hour + 7) % 24,  // Convert to WITA (UTC+7)
   };

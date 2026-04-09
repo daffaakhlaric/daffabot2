@@ -1,4 +1,4 @@
-# 🤖 DaffaBot - BTC Futures Trading Bot (FINAL CLEAN VERSION)
+# 🤖 DaffaBot - BTC Futures Trading Bot v5.0 HYBRID AI
 
 ## 📊 Overview
 
@@ -8,220 +8,129 @@
 | **Timeframe** | 15m |
 | **Exchange** | Bitget USDT-M Perpetual |
 | **Mode** | BTC Only (No Multi-Pair) |
-| **Philosophy** | TREND FOLLOWING ONLY, QUALITY > QUANTITY, BIG WIN > MANY SMALL |
+| **AI Version** | v5.0 HYBRID AI |
+| **Philosophy** | TREND FOLLOWING + ADAPTIVE AI + SELF-LEARNING |
 
 ---
 
-## 🎯 CORE PHILOSOPHY
+## 🧠 HYBRID AI ARCHITECTURE
+
+### Layer 1: Rule Engine (Base Safety)
+- Hard filters that block all trades if violated
+- ATR < 0.12% → HARD BLOCK
+- Volume < 1.0x → HARD BLOCK
+- Trend too weak → HARD BLOCK
+- EMA flat → HARD BLOCK
+
+### Layer 2: AI Decision Engine
+- Scoring system with weighted factors
+- Confidence calculation
+- Whale boost
+- Self-learning adjustments
+
+### Layer 3: ML-Lite (Weight Adaptation)
+- Dynamic weight tuning based on trade results
+- Feature-based learning (trend, momentum, volume, structure, whale)
+- No neural network - simple increment/decrement
+
+---
+
+## 🐋 WHALE TRACKING ENGINE
+
+Detects large player activity:
+
+| Signal | Threshold | Score |
+|--------|-----------|-------|
+| Volume Spike | ≥ 1.5x avg | +20 |
+| Sudden Move | ≥ 0.5% candle | +20 |
+| Absorption | High vol + small body <30% | +15 |
+| Liquidation | Wick > 60% of range | +15 |
+
+**Whale Score Usage:**
+- Score ≥ 40 → confidence boost +0.10
+- Score ≥ 60 → confidence boost +0.15 + allow aggressive entry
+
+---
+
+## 🧮 EXPECTANCY OPTIMIZER
+
+Calculates long-term profitability:
 
 ```
-- TREND FOLLOWING ONLY (NO MEAN REVERSION)
-- QUALITY > QUANTITY
-- BIG WIN > MANY SMALL TRADES
-- OPPORTUNITY WITH CONTROL (NOT OVERTRADING)
+expectancy = (winRate × avgWin) - ((1 - winRate) × avgLoss)
 ```
 
----
-
-## ⚠️ MASTER RULE: SINGLE FLOW ONLY (NO CONFLICT)
-
-**ALL decisions MUST follow this EXACT order:**
-
-1. MARKET PHASE
-2. PRIORITY DETECTION
-3. ENTRY FILTERS
-4. OVERRIDE CHECK (MAX 1)
-5. RISK ADJUSTMENT
-6. FINAL DECISION
+**Rules:**
+- expectancy < 0 → reduce position size 30%
+- expectancy > 0.5 → increase position size 20%
+- 3+ consecutive losses → reduce risk globally
 
 ---
 
-## 1️⃣ MARKET PHASE (FIRST FILTER — ABSOLUTE)
+## 📊 SELF-LEARNING ENGINE
 
-### TREND:
-- EMA gap ≥ 0.15%
-- ATR ≥ 0.15%
+Tracks patterns from trade history:
 
-### CHOP:
-- EMA gap < 0.10%
-- RSI ranging 45–55
+1. **Score Range Analysis**
+   - Track win rate for score ranges (70-75, 75-80, etc.)
+   - If range consistently losing → increase min score requirement
 
-### RULE:
-```
-IF CHOP:
-  IF STRONG TREND + BREAKOUT:
-    → ALLOW (size 50%)
-  ELSE:
-    → HOLD (BLOCK ALL)
-```
+2. **Market Phase Performance**
+   - Track TREND vs CHOP win rates
+   - Reduce confidence in losing phases
+
+3. **Adaptive Adjustments**
+   - Score modifier based on recent pattern performance
+   - Confidence modifier based on phase history
 
 ---
 
-## 2️⃣ PRIORITY DETECTION
+## ⚙️ ML-LITE WEIGHT SYSTEM
 
-| Priority | Condition |
-|----------|-----------|
-| **P1 (HIGHEST)** | STRONG TREND + BREAKOUT |
-| **P2** | NORMAL TREND + HIGH SCORE |
-| **P3** | AFTER WIN / SAFE MODE |
-| **P4 (LOWEST)** | DEFENSE MODE |
-
----
-
-## 3️⃣ ENTRY FILTERS (MANDATORY)
-
-### TREND RULE (NO EXCEPTION)
-
-**LONG:**
-- EMA20 > EMA50
-- Price above EMA20 & EMA50
-
-**SHORT:**
-- EMA20 < EMA50
-- Price below EMA20 & EMA50
-
-### RSI PULLBACK ONLY
-
-- **LONG:** RSI 45–60
-- **SHORT:** RSI 40–55
-
-### CORE FILTER
-
-- Volume ≥ 1.2x
-- ATR ≥ 0.15%
-
-### EXPECTED MOVE
-
-- **STRONG trend:** ≥ 0.30%
-- **NORMAL trend:** ≥ 0.40%
-- **WEAK trend:** BLOCK
-
-### ENTRY QUALITY
-
-- Score ≥ 75 (min 70 ONLY for P1)
-- Score gap ≥ 25
-
-### CONFIRMATION
-
-**LONG:** Bullish candle + Higher low
-**SHORT:** Bearish candle + Lower high
-
----
-
-## 4️⃣ OVERRIDE SYSTEM (STRICT LIMIT)
-
-**MAX 1 OVERRIDE PER TRADE**
-
-**Allowed ONLY if STRONG BREAKOUT:**
-- volume ≥ 1.5x
-- EMA gap widening
-- momentum accelerating
-
-**If override used:**
-- confidence -10
-- position size -20%
-- DISABLE all other overrides
-
----
-
-## 5️⃣ POST-WIN HARD FILTER (ANTI OVERTRADE)
-
-IF last trade = WIN:
-```
-→ NO ENTRY for 15 minutes
-→ EXCEPTION: ONLY if P1 (STRONG TREND)
-→ REQUIRE: fresh pullback + new confirmation candle
+**Initial Weights:**
+```javascript
+weights = {
+  trend: 20,      // Trend direction importance
+  momentum: 15,   // RSI pullback/exhaustion
+  volume: 15,    // Volume confirmation
+  structure: 20, // Breakout detection
+  whale: 10      // Whale activity boost
+}
 ```
 
----
-
-## 6️⃣ POSITION SIZING
-
-| Trend | Size Adjustment |
-|-------|-----------------|
-| **STRONG** | +30% |
-| **NORMAL** | base size |
-| **WEAK** | -30% |
-| **DEFENSE MODE** | -50% |
+**Adaptation Rules:**
+- Feature leads to WIN → weight += 1
+- Feature leads to LOSS → weight -= 1
+- Clamp: weight = max(5, min(30, weight))
 
 ---
 
-## 7️⃣ EXIT ENGINE (SINGLE SYSTEM — NO OVERLAP)
+## 🎯 DECISION FLOW
 
-**ORDER:**
-
-1. **STOP LOSS (1.5%)**
-
-2. **PEAK DROP EXIT**
-   - Exit if profit drops >25% from peak
-
-3. **TRAILING ACTIVATION**
-   - Start at 0.5%
-
-4. **PROFIT LOCK**
-   - 1.0% → lock 30%
-   - 2.0% → lock 50%
-   - 3.0% → lock 70%
-
-5. **PARTIAL CLOSE**
-   - 1.0% → close 30%
-   - 2.0% → close 30%
-
-6. **INTELLIGENT ADJUSTMENT**
-   - breakout → hold longer
-   - rejection → exit early
-   - volume drop → tighten trailing
+1. **Rule Engine** → Apply hard filters
+2. **Whale Tracking** → Calculate whale score
+3. **ML Scoring** → Apply weighted factors
+4. **Self-Learning** → Apply pattern adjustments
+5. **Whale Boost** → Adjust confidence
+6. **Expectancy** → Final position size
+7. **Decision** → FULL_ENTRY / REDUCED_ENTRY / NO_TRADE
 
 ---
 
-## 🚫 HARD BLOCK CONDITIONS
-
-**DO NOT TRADE IF:**
-- ATR < 0.12%
-- Volume < 1.0x
-- EMA20 ≈ EMA50
-- WEAK trend
-
----
-
-## ⚡ TRADE DISCIPLINE
-
-- **MAX 3 trades/day**
-- **MAX 1 trade/hour**
-
-After 2 losses:
-→ DEFENSE MODE ON
-
----
-
-## 💎 FINAL RULE
-
-```
-NO SIGNAL = NO TRADE
-NO FORCE ENTRY
-NO OVERTRADING
-
-WAIT → CONFIRM → EXECUTE
-```
-
----
-
-## 📊 CONFIG SUMMARY
+## 📋 CONFIG SUMMARY
 
 | Parameter | Value |
 |-----------|-------|
 | Symbol | BTCUSDT |
 | Stop Loss | 1.5% |
-| Take Profit | 2.0% |
+| Take Profit | 3.0% |
 | Trailing Offset | 0.5% |
 | Peak Drop Exit | 25% |
 | MAX Trades/Day | 3 |
-| MAX Trades/Hour | 1 |
 | ATR Hard Block | < 0.12% |
 | Volume Min | 1.2x |
 | RSI LONG | 45-60 |
 | RSI SHORT | 40-55 |
-| Defense Mode | After 2 losses |
 
 ---
 
@@ -237,36 +146,100 @@ WAIT → CONFIRM → EXECUTE
 
 ---
 
-## 🔒 DEFENSE MODE
+## 🐋 WHALE SIGNALS
 
-After 2 consecutive losses:
+| Signal | Detection |
+|--------|-----------|
+| VOL SPIKE | Volume ≥ 1.5x 20-bar average |
+| SUDDEN MOVE | Candle move ≥ 0.5% |
+| ABSORPTION | High volume + body < 30% of range |
+| LIQUIDATION | Wick > 60% of candle range |
+
+---
+
+## 🤖 ML-LITE WEIGHTS
+
+| Feature | Min | Default | Max |
+|---------|-----|---------|-----|
+| Trend | 5 | 20 | 30 |
+| Momentum | 5 | 15 | 30 |
+| Volume | 5 | 15 | 30 |
+| Structure | 5 | 20 | 30 |
+| Whale | 5 | 10 | 30 |
+
+---
+
+## 💰 EXPECTANCY STATUS
+
+| Status | Condition | Size Adjustment |
+|--------|-----------|-----------------|
+| NORMAL | 0 < expectancy < 0.5 | ×1.0 |
+| BULLISH | expectancy > 0.5 | ×1.2 |
+| CAUTIOUS | expectancy < 0 | ×0.85 |
+| DEFENSIVE | 3+ consec losses | ×0.7 |
+
+---
+
+## 🧠 SELF-LEARNING RULES
+
+1. **Score Range Learning**
+   - Min 10 trades before learning
+   - Adjust min score if range WR < 45%
+
+2. **Phase Learning**
+   - Track TREND/CHOP performance
+   - Reduce confidence in bad phases
+
+3. **Pattern Detection**
+   - Recent trade patterns affect decisions
+   - No random - fully deterministic
+
+---
+
+## 🔄 HYBRID AI FLOW DIAGRAM
+
 ```
-→ Entry score: 85 (minimum)
-→ Position size: -50%
-→ MAX trades/hour: 1
-→ Duration: 1 hour
+[Market Data]
+     ↓
+[Layer 1: Rule Engine] → BLOCK if failed
+     ↓
+[Whale Tracking] → whaleScore
+     ↓
+[ML Scoring] → baseScore (weighted factors)
+     ↓
+[Self-Learning] → scoreModifier, confidenceModifier
+     ↓
+[Whale Boost] → +0.10 or +0.15
+     ↓
+[Expectancy] → positionMultiplier
+     ↓
+[Final Decision]
 ```
 
 ---
 
-## 📋 DOCUMENTED FEATURES
+## 📊 OUTPUT FORMAT
 
-✅ TREND FOLLOWING ONLY (no mean reversion)
-✅ RSI PULLBACK entry (45-60 LONG, 40-55 SHORT)
-✅ VOLUME ≥ 1.2x required
-✅ ATR HARD BLOCK < 0.12%
-✅ CHOP BLOCK (except P1 with 50% size)
-✅ MAX 3 trades/day, 1 trade/hour
-✅ 15 min post-win cooldown (P1 exception only)
-✅ DEFENSE after 2 losses
-✅ MAX 1 override per trade
-✅ Stop Loss 1.5%
-✅ Peak Drop 25% exit
-✅ Trailing 0.5% offset
-✅ Profit Lock 30%/50%/70% at 1%/2%/3%
-✅ Intelligent Exit (breakout hold, rejection exit early)
-✅ No multi-pair (BTC only)
-✅ No RSI Reversal exit
+```javascript
+{
+  action: "LONG/SHORT/HOLD",
+  confidence: 0-100,
+  trend: "BULLISH/BEARISH/NEUTRAL",
+  trend_strength: "WEAK/NORMAL/STRONG",
+  market_phase: "TREND/CHOP/TRANSITION",
+  priority: "P1/P2/P3/P4",
+  whale: {
+    score: 0-100,
+    level: "NORMAL/ACTIVE/AGGRESSIVE",
+    signals: ["Vol spike +20", ...]
+  },
+  mlWeights: { trend: 20, momentum: 15, ... },
+  expectancy: { expectancy: 0.42, winRate: 0.63, ... },
+  selfLearn: { totalTrades: 45, learningActive: true, ... },
+  position_multiplier: 1.0,
+  validation: { trendValid: true, volumeValid: true, ... }
+}
+```
 
 ---
 
@@ -274,6 +247,8 @@ After 2 consecutive losses:
 
 - Catch BIG trend moves
 - Avoid chop completely
-- Reduce fake entries
-- Maximize runner profit
-- Maintain consistency
+- Detect smart money (whales)
+- Adapt to market conditions
+- Learn from trade history
+- Maximize long-term expectancy
+- No random decisions - fully deterministic

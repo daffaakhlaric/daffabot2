@@ -487,6 +487,387 @@ select.fsel{background:var(--bg);border:1px solid var(--border2);color:var(--tex
     </div>
   </div>
 
+  <!-- ═══ NEW ROW 3.7: AI DECISION + MARKET CONTEXT + WHALE ACTIVITY ═══ -->
+  <div class="g3 mb section-gap">
+
+    <!-- AI DECISION CARD -->
+    <div class="card" id="ai-decision-card" style="border:2px solid var(--border);transition:border-color .3s">
+      <div class="card-hd">
+        <div class="card-title">🤖 AI DECISION</div>
+        <span id="ai-mode-badge" class="badge b-blue">--</span>
+      </div>
+      <div style="text-align:center;padding:12px 0">
+        <div id="ai-decision-icon" style="font-size:42px;margin-bottom:8px">⏸</div>
+        <div id="ai-decision-action" style="font-size:26px;font-weight:800;letter-spacing:.04em;margin-bottom:12px;text-transform:uppercase">--</div>
+        <div style="display:flex;justify-content:space-around">
+          <div style="text-align:center">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:4px">CONFIDENCE</div>
+            <div id="ai-decision-conf" style="font-size:22px;font-weight:800">--</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:4px">SCORE</div>
+            <div id="ai-decision-score" style="font-size:22px;font-weight:800">--</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:4px">PRIORITY</div>
+            <div id="ai-decision-priority" style="font-size:22px;font-weight:800">--</div>
+          </div>
+        </div>
+      </div>
+      <div id="ai-decision-reason" style="font-size:11px;color:var(--text3);padding:8px 10px;background:var(--bg);border-radius:var(--r-sm);line-height:1.5;min-height:44px">Waiting for signal...</div>
+    </div>
+
+    <!-- MARKET CONTEXT PANEL -->
+    <div class="card">
+      <div class="card-hd"><div class="card-title">📊 MARKET CONTEXT</div></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">TREND</div>
+          <span id="mc-trend" class="badge b-blue">--</span>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">PHASE</div>
+          <span id="mc-phase" class="badge b-green">--</span>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">TREND STRENGTH</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="flex:1">
+              <div class="progress-bg" style="height:6px">
+                <div id="mc-strength-bar" class="progress-fill" style="width:0%;background:var(--green)"></div>
+              </div>
+            </div>
+            <span id="mc-strength-val" style="font-size:12px;font-weight:700;min-width:36px">--%</span>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">EMA GAP</div>
+          <div id="mc-ema-gap" style="font-size:18px;font-weight:800">--</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">RSI</div>
+          <div id="mc-rsi" style="font-size:18px;font-weight:800">--</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">ATR %</div>
+          <div id="mc-atr" style="font-size:18px;font-weight:800">--</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">VOLUME</div>
+          <div id="mc-volume" style="font-size:18px;font-weight:800">--</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">PRICE</div>
+          <div id="mc-price" style="font-size:18px;font-weight:800">--</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- WHALE ACTIVITY PANEL -->
+    <div class="card">
+      <div class="card-hd"><div class="card-title">🐋 WHALE ACTIVITY</div></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div>
+          <div style="font-size:10px;color:var(--text3)">WHALE SCORE</div>
+          <div id="whale-score" style="font-size:32px;font-weight:800;line-height:1">--</div>
+        </div>
+        <span id="whale-status-badge" class="badge b-green">NORMAL</span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        <span id="whale-vol-spike" class="badge" style="display:none;background:var(--blue-bg);color:var(--accent)">VOL SPIKE</span>
+        <span id="whale-sudden-move" class="badge" style="display:none;background:var(--yellow-bg);color:var(--yellow)">SUDDEN MOVE</span>
+        <span id="whale-absorption" class="badge" style="display:none;background:var(--red-bg);color:var(--red)">ABSORPTION</span>
+        <span id="whale-liquidation" class="badge" style="display:none;background:var(--red-bg);color:var(--red)">LIQUIDATION ZONE</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ NEW ROW 3.8: AI REASONING + ENTRY VALIDATION ═══ -->
+  <div class="g2 mb section-gap">
+
+    <!-- AI REASONING PANEL -->
+    <div class="card">
+      <div class="card-hd"><div class="card-title">🧠 AI REASONING</div></div>
+      <div id="ai-reasoning-list" style="display:flex;flex-direction:column;gap:6px;min-height:100px">
+        <div style="text-align:center;color:var(--text3);padding:30px;font-size:12px">Waiting for signal...</div>
+      </div>
+    </div>
+
+    <!-- ENTRY VALIDATION PANEL -->
+    <div class="card">
+      <div class="card-hd"><div class="card-title">✅ ENTRY VALIDATION</div></div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:12px;color:var(--text2)">Trend valid</span>
+          <span id="ev-trend" style="font-size:16px">⬜</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:12px;color:var(--text2)">Volume valid</span>
+          <span id="ev-volume" style="font-size:16px">⬜</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:12px;color:var(--text2)">ATR valid</span>
+          <span id="ev-atr" style="font-size:16px">⬜</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:12px;color:var(--text2)">Not CHOP</span>
+          <span id="ev-chop" style="font-size:16px">⬜</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:12px;color:var(--text2)">Breakout valid</span>
+          <span id="ev-breakout" style="font-size:16px">⬜</span>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;font-size:10px;color:var(--text3)">
+        <div>Score Required: <span id="ev-score-required" style="color:var(--text)">--</span></div>
+        <div>Score Gap: <span id="ev-score-gap" style="color:var(--text)">--</span></div>
+      </div>
+      <div id="ev-final" style="padding:8px 12px;background:var(--bg);border-radius:6px;text-align:center">
+        <span id="ev-final-text" style="font-size:12px;font-weight:600;color:var(--text3)">AWAITING SIGNAL</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ NEW ROW 3.9: EXPECTANCY + SYSTEM STATUS + RISK ENGINE ═══ -->
+  <div class="g3 mb section-gap">
+
+    <!-- EXPECTANCY PANEL -->
+    <div class="card">
+      <div class="card-hd"><div class="card-title">💰 EXPECTANCY</div></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div style="text-align:center;padding:10px;background:var(--bg);border-radius:var(--r-sm)">
+          <div style="font-size:9px;color:var(--text3);margin-bottom:4px">WINRATE</div>
+          <div id="exp-winrate" style="font-size:20px;font-weight:800;color:var(--green)">--%</div>
+        </div>
+        <div style="text-align:center;padding:10px;background:var(--bg);border-radius:var(--r-sm)">
+          <div style="font-size:9px;color:var(--text3);margin-bottom:4px">EXPECTANCY</div>
+          <div id="exp-value" style="font-size:20px;font-weight:800">--</div>
+        </div>
+        <div style="text-align:center;padding:10px;background:var(--bg);border-radius:var(--r-sm)">
+          <div style="font-size:9px;color:var(--text3);margin-bottom:4px">AVG WIN</div>
+          <div id="exp-avg-win" style="font-size:20px;font-weight:800;color:var(--green)">--%</div>
+        </div>
+        <div style="text-align:center;padding:10px;background:var(--bg);border-radius:var(--r-sm)">
+          <div style="font-size:9px;color:var(--text3);margin-bottom:4px">AVG LOSS</div>
+          <div id="exp-avg-loss" style="font-size:20px;font-weight:800;color:var(--red)">--%</div>
+        </div>
+      </div>
+      <div style="margin-top:12px;text-align:center">
+        <span id="exp-status-badge" class="badge b-green">PROFITABLE</span>
+      </div>
+    </div>
+
+    <!-- SYSTEM STATUS (DEBUG) -->
+    <div class="card">
+      <div class="card-hd"><div class="card-title">⚙️ SYSTEM STATUS</div></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">COOLDOWN</div>
+          <span id="sys-cooldown-badge" class="badge b-green">OFF</span>
+          <div id="sys-cooldown-remain" style="font-size:11px;color:var(--text3);margin-top:2px">--</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">DEFENSE</div>
+          <span id="sys-defense-badge" class="badge b-green">OFF</span>
+          <div id="sys-defense-remain" style="font-size:11px;color:var(--text3);margin-top:2px">--</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">STATE</div>
+          <span id="sys-state-badge" class="badge b-blue">NORMAL</span>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">LAST TRADE</div>
+          <div id="sys-last-trade" style="font-size:13px;font-weight:600">--</div>
+        </div>
+      </div>
+      <div class="divider"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:10px">
+        <div>Trades Today: <span id="sys-trades-today" style="color:var(--text)">--</span></div>
+        <div>Last Result: <span id="sys-last-result" style="color:var(--text)">--</span></div>
+        <div>Consec Wins: <span id="sys-win-streak" style="color:var(--green)">--</span></div>
+        <div>Consec Losses: <span id="sys-loss-streak" style="color:var(--red)">--</span></div>
+      </div>
+    </div>
+
+    <!-- RISK ENGINE PANEL -->
+    <div class="card">
+      <div class="card-hd"><div class="card-title">🛡️ RISK ENGINE</div></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">POSITION SIZE</div>
+          <div id="re-position" style="font-size:20px;font-weight:800">--</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">LEVERAGE</div>
+          <div id="re-leverage" style="font-size:20px;font-weight:800">--</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">STOP LOSS</div>
+          <div id="re-sl" style="font-size:20px;font-weight:800;color:var(--red)">--</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">TAKE PROFIT</div>
+          <div id="re-tp" style="font-size:20px;font-weight:800;color:var(--green)">--</div>
+        </div>
+      </div>
+      <div class="divider"></div>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:10px;color:var(--text3)">Position Multiplier</span>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="flex:1">
+            <div class="progress-bg" style="height:6px">
+              <div id="re-multiplier-bar" class="progress-fill" style="width:0%;background:var(--accent)"></div>
+            </div>
+          </div>
+          <span id="re-multiplier-val" style="font-size:12px;font-weight:700;min-width:40px">--</span>
+        </div>
+      </div>
+      <div style="margin-top:10px">
+        <span id="re-risk-mode-badge" class="badge b-purple">NORMAL MODE</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ NEW ROW 3.95: ML WEIGHTS + SELF-LEARNING + HYBRID STATUS ═══ -->
+  <div class="g3 mb section-gap">
+
+    <!-- ML-LITE WEIGHTS PANEL -->
+    <div class="card">
+      <div class="card-hd">
+        <div class="card-title">⚙️ ML WEIGHTS</div>
+        <span id="ml-learning-badge" class="badge b-green">ACTIVE</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:12px;color:var(--text2)">Trend</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="width:80px">
+              <div class="progress-bg" style="height:6px">
+                <div id="ml-trend-bar" class="progress-fill" style="width:0%;background:var(--green)"></div>
+              </div>
+            </div>
+            <span id="ml-trend-val" style="font-size:12px;font-weight:700;min-width:24px;text-align:right">--</span>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:12px;color:var(--text2)">Momentum</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="width:80px">
+              <div class="progress-bg" style="height:6px">
+                <div id="ml-momentum-bar" class="progress-fill" style="width:0%;background:var(--blue)"></div>
+              </div>
+            </div>
+            <span id="ml-momentum-val" style="font-size:12px;font-weight:700;min-width:24px;text-align:right">--</span>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:12px;color:var(--text2)">Volume</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="width:80px">
+              <div class="progress-bg" style="height:6px">
+                <div id="ml-volume-bar" class="progress-fill" style="width:0%;background:var(--yellow)"></div>
+              </div>
+            </div>
+            <span id="ml-volume-val" style="font-size:12px;font-weight:700;min-width:24px;text-align:right">--</span>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:12px;color:var(--text2)">Structure</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="width:80px">
+              <div class="progress-bg" style="height:6px">
+                <div id="ml-structure-bar" class="progress-fill" style="width:0%;background:var(--purple)"></div>
+              </div>
+            </div>
+            <span id="ml-structure-val" style="font-size:12px;font-weight:700;min-width:24px;text-align:right">--</span>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:12px;color:var(--text2)">Whale</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="width:80px">
+              <div class="progress-bg" style="height:6px">
+                <div id="ml-whale-bar" class="progress-fill" style="width:0%;background:var(--accent)"></div>
+              </div>
+            </div>
+            <span id="ml-whale-val" style="font-size:12px;font-weight:700;min-width:24px;text-align:right">--</span>
+          </div>
+        </div>
+      </div>
+      <div class="divider"></div>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text3)">
+        <span>Min: 5</span>
+        <span>Max: 30</span>
+      </div>
+    </div>
+
+    <!-- SELF-LEARNING PANEL -->
+    <div class="card">
+      <div class="card-hd">
+        <div class="card-title">🧠 SELF-LEARNING</div>
+        <span id="sl-status-badge" class="badge b-blue">LEARNING</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+        <div style="text-align:center;padding:8px;background:var(--bg);border-radius:var(--r-sm)">
+          <div style="font-size:9px;color:var(--text3);margin-bottom:4px">TRADES</div>
+          <div id="sl-total-trades" style="font-size:18px;font-weight:800">--</div>
+        </div>
+        <div style="text-align:center;padding:8px;background:var(--bg);border-radius:var(--r-sm)">
+          <div style="font-size:9px;color:var(--text3);margin-bottom:4px">ACTIVE</div>
+          <span id="sl-active-badge" class="badge b-green">YES</span>
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--text3);margin-bottom:8px">SCORE RANGE PERFORMANCE</div>
+      <div id="sl-score-ranges" style="display:flex;flex-direction:column;gap:4px;max-height:80px;overflow-y:auto">
+        <div style="font-size:10px;color:var(--text3);text-align:center;padding:10px">No data yet</div>
+      </div>
+      <div class="divider"></div>
+      <div style="font-size:10px;color:var(--text3);margin-bottom:8px">PHASE PERFORMANCE</div>
+      <div id="sl-phase-perf" style="display:flex;gap:6px;flex-wrap:wrap">
+        <span style="font-size:10px;color:var(--text3)">No data yet</span>
+      </div>
+    </div>
+
+    <!-- HYBRID AI STATUS PANEL -->
+    <div class="card">
+      <div class="card-hd">
+        <div class="card-title">🤖 HYBRID AI STATUS</div>
+        <span id="hybrid-mode-badge" class="badge b-purple">v5.0</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:11px;color:var(--text2)">Layer 1: Rule Engine</span>
+          <span id="hybrid-rule-status" class="badge b-green">✓</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:11px;color:var(--text2)">Layer 2: AI Decision</span>
+          <span id="hybrid-ai-status" class="badge b-green">✓</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:11px;color:var(--text2)">Layer 3: ML-Lite</span>
+          <span id="hybrid-ml-status" class="badge b-green">✓</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:11px;color:var(--text2)">Whale Tracking</span>
+          <span id="hybrid-whale-status" class="badge b-green">✓</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:11px;color:var(--text2)">Expectancy Optimizer</span>
+          <span id="hybrid-exp-status" class="badge b-green">✓</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:11px;color:var(--text2)">Self-Learning</span>
+          <span id="hybrid-sl-status" class="badge b-green">✓</span>
+        </div>
+      </div>
+      <div class="divider"></div>
+      <div style="font-size:10px;color:var(--text3);margin-bottom:6px">TRADE HISTORY (RECENT)</div>
+      <div id="hybrid-trade-history" style="display:flex;gap:4px;flex-wrap:wrap">
+        <span style="font-size:10px;color:var(--text3)">No trades yet</span>
+      </div>
+    </div>
+  </div>
+
   <!-- ── ROW 4: ANALYSIS + AI INSIGHT + BOT STATUS ── -->
   <div class="g3 mb section-gap">
 
@@ -1393,6 +1774,507 @@ function updateTradingStatus(d) {
     statusDot.className = 'dot';
   }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// NEW PANEL RENDER FUNCTIONS (v4.2B)
+// ═══════════════════════════════════════════════════════════════
+
+function renderAIDecision(analysis) {
+  const card = document.getElementById('ai-decision-card');
+  const actionEl = document.getElementById('ai-decision-action');
+  const iconEl = document.getElementById('ai-decision-icon');
+  const confEl = document.getElementById('ai-decision-conf');
+  const scoreEl = document.getElementById('ai-decision-score');
+  const priorityEl = document.getElementById('ai-decision-priority');
+  const reasonEl = document.getElementById('ai-decision-reason');
+  const modeBadgeEl = document.getElementById('ai-mode-badge');
+
+  if (!analysis) {
+    actionEl.textContent = '--';
+    iconEl.textContent = '⏸';
+    confEl.textContent = '--';
+    scoreEl.textContent = '--';
+    priorityEl.textContent = '--';
+    reasonEl.textContent = 'Waiting for signal...';
+    modeBadgeEl.textContent = '--';
+    modeBadgeEl.className = 'badge b-blue';
+    card.style.borderColor = 'var(--border)';
+    return;
+  }
+
+  const action = analysis.action || 'HOLD';
+  const confidence = analysis.confidence || 0;
+  const score = analysis.scores?.bullish || analysis.scores?.bearish || 0;
+  const priority = analysis.priority || '--';
+  const reason = analysis.reason || 'No signal';
+  const mode = analysis.mode || 'NORMAL';
+
+  actionEl.textContent = action;
+  confEl.textContent = confidence + '%';
+  scoreEl.textContent = score;
+  priorityEl.textContent = priority;
+
+  const isLong = action === 'LONG';
+  const isShort = action === 'SHORT';
+  const isHold = action === 'HOLD' || action === 'NO_TRADE';
+
+  let borderColor = 'var(--border)';
+  if (isLong) {
+    iconEl.textContent = '📈';
+    actionEl.style.color = 'var(--green)';
+    borderColor = '#166534';
+    card.style.backgroundColor = 'var(--green-bg)';
+  } else if (isShort) {
+    iconEl.textContent = '📉';
+    actionEl.style.color = 'var(--red)';
+    borderColor = '#7f1d1d';
+    card.style.backgroundColor = 'var(--red-bg)';
+  } else {
+    iconEl.textContent = '⏸';
+    actionEl.style.color = 'var(--textMuted)';
+    borderColor = 'var(--border)';
+    card.style.backgroundColor = 'var(--card)';
+  }
+
+  card.style.borderColor = borderColor;
+
+  const modeClass = mode === 'DEFENSE' ? 'b-red' : mode === 'SAFE' ? 'b-yellow' : mode === 'AGGRESSIVE' ? 'b-green' : 'b-blue';
+  modeBadgeEl.textContent = mode;
+  modeBadgeEl.className = 'badge ' + modeClass;
+
+  reasonEl.textContent = reason.length > 120 ? reason.substring(0, 120) + '...' : reason;
+}
+
+function renderMarketContext(analysis) {
+  const trendEl = document.getElementById('mc-trend');
+  const phaseEl = document.getElementById('mc-phase');
+  const strengthBarEl = document.getElementById('mc-strength-bar');
+  const strengthValEl = document.getElementById('mc-strength-val');
+  const emaGapEl = document.getElementById('mc-ema-gap');
+  const rsiEl = document.getElementById('mc-rsi');
+  const atrEl = document.getElementById('mc-atr');
+  const volumeEl = document.getElementById('mc-volume');
+  const priceEl = document.getElementById('mc-price');
+
+  if (!analysis) return;
+
+  const trend = analysis.trend || 'NEUTRAL';
+  const phase = analysis.market_phase || 'TREND';
+  const strength = analysis.trend_strength || 'WEAK';
+  const emaGap = parseFloat(analysis.indicators?.ema_gap || 0);
+  const rsi = parseFloat(analysis.indicators?.rsi || 0);
+  const atrPct = parseFloat(analysis.indicators?.atrPct || 0);
+  const volumeRatio = parseFloat(analysis.indicators?.volumeRatio || 0);
+  const price = analysis.price || 0;
+
+  trendEl.textContent = trend;
+  trendEl.className = 'badge ' + (trend === 'BULLISH' ? 'b-green' : trend === 'BEARISH' ? 'b-red' : 'b-yellow');
+
+  phaseEl.textContent = phase;
+  phaseEl.className = 'badge ' + (phase === 'TREND' ? 'b-green' : 'b-yellow');
+
+  let strengthPct = strength === 'STRONG' ? 80 : strength === 'NORMAL' ? 50 : 20;
+  let strengthColor = strength === 'STRONG' ? 'var(--green)' : strength === 'NORMAL' ? 'var(--yellow)' : 'var(--red)';
+  strengthBarEl.style.width = strengthPct + '%';
+  strengthBarEl.style.backgroundColor = strengthColor;
+  strengthValEl.textContent = strengthPct + '%';
+  strengthValEl.style.color = strengthColor;
+
+  emaGapEl.textContent = emaGap.toFixed(3) + '%';
+  rsiEl.textContent = rsi.toFixed(1);
+  rsiEl.style.color = rsi > 60 ? 'var(--red)' : rsi < 40 ? 'var(--green)' : 'var(--text)';
+  atrEl.textContent = atrPct.toFixed(3) + '%';
+  volumeEl.textContent = volumeRatio.toFixed(2) + 'x';
+  volumeEl.style.color = volumeRatio >= 1.2 ? 'var(--green)' : volumeRatio >= 1.0 ? 'var(--yellow)' : 'var(--red)';
+  priceEl.textContent = price > 0 ? '$' + price.toFixed(2) : '--';
+}
+
+function renderWhaleActivity(analysis) {
+  const scoreEl = document.getElementById('whale-score');
+  const statusBadgeEl = document.getElementById('whale-status-badge');
+  const volSpikeEl = document.getElementById('whale-vol-spike');
+  const suddenMoveEl = document.getElementById('whale-sudden-move');
+  const absorptionEl = document.getElementById('whale-absorption');
+  const liquidationEl = document.getElementById('whale-liquidation');
+
+  if (!analysis) return;
+
+  const whale = analysis.whale || {};
+  const score = whale.score || 0;
+
+  scoreEl.textContent = score;
+  scoreEl.style.color = score >= 70 ? 'var(--red)' : score >= 50 ? 'var(--yellow)' : 'var(--green)';
+
+  let status = 'NORMAL';
+  let statusClass = 'b-green';
+  if (score >= 70) {
+    status = 'HIGH MANIPULATION';
+    statusClass = 'b-red';
+  } else if (score >= 50) {
+    status = 'WHALE ACTIVE';
+    statusClass = 'b-yellow';
+  }
+  statusBadgeEl.textContent = status;
+  statusBadgeEl.className = 'badge ' + statusClass;
+
+  volSpikeEl.style.display = whale.volumeSpike ? 'inline-flex' : 'none';
+  suddenMoveEl.style.display = whale.suddenMove ? 'inline-flex' : 'none';
+  absorptionEl.style.display = whale.absorption ? 'inline-flex' : 'none';
+  liquidationEl.style.display = whale.liquidationCluster ? 'inline-flex' : 'none';
+}
+
+function renderAIReasoning(analysis) {
+  const listEl = document.getElementById('ai-reasoning-list');
+  if (!analysis) {
+    listEl.innerHTML = '<div style="text-align:center;color:var(--text3);padding:30px;font-size:12px">Waiting for signal...</div>';
+    return;
+  }
+
+  const factors = analysis.decision?.factors || [];
+  if (factors.length === 0) {
+    listEl.innerHTML = '<div style="text-align:center;color:var(--text3);padding:30px;font-size:12px">' + (analysis.reason || 'No factors') + '</div>';
+    return;
+  }
+
+  listEl.innerHTML = factors.slice(0, 6).map(f => {
+    const isPositive = f.type === 'positive' || (typeof f.value === 'number' ? f.value > 0 : f.text.includes('+'));
+    const bgColor = isPositive ? 'var(--green-bg)' : 'var(--red-bg)';
+    const textColor = isPositive ? 'var(--green)' : 'var(--red)';
+    const valStr = typeof f.value === 'number' ? (f.value > 0 ? '+' + f.value : f.value) : f.value || '';
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 10px;background:${bgColor};border-radius:6px">
+      <span style="color:${textColor};font-size:12px">${f.text}</span>
+      <span style="color:${textColor};font-size:12px;font-weight:600">${valStr}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderEntryValidation(analysis) {
+  const evTrend = document.getElementById('ev-trend');
+  const evVolume = document.getElementById('ev-volume');
+  const evAtr = document.getElementById('ev-atr');
+  const evChop = document.getElementById('ev-chop');
+  const evBreakout = document.getElementById('ev-breakout');
+  const evScoreReq = document.getElementById('ev-score-required');
+  const evScoreGap = document.getElementById('ev-score-gap');
+  const evFinalText = document.getElementById('ev-final-text');
+  const evFinal = document.getElementById('ev-final');
+
+  if (!analysis) {
+    [evTrend, evVolume, evAtr, evChop, evBreakout].forEach(el => el.textContent = '⬜');
+    evFinalText.textContent = 'AWAITING SIGNAL';
+    evFinalText.style.color = 'var(--text3)';
+    return;
+  }
+
+  const valid = analysis.validation || {};
+  const scores = analysis.scores || {};
+
+  function setCheck(el, isValid) {
+    el.textContent = isValid ? '✅' : '❌';
+    el.style.color = isValid ? 'var(--green)' : 'var(--red)';
+  }
+
+  setCheck(evTrend, valid.trendValid !== false);
+  setCheck(evVolume, valid.volumeValid !== false);
+  setCheck(evAtr, valid.atrValid !== false);
+  setCheck(evChop, valid.notChop !== false);
+  setCheck(evBreakout, valid.breakoutValid !== false);
+
+  evScoreReq.textContent = scores.required || '--';
+  evScoreGap.textContent = scores.gap || '--';
+
+  if (valid.blocked) {
+    evFinalText.textContent = 'BLOCKED: ' + (valid.blockReason || 'Conditions not met');
+    evFinalText.style.color = 'var(--red)';
+    evFinal.style.backgroundColor = 'var(--red-bg)';
+  } else if (analysis.action !== 'HOLD' && analysis.action !== 'NO_TRADE') {
+    evFinalText.textContent = '✅ READY TO TRADE';
+    evFinalText.style.color = 'var(--green)';
+    evFinal.style.backgroundColor = 'var(--green-bg)';
+  } else {
+    evFinalText.textContent = '⏳ NO TRADE';
+    evFinalText.style.color = 'var(--yellow)';
+    evFinal.style.backgroundColor = 'var(--bg)';
+  }
+}
+
+function renderExpectancy(stats) {
+  const winrateEl = document.getElementById('exp-winrate');
+  const valueEl = document.getElementById('exp-value');
+  const avgWinEl = document.getElementById('exp-avg-win');
+  const avgLossEl = document.getElementById('exp-avg-loss');
+  const statusBadgeEl = document.getElementById('exp-status-badge');
+
+  if (!stats) return;
+
+  const wr = stats.wins && stats.totalTrades ? (stats.wins / stats.totalTrades * 100) : 0;
+  const avgWin = stats.avgWinPct || 0;
+  const avgLoss = stats.avgLossPct || 0;
+  const expectancy = (wr / 100 * avgWin) + ((1 - wr / 100) * avgLoss);
+
+  winrateEl.textContent = wr.toFixed(1) + '%';
+  avgWinEl.textContent = '+' + avgWin.toFixed(2) + '%';
+  avgLossEl.textContent = avgLoss.toFixed(2) + '%';
+  valueEl.textContent = expectancy >= 0 ? '+' + expectancy.toFixed(3) : expectancy.toFixed(3);
+  valueEl.style.color = expectancy >= 0 ? 'var(--green)' : 'var(--red)';
+
+  let status = 'PROFITABLE';
+  let statusClass = 'b-green';
+  if (expectancy < 0) {
+    status = 'NEGATIVE';
+    statusClass = 'b-red';
+  } else if (expectancy < 0.1) {
+    status = 'NEUTRAL';
+    statusClass = 'b-yellow';
+  }
+  statusBadgeEl.textContent = status;
+  statusBadgeEl.className = 'badge ' + statusClass;
+}
+
+function renderSystemStatus(status) {
+  const cooldownBadgeEl = document.getElementById('sys-cooldown-badge');
+  const cooldownRemainEl = document.getElementById('sys-cooldown-remain');
+  const defenseBadgeEl = document.getElementById('sys-defense-badge');
+  const defenseRemainEl = document.getElementById('sys-defense-remain');
+  const stateBadgeEl = document.getElementById('sys-state-badge');
+  const lastTradeEl = document.getElementById('sys-last-trade');
+  const tradesTodayEl = document.getElementById('sys-trades-today');
+  const lastResultEl = document.getElementById('sys-last-result');
+  const winStreakEl = document.getElementById('sys-win-streak');
+  const lossStreakEl = document.getElementById('sys-loss-streak');
+
+  if (!status) return;
+
+  const cooldownActive = status.cooldownActive || status.cooldown_minutes > 0;
+  const defenseActive = status.defenseActive || status.defenseRemaining > 0;
+
+  cooldownBadgeEl.textContent = cooldownActive ? 'ON' : 'OFF';
+  cooldownBadgeEl.className = 'badge ' + (cooldownActive ? 'b-red' : 'b-green');
+  cooldownRemainEl.textContent = status.cooldownRemaining ? status.cooldownRemaining + 'min' : '--';
+
+  defenseBadgeEl.textContent = defenseActive ? 'ON' : 'OFF';
+  defenseBadgeEl.className = 'badge ' + (defenseActive ? 'b-red' : 'b-green');
+  defenseRemainEl.textContent = status.defenseRemaining ? status.defenseRemaining + 'min' : '--';
+
+  stateBadgeEl.textContent = status.currentMode || status.state || 'NORMAL';
+  stateBadgeEl.className = 'badge ' + (status.currentMode === 'DEFENSE' ? 'b-red' : 'b-blue');
+
+  lastTradeEl.textContent = status.lastTradeAgo ? status.lastTradeAgo + 'm ago' : 'N/A';
+
+  tradesTodayEl.textContent = status.tradesToday || 0;
+  lastResultEl.textContent = status.lastResult || '--';
+  winStreakEl.textContent = status.consecutiveWins || 0;
+  lossStreakEl.textContent = status.consecutiveLosses || 0;
+}
+
+function renderRiskEngine(mode, position) {
+  const posSizeEl = document.getElementById('re-position');
+  const levEl = document.getElementById('re-leverage');
+  const slEl = document.getElementById('re-sl');
+  const tpEl = document.getElementById('re-tp');
+  const multiplierBarEl = document.getElementById('re-multiplier-bar');
+  const multiplierValEl = document.getElementById('re-multiplier-val');
+  const riskModeBadgeEl = document.getElementById('re-risk-mode-badge');
+
+  if (!mode) mode = 'NORMAL';
+
+  const configs = {
+    NORMAL: { sl: 1.5, tp: 2.0, trailing: 0.5, position: 1.0, label: 'NORMAL MODE' },
+    DEFENSE: { sl: 1.0, tp: 1.5, trailing: 0.3, position: 0.5, label: 'DEFENSE MODE' },
+    SAFE: { sl: 1.5, tp: 2.0, trailing: 0.5, position: 0.7, label: 'SAFE MODE' },
+    AGGRESSIVE: { sl: 2.0, tp: 3.0, trailing: 0.8, position: 1.3, label: 'AGGRESSIVE' }
+  };
+
+  const config = configs[mode] || configs.NORMAL;
+
+  posSizeEl.textContent = (config.position * 100).toFixed(0) + '%';
+  levEl.textContent = position?.leverage ? position.leverage + 'x' : '--';
+  slEl.textContent = config.sl + '%';
+  tpEl.textContent = config.tp + '%';
+
+  const multiplierPct = config.position * 100;
+  multiplierBarEl.style.width = Math.min(100, multiplierPct) + '%';
+  multiplierValEl.textContent = config.position.toFixed(1) + 'x';
+
+  riskModeBadgeEl.textContent = config.label;
+  riskModeBadgeEl.className = 'badge ' + (mode === 'DEFENSE' ? 'b-red' : mode === 'AGGRESSIVE' ? 'b-green' : 'b-purple');
+}
+
+function updateNewPanels(d) {
+  if (!d) return;
+
+  // Extract analysis from various SSE event types
+  const analysis = d.analysis || d.analysis_update?.analysis || d;
+  const tradingStatus = d.trading_status || d;
+
+  renderAIDecision(analysis);
+  renderMarketContext(analysis);
+  renderWhaleActivity(analysis);
+  renderAIReasoning(analysis);
+  renderEntryValidation(analysis);
+  renderExpectancy(d.stats || S);
+  renderSystemStatus(tradingStatus);
+
+  const mode = analysis?.mode || tradingStatus?.mode || 'NORMAL';
+  renderRiskEngine(mode, d.position || S.position);
+
+  renderMLWeights(analysis);
+  renderSelfLearning(analysis);
+  renderHybridStatus(d);
+}
+
+function renderMLWeights(analysis) {
+  const weights = analysis?.mlWeights || {
+    trend: 20,
+    momentum: 15,
+    volume: 15,
+    structure: 20,
+    whale: 10
+  };
+
+  const features = ['trend', 'momentum', 'volume', 'structure', 'whale'];
+  const colors = {
+    trend: 'var(--green)',
+    momentum: 'var(--blue)',
+    volume: 'var(--yellow)',
+    structure: 'var(--purple)',
+    whale: 'var(--accent)'
+  };
+
+  features.forEach(f => {
+    const barEl = document.getElementById(`ml-${f}-bar`);
+    const valEl = document.getElementById(`ml-${f}-val`);
+    if (barEl && valEl) {
+      const pct = (weights[f] / 30) * 100;
+      barEl.style.width = pct + '%';
+      barEl.style.backgroundColor = colors[f];
+      valEl.textContent = weights[f];
+    }
+  });
+
+  const badge = document.getElementById('ml-learning-badge');
+  if (badge) {
+    const isLearning = analysis?.selfLearn?.status?.learningActive !== false;
+    badge.textContent = isLearning ? 'ACTIVE' : 'PAUSED';
+    badge.className = 'badge ' + (isLearning ? 'b-green' : 'b-yellow');
+  }
+}
+
+function renderSelfLearning(analysis) {
+  const selfLearn = analysis?.selfLearn?.status || {
+    totalTrades: 0,
+    learningActive: false,
+    scoreRanges: {},
+    marketPhases: {}
+  };
+
+  const totalEl = document.getElementById('sl-total-trades');
+  const activeBadge = document.getElementById('sl-active-badge');
+  const statusBadge = document.getElementById('sl-status-badge');
+  const scoreRangesEl = document.getElementById('sl-score-ranges');
+  const phasePerfEl = document.getElementById('sl-phase-perf');
+
+  if (totalEl) totalEl.textContent = selfLearn.totalTrades || 0;
+  if (activeBadge) {
+    activeBadge.textContent = selfLearn.learningActive ? 'YES' : 'NO';
+    activeBadge.className = 'badge ' + (selfLearn.learningActive ? 'b-green' : 'b-yellow');
+  }
+  if (statusBadge) {
+    statusBadge.textContent = selfLearn.learningActive ? 'LEARNING' : 'WAITING';
+    statusBadge.className = 'badge ' + (selfLearn.learningActive ? 'b-blue' : 'b-yellow');
+  }
+
+  if (scoreRangesEl) {
+    const ranges = selfLearn.scoreRanges || {};
+    const rangeKeys = Object.keys(ranges).sort((a, b) => parseInt(a) - parseInt(b));
+    if (rangeKeys.length > 0) {
+      scoreRangesEl.innerHTML = rangeKeys.slice(0, 5).map(range => {
+        const data = ranges[range];
+        const wr = data.winRate ? (data.winRate * 100).toFixed(0) : 0;
+        const color = wr >= 55 ? 'var(--green)' : wr <= 45 ? 'var(--red)' : 'var(--yellow)';
+        return `<div style="display:flex;justify-content:space-between;padding:3px 6px;background:var(--bg);border-radius:4px;font-size:10px">
+          <span style="color:var(--text2)">${range}-${parseInt(range) + 5}</span>
+          <span style="color:${color};font-weight:600">${wr}% (${data.total})</span>
+        </div>`;
+      }).join('');
+    } else {
+      scoreRangesEl.innerHTML = '<div style="font-size:10px;color:var(--text3);text-align:center;padding:10px">No data yet</div>';
+    }
+  }
+
+  if (phasePerfEl) {
+    const phases = selfLearn.marketPhases || {};
+    const phaseKeys = Object.keys(phases);
+    if (phaseKeys.length > 0) {
+      phasePerfEl.innerHTML = phaseKeys.map(phase => {
+        const data = phases[phase];
+        const wr = data.winRate ? (data.winRate * 100).toFixed(0) : 0;
+        const color = wr >= 55 ? 'var(--green)' : wr <= 45 ? 'var(--red)' : 'var(--yellow)';
+        return `<span class="badge" style="background:${color}20;color:${color}">${phase}:${wr}%</span>`;
+      }).join('');
+    } else {
+      phasePerfEl.innerHTML = '<span style="font-size:10px;color:var(--text3)">No data yet</span>';
+    }
+  }
+}
+
+function renderHybridStatus(d) {
+  const analysis = d?.analysis || d?.analysis_update?.analysis || d;
+  const whale = analysis?.whale || {};
+  const expectancy = analysis?.expectancy || {};
+  const mlWeights = analysis?.mlWeights || {};
+  const selfLearn = analysis?.selfLearn?.status || {};
+  const tradeHistory = d?.tradeHistory || [];
+
+  const ruleStatus = document.getElementById('hybrid-rule-status');
+  const aiStatus = document.getElementById('hybrid-ai-status');
+  const mlStatus = document.getElementById('hybrid-ml-status');
+  const whaleStatus = document.getElementById('hybrid-whale-status');
+  const expStatus = document.getElementById('hybrid-exp-status');
+  const slStatus = document.getElementById('hybrid-sl-status');
+  const historyEl = document.getElementById('hybrid-trade-history');
+  const modeBadge = document.getElementById('hybrid-mode-badge');
+
+  if (ruleStatus) ruleStatus.textContent = '✓';
+  if (aiStatus) aiStatus.textContent = '✓';
+  if (mlStatus) mlStatus.textContent = '✓';
+
+  if (whaleStatus) {
+    whaleStatus.textContent = whale.score >= 40 ? '✓' : '○';
+    whaleStatus.className = 'badge ' + (whale.score >= 40 ? 'b-green' : 'b-yellow');
+  }
+
+  if (expStatus) {
+    const expValue = expectancy.expectancy || 0;
+    expStatus.textContent = expValue >= 0 ? '✓' : '⚠';
+    expStatus.className = 'badge ' + (expValue >= 0 ? 'b-green' : 'b-red');
+  }
+
+  if (slStatus) {
+    slStatus.textContent = selfLearn.learningActive ? '✓' : '○';
+    slStatus.className = 'badge ' + (selfLearn.learningActive ? 'b-green' : 'b-yellow');
+  }
+
+  if (modeBadge) {
+    modeBadge.textContent = 'v5.0 HYBRID';
+  }
+
+  if (historyEl && tradeHistory.length > 0) {
+    historyEl.innerHTML = tradeHistory.slice(-8).map(t => {
+      const color = t.result === 'WIN' ? 'var(--green)' : 'var(--red)';
+      return `<span style="background:${color}20;color:${color};padding:2px 6px;border-radius:3px;font-size:9px;font-weight:600">${t.score || '?'}</span>`;
+    }).join('');
+  } else if (historyEl) {
+    historyEl.innerHTML = '<span style="font-size:10px;color:var(--text3)">No trades yet</span>';
+  }
+}
+
+// Override/extend the main handle function to call new panels
+const _originalHandle = handle;
+handle = function(d) {
+  _originalHandle(d);
+  updateNewPanels(d);
+};
 
 function renderLearning(d) {
   const el = document.getElementById('learning-rules');

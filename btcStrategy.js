@@ -1,17 +1,17 @@
 /**
- * BTC Strategy Module - TREND-FOLLOWING SNIPER SYSTEM
- * Trading strategy specifically for BTCUSDT 15m timeframe
- * Indicators: EMA20/EMA50, RSI, ATR
+ * BTC Strategy Module - v5.0 HYBRID AI MODE
+ * TREND-FOLLOWING SNIPER SYSTEM with Hybrid AI Engine
  * 
- * RULES:
- * 1. NO mean-reversion (RSI < 30 → LONG or RSI > 70 → SHORT is DELETED)
- * 2. ONLY trend pullback entries
- * 3. Strict entry filter (score ≥ 75, gap ≥ 25)
- * 4. Market session filter (Asia = strict mode)
- * 5. Trade frequency control
- * 6. Adaptive profit system
- * 7. Trend strength detection
- * 8. Block bad market conditions
+ * HYBRID AI ARCHITECTURE:
+ * - Layer 1: Rule Engine (hard filters)
+ * - Layer 2: AI Decision Engine (scoring + confidence)
+ * - Layer 3: ML Adaptive Engine (weight tuning)
+ * 
+ * FEATURES:
+ * - Whale Tracking Engine
+ * - Expectancy Optimizer
+ * - Self-Learning Engine
+ * - ML-Lite Weight Adaptation
  */
 
 "use strict";
@@ -21,56 +21,156 @@ const httpsAgent = new https.Agent({ rejectUnauthorized: true });
 
 const SYMBOL = "BTCUSDT";
 const TIMEFRAME = "15m";
-const KLINE_LIMIT = 200; // More data for better EMA accuracy
+const KLINE_LIMIT = 200;
 
 // ═══════════════════════════════════════════════════════════════
-// STRICT SNIPER CONFIG - Trend-Following System
+// LAYER 1: RULE ENGINE CONFIG (Hard Filters)
 // ═══════════════════════════════════════════════════════════════
 
-// 1. ENTRY FILTER
-const MIN_ENTRY_SCORE = 75;        // Minimum score required
-const SCORE_GAP = 25;              // Score gap must be >= 25
+const MIN_ATR_PERCENT = 0.15;
+const MIN_ATR_BLOCK = 0.12;
+const MIN_VOLUME_BLOCK = 1.0;
+const MIN_VOLUME_RATIO = 1.2;
+const EMA_GAP_TREND = 0.15;
+const EMA_GAP_CHOP = 0.10;
 
-// 2. MARKET CONDITIONS
-const MIN_VOLUME_RATIO = 1.2;       // Volume >= 1.2x
-const MIN_ATR_PERCENT = 0.15;       // ATR >= 0.15%
-const MIN_ATR_BLOCK = 0.12;         // Block if ATR < 0.12%
-const MIN_VOLUME_BLOCK = 1.0;       // Block if volume < 1.0x
+const RSI_LONG = { min: 45, max: 65 };
+const RSI_SHORT = { min: 35, max: 55 };
+const RSI_CHOP = { min: 45, max: 55 };
 
-// 3. MARKET SESSION
-const ASIA_SCORE_MIN = 85;         // Asia strict mode: score >= 85
-const ASIA_VOLUME_MIN = 1.5;       // Asia strict mode: volume >= 1.5x
+const EXPECTED_MOVE_STRONG = 0.30;
+const EXPECTED_MOVE_NORMAL = 0.40;
 
-// 4. TRADE FREQUENCY
-const MAX_TRADES_PER_DAY = 3;
-const MAX_TRADES_PER_HOUR = 1;
-const WIN_LOCK_DURATION = 10;      // Minutes to wait after win >= 0.5%
+const MIN_ENTRY_SCORE = 75;
+const SCORE_GAP = 25;
+const OVERRIDE_SCORE_REDUCTION = 10;
+const OVERRIDE_SIZE_REDUCTION = 20;
 
-// 5. ADAPTIVE PROFIT TARGETS
-const PROFIT_STRONG = { min: 1.0, max: 2.5 };   // Trend STRONG
-const PROFIT_NORMAL = { min: 0.5, max: 1.0 };  // Trend NORMAL
-const PROFIT_WEAK = { min: 0.25, max: 0.5 };   // Trend WEAK
+const POST_WIN_WAIT = 15;
+const NO_TRADE_HOURS = 4;
+const NO_TRADE_SCORE_REDUCTION = 5;
 
-// 6. TREND STRENGTH
-const EMA_GAP_STRONG = 0.2;        // EMA gap > 0.2% = STRONG
-const EMA_GAP_NORMAL = 0.1;        // EMA gap 0.1-0.2% = NORMAL
-const VOLUME_STRONG = 1.3;         // Volume > 1.3x = STRONG
+const VOLUME_BREAKOUT = 1.3;
+const VOLUME_FAST_ENTRY = 1.5;
+const CANDLE_BODY_BREAKOUT = 0.60;
+const CANDLE_BODY_FAST_ENTRY = 0.70;
 
-// 7. FEE PROTECTION
-const MIN_PROFIT_EXIT = 0.25;      // Never close below 0.25%
+const ANTI_EXHAUSTION_RSI = 70;
+const ANTI_EXHAUSTION_DIST = 0.7;
+const ANTI_FOMO_MOVE = 0.8;
 
-/**
- * Fetch klines from Bitget
- */
+const POSITION_STRONG = 1.30;
+const POSITION_NORMAL = 1.00;
+const POSITION_WEAK = 0.70;
+const POSITION_DEFENSE = 0.50;
+
+const SL_PERCENT = 1.5;
+const PEAK_DROP_PERCENT = 25;
+const TRAILING_START = 0.5;
+const PROFIT_LOCK_1 = 1.0;
+const PROFIT_LOCK_2 = 2.0;
+const PROFIT_LOCK_3 = 3.0;
+const LOCK_1_PERCENT = 30;
+const LOCK_2_PERCENT = 50;
+const LOCK_3_PERCENT = 70;
+const PARTIAL_1_PERCENT = 30;
+const PARTIAL_2_PERCENT = 30;
+
+// ═══════════════════════════════════════════════════════════════
+// LAYER 3: ML-LITE WEIGHT CONFIG (Adaptive)
+// ═══════════════════════════════════════════════════════════════
+
+let ML_WEIGHTS = {
+  trend: 20,
+  momentum: 15,
+  volume: 15,
+  structure: 20,
+  whale: 10
+};
+
+const ML_CONFIG = {
+  MIN_WEIGHT: 5,
+  MAX_WEIGHT: 30,
+  ADJUST_STEP: 1,
+  TRACK_WINDOW: 20
+};
+
+// ═══════════════════════════════════════════════════════════════
+// EXPECTANCY TRACKER
+// ═══════════════════════════════════════════════════════════════
+
+let ExpectancyState = {
+  trades: [],
+  winRate: 0,
+  avgWin: 0,
+  avgLoss: 0,
+  expectancy: 0,
+  consecutiveLosses: 0,
+  consecutiveWins: 0
+};
+
+const EXPECTANCY_CONFIG = {
+  LOW_EXPECTANCY_THRESHOLD: 0,
+  REDUCE_SIZE_ON_LOSS: 0.30,
+  INCREASE_SIZE_ON_GAIN: 0.20,
+  MAX_LOSS_STREAK_TRIGGER: 3
+};
+
+// ═══════════════════════════════════════════════════════════════
+// SELF-LEARNING ENGINE STATE
+// ═══════════════════════════════════════════════════════════════
+
+let SelfLearnState = {
+  tradeLog: [],
+  patternScores: {},
+  marketPhasePerformance: {},
+  scoreRangePerformance: {},
+  sessionPerformance: {}
+};
+
+const SELF_LEARN_CONFIG = {
+  MIN_TRADES_FOR_LEARNING: 10,
+  WIN_THRESHOLD: 0.55,
+  LOSS_THRESHOLD: 0.45
+};
+
+// ═══════════════════════════════════════════════════════════════
+// TRADE HISTORY FOR ML + SELF-LEARNING
+// ═══════════════════════════════════════════════════════════════
+
+let TradeHistory = {
+  entries: [],
+  maxSize: 100
+};
+
+// ═══════════════════════════════════════════════════════════════
+// WHALE TRACKING CONFIG
+// ═══════════════════════════════════════════════════════════════
+
+const WHALE_CONFIG = {
+  VOLUME_SPIKE_THRESHOLD: 1.5,
+  SUDDEN_MOVE_THRESHOLD: 0.5,
+  ABSORPTION_BODY_RATIO: 0.30,
+  LIQUIDATION_WICK_RATIO: 0.60,
+  SCORE_SPIKE: 20,
+  SCORE_SUDDEN: 20,
+  SCORE_ABSORPTION: 15,
+  SCORE_LIQUIDATION: 15,
+  WHALE_BOOST_THRESHOLD: 40,
+  WHALE_AGGRESSIVE_THRESHOLD: 60
+};
+
+// ═══════════════════════════════════════════════════════════════
+// FETCH KLINES
+// ═══════════════════════════════════════════════════════════════
+
 async function fetchKlines(symbol, interval, limit = KLINE_LIMIT) {
   return new Promise((resolve, reject) => {
     const opts = {
       hostname: "api.bitget.com",
       path: `/api/v2/mix/market/history-candles?symbol=${symbol}&productType=usdt-futures&granularity=${interval}&limit=${limit}`,
       method: "GET",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: { "Content-Type": "application/json" },
       agent: httpsAgent
     };
 
@@ -108,121 +208,598 @@ async function fetchKlines(symbol, interval, limit = KLINE_LIMIT) {
   });
 }
 
-/**
- * Calculate EMA (Exponential Moving Average)
- */
+// ═══════════════════════════════════════════════════════════════
+// INDICATORS
+// ═══════════════════════════════════════════════════════════════
+
 function calculateEMA(values, period) {
   if (values.length < period) return null;
-  
   const multiplier = 2 / (period + 1);
   let ema = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  
   for (let i = period; i < values.length; i++) {
     ema = (values[i] - ema) * multiplier + ema;
   }
-  
   return ema;
 }
 
-/**
- * Calculate EMA array for all points
- */
 function calculateEMAArray(values, period) {
   if (values.length < period) return [];
-  
   const multiplier = 2 / (period + 1);
   const emaArray = new Array(values.length).fill(null);
-  
-  // First EMA is SMA
   let sum = 0;
-  for (let i = 0; i < period; i++) {
-    sum += values[i];
-  }
+  for (let i = 0; i < period; i++) sum += values[i];
   emaArray[period - 1] = sum / period;
-  
-  // Calculate rest
   for (let i = period; i < values.length; i++) {
     emaArray[i] = (values[i] - emaArray[i - 1]) * multiplier + emaArray[i - 1];
   }
-  
   return emaArray;
 }
 
-/**
- * Calculate RSI
- */
 function calculateRSI(klines, period = 14) {
   const closes = klines.map(k => k.close);
   if (closes.length < period + 1) return null;
-  
-  let gains = 0;
-  let losses = 0;
-  
+  let gains = 0, losses = 0;
   for (let i = closes.length - period; i < closes.length; i++) {
     const change = closes[i] - closes[i - 1];
     if (change > 0) gains += change;
     else losses -= change;
   }
-  
-  const avgGain = gains / period;
   const avgLoss = losses / period;
-  
   if (avgLoss === 0) return 100;
-  
-  const rs = avgGain / avgLoss;
+  const rs = (gains / period) / avgLoss;
   return 100 - (100 / (1 + rs));
 }
 
-/**
- * Calculate ATR (Average True Range)
- */
 function calculateATR(klines, period = 14) {
   if (klines.length < period + 1) return null;
-  
   const trValues = [];
   for (let i = 1; i < klines.length; i++) {
     const high = klines[i].high;
     const low = klines[i].low;
     const prevClose = klines[i - 1].close;
-    
-    const tr = Math.max(
-      high - low,
-      Math.abs(high - prevClose),
-      Math.abs(low - prevClose)
-    );
+    const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
     trValues.push(tr);
   }
-  
-  // Calculate ATR using Wilder's smoothing
   let sum = 0;
-  for (let i = 0; i < period; i++) {
-    sum += trValues[trValues.length - period + i];
-  }
-  
+  for (let i = 0; i < period; i++) sum += trValues[trValues.length - period + i];
   let atr = sum / period;
-  
-  // Continue with Wilder's method
   for (let i = trValues.length - period - 1; i >= 0; i--) {
     atr = (atr * (period - 1) + trValues[i]) / period;
   }
-  
   return atr;
 }
 
-/**
- * Calculate ATR percentage
- */
-function calculateATRPct(klines, period = 14) {
-  const atr = calculateATR(klines, period);
-  const currentPrice = klines[klines.length - 1].close;
-  return atr ? (atr / currentPrice) * 100 : null;
+// ═══════════════════════════════════════════════════════════════
+// LAYER 1: RULE ENGINE (Hard Filters)
+// ═══════════════════════════════════════════════════════════════
+
+function applyRuleEngine(klines, indicators, state) {
+  const errors = [];
+  
+  if (indicators.atrPct < MIN_ATR_BLOCK) {
+    errors.push(`ATR ${indicators.atrPct.toFixed(3)}% < ${MIN_ATR_BLOCK}% (HARD BLOCK)`);
+  }
+  
+  if (indicators.volumeRatio < MIN_VOLUME_BLOCK) {
+    errors.push(`Volume ${indicators.volumeRatio.toFixed(2)}x < ${MIN_VOLUME_BLOCK}x (HARD BLOCK)`);
+  }
+  
+  if (indicators.trendStrength === "WEAK") {
+    errors.push("Trend too weak (HARD BLOCK)");
+  }
+  
+  if (indicators.emaGap < 0.05) {
+    errors.push("EMA flat (HARD BLOCK)");
+  }
+  
+  return {
+    passed: errors.length === 0,
+    errors,
+    blocked: errors.length > 0
+  };
 }
 
-/**
- * Analyze BTC market and generate trading signals
- * TREND-FOLLOWING SNIPER SYSTEM
- */
-async function analyzeBTC() {
+// ═══════════════════════════════════════════════════════════════
+// 🐋 WHALE TRACKING ENGINE
+// ═══════════════════════════════════════════════════════════════
+
+function detectWhaleActivity(klines, currentPrice) {
+  const whale = {
+    volumeSpike: false,
+    suddenMove: false,
+    absorption: false,
+    liquidationCluster: false,
+    score: 0,
+    signals: []
+  };
+  
+  const candle = klines[klines.length - 1];
+  const prevCandle = klines[klines.length - 2];
+  const volumes = klines.map(k => k.volume);
+  const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  const currentVolume = volumes[volumes.length - 1];
+  const volumeRatio = currentVolume / avgVolume;
+  
+  const priceMove = Math.abs(candle.close - candle.open) / candle.open * 100;
+  const candleRange = candle.high - candle.low;
+  const candleBody = Math.abs(candle.close - candle.open);
+  const upperWick = candle.high - Math.max(candle.close, candle.open);
+  const lowerWick = Math.min(candle.close, candle.open) - candle.low;
+  
+  // Volume Spike: volume >= 1.5x avg
+  if (volumeRatio >= WHALE_CONFIG.VOLUME_SPIKE_THRESHOLD) {
+    whale.volumeSpike = true;
+    whale.score += WHALE_CONFIG.SCORE_SPIKE;
+    whale.signals.push(`Vol spike ${volumeRatio.toFixed(2)}x (+${WHALE_CONFIG.SCORE_SPIKE})`);
+  }
+  
+  // Sudden Move: candle move >= 0.5%
+  if (priceMove >= WHALE_CONFIG.SUDDEN_MOVE_THRESHOLD) {
+    whale.suddenMove = true;
+    whale.score += WHALE_CONFIG.SCORE_SUDDEN;
+    whale.signals.push(`Sudden move ${priceMove.toFixed(2)}% (+${WHALE_CONFIG.SCORE_SUDDEN})`);
+  }
+  
+  // Absorption: high volume but small candle body (< 30% of range)
+  if (candleRange > 0) {
+    const bodyRatio = candleBody / candleRange;
+    if (volumeRatio >= 1.3 && bodyRatio < WHALE_CONFIG.ABSORPTION_BODY_RATIO) {
+      whale.absorption = true;
+      whale.score += WHALE_CONFIG.SCORE_ABSORPTION;
+      whale.signals.push(`Absorption ${bodyRatio.toFixed(2)} body ratio (+${WHALE_CONFIG.SCORE_ABSORPTION})`);
+    }
+  }
+  
+  // Liquidation Cluster: large wick (> 60% of range)
+  if (candleRange > 0) {
+    const wickRatio = Math.max(upperWick, lowerWick) / candleRange;
+    if (wickRatio >= WHALE_CONFIG.LIQUIDATION_WICK_RATIO) {
+      whale.liquidationCluster = true;
+      whale.score += WHALE_CONFIG.SCORE_LIQUIDATION;
+      whale.signals.push(`Liquidation wick ${wickRatio.toFixed(2)} (+${WHALE_CONFIG.SCORE_LIQUIDATION})`);
+    }
+  }
+  
+  // Whales moving opposite to price (absorption pattern)
+  if (whale.absorption) {
+    if (candle.close < candle.open && whale.volumeSpike) {
+      whale.signals.push("Bearish absorption detected");
+    } else if (candle.close > candle.open && whale.volumeSpike) {
+      whale.signals.push("Bullish absorption detected");
+    }
+  }
+  
+  return whale;
+}
+
+function applyWhaleBoost(whale, baseConfidence, baseScore) {
+  let adjustedConfidence = baseConfidence;
+  let adjustedScore = baseScore;
+  let whaleBoost = 0;
+  
+  if (whale.score >= WHALE_CONFIG.WHALE_AGGRESSIVE_THRESHOLD) {
+    whaleBoost = 0.15;
+    adjustedConfidence = Math.min(1, adjustedConfidence + whaleBoost);
+    adjustedScore += 15;
+  } else if (whale.score >= WHALE_CONFIG.WHALE_BOOST_THRESHOLD) {
+    whaleBoost = 0.10;
+    adjustedConfidence = Math.min(1, adjustedConfidence + whaleBoost);
+    adjustedScore += 10;
+  }
+  
+  return {
+    confidence: adjustedConfidence,
+    score: adjustedScore,
+    whaleBoost,
+    whaleLevel: whale.score >= WHALE_CONFIG.WHALE_AGGRESSIVE_THRESHOLD ? "AGGRESSIVE" : 
+                 whale.score >= WHALE_CONFIG.WHALE_BOOST_THRESHOLD ? "ACTIVE" : "NORMAL"
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 🧮 EXPECTANCY OPTIMIZER
+// ═══════════════════════════════════════════════════════════════
+
+function updateExpectancy(tradeResult) {
+  ExpectancyState.trades.push(tradeResult);
+  if (ExpectancyState.trades.length > 50) {
+    ExpectancyState.trades.shift();
+  }
+  
+  const wins = ExpectancyState.trades.filter(t => t.pnl > 0);
+  const losses = ExpectancyState.trades.filter(t => t.pnl <= 0);
+  
+  ExpectancyState.winRate = ExpectancyState.trades.length > 0 ? wins.length / ExpectancyState.trades.length : 0;
+  ExpectancyState.avgWin = wins.length > 0 ? wins.reduce((a, t) => a + t.pnl, 0) / wins.length : 0;
+  ExpectancyState.avgLoss = losses.length > 0 ? Math.abs(losses.reduce((a, t) => a + t.pnl, 0) / losses.length) : 0;
+  
+  ExpectancyState.expectancy = (ExpectancyState.winRate * ExpectancyState.avgWin) - ((1 - ExpectancyState.winRate) * ExpectancyState.avgLoss);
+  
+  if (losses.length > 0) {
+    ExpectancyState.consecutiveLosses = 0;
+    ExpectancyState.consecutiveWins = 0;
+    for (let i = ExpectancyState.trades.length - 1; i >= 0; i--) {
+      if (ExpectancyState.trades[i].pnl > 0) break;
+      ExpectancyState.consecutiveLosses++;
+    }
+  }
+  
+  if (wins.length > 0) {
+    ExpectancyState.consecutiveWins = 0;
+    ExpectancyState.consecutiveLosses = 0;
+    for (let i = ExpectancyState.trades.length - 1; i >= 0; i--) {
+      if (ExpectancyState.trades[i].pnl <= 0) break;
+      ExpectancyState.consecutiveWins++;
+    }
+  }
+  
+  return getExpectancyStatus();
+}
+
+function getExpectancyStatus() {
+  const exp = ExpectancyState.expectancy;
+  const wr = ExpectancyState.winRate;
+  const streak = ExpectancyState.consecutiveLosses;
+  
+  let status = "NORMAL";
+  let sizeMultiplier = 1.0;
+  let reason = "";
+  
+  if (streak >= EXPECTANCY_CONFIG.MAX_LOSS_STREAK_TRIGGER) {
+    status = "DEFENSIVE";
+    sizeMultiplier = 1 - EXPECTANCY_CONFIG.REDUCE_SIZE_ON_LOSS;
+    reason = `${streak} losses in row - reducing size ${(EXPECTANCY_CONFIG.REDUCE_SIZE_ON_LOSS * 100).toFixed(0)}%`;
+  } else if (exp < EXPECTANCY_CONFIG.LOW_EXPECTANCY_THRESHOLD) {
+    status = "CAUTIOUS";
+    sizeMultiplier = 1 - EXPECTANCY_CONFIG.REDUCE_SIZE_ON_LOSS * 0.5;
+    reason = `Low expectancy ${exp.toFixed(3)} - reducing size`;
+  } else if (exp > 0.5) {
+    status = "BULLISH";
+    sizeMultiplier = 1 + EXPECTANCY_CONFIG.INCREASE_SIZE_ON_GAIN;
+    reason = `High expectancy ${exp.toFixed(3)} - increasing size`;
+  } else {
+    reason = `Expectancy ${exp.toFixed(3)}, WR ${(wr * 100).toFixed(0)}%`;
+  }
+  
+  return {
+    status,
+    sizeMultiplier: Math.max(0.3, Math.min(1.5, sizeMultiplier)),
+    expectancy: exp,
+    winRate: wr,
+    avgWin: ExpectancyState.avgWin,
+    avgLoss: ExpectancyState.avgLoss,
+    consecutiveLosses: ExpectancyState.consecutiveLosses,
+    consecutiveWins: ExpectancyState.consecutiveWins,
+    reason
+  };
+}
+
+function getExpectancyForDecision() {
+  return ExpectancyState;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 📊 SELF-LEARNING ENGINE
+// ═══════════════════════════════════════════════════════════════
+
+function logTradeForLearning(trade) {
+  SelfLearnState.tradeLog.push(trade);
+  if (SelfLearnState.tradeLog.length > SelfLearnConfig.MAX_TRADES) {
+    SelfLearnState.tradeLog.shift();
+  }
+  
+  analyzeTradePatterns();
+}
+
+const SelfLearnConfig = {
+  MAX_TRADES: 100,
+  MIN_TRADES_FOR_UPDATE: 10,
+  SCORE_RANGE_SIZE: 5
+};
+
+function analyzeTradePatterns() {
+  const trades = SelfLearnState.tradeLog;
+  if (trades.length < SelfLearnConfig.MIN_TRADES_FOR_UPDATE) return;
+  
+  const scoreRanges = {};
+  trades.forEach(t => {
+    const rangeKey = Math.floor(t.entryScore / SelfLearnConfig.SCORE_RANGE_SIZE) * SelfLearnConfig.SCORE_RANGE_SIZE;
+    if (!scoreRanges[rangeKey]) {
+      scoreRanges[rangeKey] = { wins: 0, total: 0 };
+    }
+    scoreRanges[rangeKey].total++;
+    if (t.result === "WIN") scoreRanges[rangeKey].wins++;
+  });
+  
+  Object.keys(scoreRanges).forEach(range => {
+    const data = scoreRanges[range];
+    data.winRate = data.wins / data.total;
+  });
+  
+  SelfLearnState.scoreRangePerformance = scoreRanges;
+  
+  const marketPhases = {};
+  trades.forEach(t => {
+    const phase = t.marketPhase || "UNKNOWN";
+    if (!marketPhases[phase]) {
+      marketPhases[phase] = { wins: 0, total: 0 };
+    }
+    marketPhases[phase].total++;
+    if (t.result === "WIN") marketPhases[phase].wins++;
+  });
+  
+  Object.keys(marketPhases).forEach(phase => {
+    const data = marketPhases[phase];
+    data.winRate = data.wins / data.total;
+  });
+  
+  SelfLearnState.marketPhasePerformance = marketPhases;
+}
+
+function getSelfLearnAdjustment(entryScore, marketPhase) {
+  const adjustments = {
+    scoreModifier: 0,
+    confidenceModifier: 0,
+    reasons: []
+  };
+  
+  const trades = SelfLearnState.tradeLog;
+  if (trades.length < SelfLearnConfig.MIN_TRADES_FOR_UPDATE) {
+    return adjustments;
+  }
+  
+  const rangeKey = Math.floor(entryScore / SelfLearnConfig.SCORE_RANGE_SIZE) * SelfLearnConfig.SCORE_RANGE_SIZE;
+  const rangePerf = SelfLearnState.scoreRangePerformance[rangeKey];
+  
+  if (rangePerf && rangePerf.total >= 3) {
+    if (rangePerf.winRate < SELF_LEARN_CONFIG.LOSS_THRESHOLD) {
+      adjustments.scoreModifier = 5;
+      adjustments.reasons.push(`Score range ${rangeKey}-${rangeKey + SelfLearnConfig.SCORE_RANGE_SIZE} WR ${(rangePerf.winRate * 100).toFixed(0)}% - need higher score`);
+    }
+  }
+  
+  const phasePerf = SelfLearnState.marketPhasePerformance[marketPhase];
+  if (phasePerf && phasePerf.total >= 3) {
+    if (phasePerf.winRate < SELF_LEARN_CONFIG.LOSS_THRESHOLD) {
+      adjustments.confidenceModifier -= 0.1;
+      adjustments.reasons.push(`${marketPhase} phase WR ${(phasePerf.winRate * 100).toFixed(0)}% - reducing confidence`);
+    } else if (phasePerf.winRate > SELF_LEARN_CONFIG.WIN_THRESHOLD) {
+      adjustments.confidenceModifier += 0.05;
+      adjustments.reasons.push(`${marketPhase} phase WR ${(phasePerf.winRate * 100).toFixed(0)}% - boosting confidence`);
+    }
+  }
+  
+  return adjustments;
+}
+
+function getSelfLearnStatus() {
+  const trades = SelfLearnState.tradeLog;
+  const total = trades.length;
+  const wins = trades.filter(t => t.result === "WIN").length;
+  
+  return {
+    totalTrades: total,
+    learningActive: total >= SelfLearnConfig.MIN_TRADES_FOR_UPDATE,
+    scoreRanges: SelfLearnState.scoreRangePerformance,
+    marketPhases: SelfLearnState.marketPhasePerformance,
+    recentPatterns: trades.slice(-5).map(t => ({
+      score: t.entryScore,
+      phase: t.marketPhase,
+      result: t.result
+    }))
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ⚙️ ML-LITE WEIGHT ADAPTATION
+// ═══════════════════════════════════════════════════════════════
+
+function updateMLWeights(tradeResult, featureWeights) {
+  const { feature, result } = tradeResult;
+  
+  if (result === "WIN") {
+    ML_WEIGHTS[feature] = Math.min(ML_CONFIG.MAX_WEIGHT, ML_WEIGHTS[feature] + ML_CONFIG.ADJUST_STEP);
+  } else {
+    ML_WEIGHTS[feature] = Math.max(ML_CONFIG.MIN_WEIGHT, ML_WEIGHTS[feature] - ML_CONFIG.ADJUST_STEP);
+  }
+}
+
+function applyMLWeights(context) {
+  let score = 0;
+  const factors = [];
+  
+  const w = ML_WEIGHTS;
+  
+  // Trend (default 20)
+  if (context.trend === "BULLISH") {
+    score += w.trend;
+    factors.push({ feature: "trend", value: w.trend, type: "positive", text: `Bullish trend (+${w.trend})` });
+  } else if (context.trend === "BEARISH") {
+    score -= w.trend;
+    factors.push({ feature: "trend", value: -w.trend, type: "negative", text: `Bearish trend (-${w.trend})` });
+  }
+  
+  // Momentum (default 15)
+  if (context.momentumPullback) {
+    score += w.momentum;
+    factors.push({ feature: "momentum", value: w.momentum, type: "positive", text: `RSI pullback (+${w.momentum})` });
+  }
+  if (context.momentumExhaustion) {
+    score -= w.momentum * 0.5;
+    factors.push({ feature: "momentum", value: -w.momentum * 0.5, type: "negative", text: `RSI exhaustion (-${w.momentum * 0.5})` });
+  }
+  
+  // Volume (default 15)
+  if (context.volumeOK) {
+    score += w.volume;
+    factors.push({ feature: "volume", value: w.volume, type: "positive", text: `Volume OK (+${w.volume})` });
+  }
+  if (context.volumeSpike) {
+    score += w.volume * 0.5;
+    factors.push({ feature: "volume", value: w.volume * 0.5, type: "positive", text: `Volume spike (+${w.volume * 0.5})` });
+  }
+  
+  // Structure/Breakout (default 20)
+  if (context.breakout) {
+    score += w.structure;
+    factors.push({ feature: "structure", value: w.structure, type: "positive", text: `Breakout (+${w.structure})` });
+  }
+  if (context.fakeBreakoutRisk > 50) {
+    score -= w.structure * 0.5;
+    factors.push({ feature: "structure", value: -w.structure * 0.5, type: "negative", text: `Fake breakout risk (-${w.structure * 0.5})` });
+  }
+  
+  // Whale (default 10)
+  if (context.whaleActive) {
+    score += w.whale;
+    factors.push({ feature: "whale", value: w.whale, type: "positive", text: `Whale activity (+${w.whale})` });
+  }
+  
+  return { score, factors, weights: { ...w } };
+}
+
+function getMLWeights() {
+  return { ...ML_WEIGHTS };
+}
+
+function resetMLWeights() {
+  ML_WEIGHTS = {
+    trend: 20,
+    momentum: 15,
+    volume: 15,
+    structure: 20,
+    whale: 10
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MARKET PHASE + TREND HELPERS
+// ═══════════════════════════════════════════════════════════════
+
+function getMarketPhase(emaGap, rsi) {
+  if (emaGap >= EMA_GAP_TREND) return "TREND";
+  if (emaGap < EMA_GAP_CHOP && rsi >= RSI_CHOP.min && rsi <= RSI_CHOP.max) return "CHOP";
+  return "TRANSITION";
+}
+
+function getTrendStrength(emaGap, volumeRatio) {
+  if (emaGap >= 0.20 && volumeRatio >= 1.3) return "STRONG";
+  if (emaGap >= 0.10) return "NORMAL";
+  return "WEAK";
+}
+
+function detectBreakout(klines, trend) {
+  const candle = klines[klines.length - 1];
+  const prevCandle = klines[klines.length - 2];
+  
+  const body = Math.abs(candle.close - candle.open);
+  const range = candle.high - candle.low;
+  const upperWick = candle.high - Math.max(candle.close, candle.open);
+  const lowerWick = Math.min(candle.close, candle.open) - candle.low;
+  
+  if (range === 0) return { valid: false, reasons: ["no range"] };
+  
+  const bodyPercent = body / range;
+  const wickDominant = Math.max(upperWick, lowerWick) > body;
+  
+  let direction = null;
+  let valid = false;
+  const reasons = [];
+
+  if (trend === "BULLISH") {
+    if (candle.close > candle.open) {
+      direction = "LONG";
+      const nearHigh = (candle.high - candle.close) / candle.high * 100 < 0.2;
+      if (bodyPercent >= CANDLE_BODY_BREAKOUT && !wickDominant && nearHigh) {
+        valid = true;
+        reasons.push("bullish body strong");
+      } else {
+        reasons.push(`body ${bodyPercent.toFixed(2)} < ${CANDLE_BODY_BREAKOUT} or wick dominant or not near high`);
+      }
+    }
+  } else if (trend === "BEARISH") {
+    if (candle.close < candle.open) {
+      direction = "SHORT";
+      const nearLow = (candle.low - candle.close) / candle.low * 100 < 0.2;
+      if (bodyPercent >= CANDLE_BODY_BREAKOUT && !wickDominant && nearLow) {
+        valid = true;
+        reasons.push("bearish body strong");
+      } else {
+        reasons.push(`body ${bodyPercent.toFixed(2)} < ${CANDLE_BODY_BREAKOUT} or wick dominant or not near low`);
+      }
+    }
+  }
+
+  return { valid, direction, bodyPercent, wickDominant, reasons };
+}
+
+function checkAntiExhaustion(rsi, currentPrice, ema20, trend) {
+  if (trend === "BULLISH" && rsi > ANTI_EXHAUSTION_RSI) {
+    const distFromEma = ema20 ? Math.abs(currentPrice - ema20) / ema20 * 100 : 0;
+    if (distFromEma > ANTI_EXHAUSTION_DIST) {
+      return { exhausted: true, reason: `RSI ${rsi} > ${ANTI_EXHAUSTION_RSI} + far from EMA20 (${distFromEma.toFixed(2)}%)` };
+    }
+  }
+  return { exhausted: false };
+}
+
+function checkAntiFomo(priceChangePct) {
+  if (Math.abs(priceChangePct) > ANTI_FOMO_MOVE) {
+    return { fomo: true, reason: `price move ${priceChangePct.toFixed(2)}% > ${ANTI_FOMO_MOVE}% without pullback` };
+  }
+  return { fomo: false };
+}
+
+function getPriority(trendStrength, breakoutValid, lastTradeWin, defenseMode) {
+  if (defenseMode) return "P4";
+  if (lastTradeWin) return "P3";
+  if (trendStrength === "STRONG" && breakoutValid) return "P1";
+  if (trendStrength === "NORMAL") return "P2";
+  return "P4";
+}
+
+function checkConfirmation(klines, trend) {
+  const candle = klines[klines.length - 1];
+  const prevCandle = klines[klines.length - 2];
+  
+  if (trend === "LONG") {
+    const bullishClose = candle.close > candle.open;
+    const holdAbove = candle.low > prevCandle.high;
+    const higherLow = candle.low > prevCandle.low;
+    return {
+      confirmed: bullishClose && holdAbove && higherLow,
+      reasons: [`bullish: ${bullishClose}`, `hold above: ${holdAbove}`, `higher low: ${higherLow}`]
+    };
+  } else if (trend === "SHORT") {
+    const bearishClose = candle.close < candle.open;
+    const holdBelow = candle.high < prevCandle.low;
+    const lowerHigh = candle.high < prevCandle.high;
+    return {
+      confirmed: bearishClose && holdBelow && lowerHigh,
+      reasons: [`bearish: ${bearishClose}`, `hold below: ${holdBelow}`, `lower high: ${lowerHigh}`]
+    };
+  }
+  return { confirmed: false, reasons: [] };
+}
+
+function getExpectedMove(trendStrength) {
+  if (trendStrength === "STRONG") return EXPECTED_MOVE_STRONG;
+  if (trendStrength === "NORMAL") return EXPECTED_MOVE_NORMAL;
+  return null;
+}
+
+function calculatePositionSize(baseSize, trendStrength, defenseMode) {
+  if (defenseMode) return baseSize * POSITION_DEFENSE;
+  if (trendStrength === "STRONG") return baseSize * POSITION_STRONG;
+  if (trendStrength === "WEAK") return baseSize * POSITION_WEAK;
+  return baseSize * POSITION_NORMAL;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// HYBRID AI MAIN ANALYZER
+// ═══════════════════════════════════════════════════════════════
+
+async function analyzeBTC(lastTrade = null, defenseMode = false) {
   try {
     const klines = await fetchKlines(SYMBOL, TIMEFRAME, KLINE_LIMIT);
     
@@ -237,265 +814,300 @@ async function analyzeBTC() {
     
     const currentPrice = closes[closes.length - 1];
     const prevPrice = closes[closes.length - 2];
-    
-    // Calculate EMAs
+    const priceChangePct = ((currentPrice - prevPrice) / prevPrice) * 100;
+
     const ema20 = calculateEMA(closes, 20);
     const ema50 = calculateEMA(closes, 50);
-    const ema20Array = calculateEMAArray(closes, 20);
-    const ema50Array = calculateEMAArray(closes, 50);
     
-    // Calculate RSI
     const rsi = calculateRSI(klines, 14);
-    
-    // Calculate ATR
     const atr = calculateATR(klines, 14);
-    const atrPct = (atr / currentPrice) * 100;
+    const atrPct = atr ? (atr / currentPrice) * 100 : 0;
     
-    // Calculate volume
     const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
     const currentVolume = volumes[volumes.length - 1];
     const volumeRatio = currentVolume / avgVolume;
     
-    // ═══════════════════════════════════════════════════════════════
-    // RULE 8: BLOCK BAD MARKET CONDITIONS
-    // ═══════════════════════════════════════════════════════
-    
-    // ATR check
-    if (atrPct < MIN_ATR_BLOCK) {
-      return {
-        symbol: SYMBOL,
-        action: "HOLD",
-        confidence: 0,
-        trend: ema20 > ema50 ? "BULLISH" : (ema20 < ema50 ? "BEARISH" : "NEUTRAL"),
-        trend_strength: "WEAK",
-        reason: `ATR ${atrPct.toFixed(2)}% < ${MIN_ATR_BLOCK}% (too weak)`,
-        indicators: { rsi, atrPct, volumeRatio },
-        signal: "BLOCKED"
-      };
-    }
-    
-    // Volume check
-    if (volumeRatio < MIN_VOLUME_BLOCK) {
-      return {
-        symbol: SYMBOL,
-        action: "HOLD",
-        confidence: 0,
-        trend: ema20 > ema50 ? "BULLISH" : (ema20 < ema50 ? "BEARISH" : "NEUTRAL"),
-        trend_strength: "WEAK",
-        reason: `Volume ${volumeRatio.toFixed(2)}x < ${MIN_VOLUME_BLOCK}x (too low)`,
-        indicators: { rsi, atrPct, volumeRatio },
-        signal: "BLOCKED"
-      };
-    }
-    
-    // Sideways check (EMA20 ≈ EMA50)
     const emaGap = ema50 > 0 ? Math.abs((ema20 - ema50) / ema50 * 100) : 0;
-    if (emaGap < 0.05) {
+    const trend = ema20 > ema50 ? "BULLISH" : (ema20 < ema50 ? "BEARISH" : "NEUTRAL");
+    const trendStrength = getTrendStrength(emaGap, volumeRatio);
+    const marketPhase = getMarketPhase(emaGap, rsi);
+    
+    // ─── LAYER 1: RULE ENGINE ───────────────────────────────
+    const indicators = {
+      atrPct,
+      volumeRatio,
+      trendStrength,
+      emaGap,
+      rsi
+    };
+    
+    const ruleResult = applyRuleEngine(klines, indicators, { defenseMode });
+    if (ruleResult.blocked) {
       return {
         symbol: SYMBOL,
         action: "HOLD",
         confidence: 0,
-        trend: "NEUTRAL",
-        trend_strength: "WEAK",
-        reason: `EMA gap ${emaGap.toFixed(3)}% < 0.05% (sideways)`,
-        indicators: { rsi, atrPct, volumeRatio },
-        signal: "BLOCKED"
+        trend,
+        trend_strength: trendStrength,
+        reason: ruleResult.errors.join("; "),
+        indicators: { rsi, atrPct: atrPct?.toFixed(3), volumeRatio: volumeRatio?.toFixed(2) },
+        signal: "RULE_BLOCKED",
+        market_phase: marketPhase,
+        whale: { score: 0, signals: [] },
+        expectancy: getExpectancyForDecision(),
+        mlWeights: getMLWeights(),
+        selfLearn: getSelfLearnStatus(),
+        timestamp: Date.now()
       };
     }
     
-    // ═══════════════════════════════════════════════════════════════
-    // RULE 7: TREND STRENGTH DETECTION
-    // ═══════════════════════════════════════════════════════════════
+    const breakout = detectBreakout(klines, trend);
+    const antiExhaustion = checkAntiExhaustion(rsi, currentPrice, ema20, trend);
+    const antiFomo = checkAntiFomo(priceChangePct);
     
-    let trendStrength = "NORMAL";
-    if (emaGap > EMA_GAP_STRONG && volumeRatio > VOLUME_STRONG) {
-      trendStrength = "STRONG";
-    } else if (emaGap < EMA_GAP_NORMAL) {
-      trendStrength = "WEAK";
-    }
+    // ─── 🐋 WHALE TRACKING ENGINE ─────────────────────────────
+    const whale = detectWhaleActivity(klines, currentPrice);
     
-    // Determine trend
-    const trend = ema20 > ema50 ? "BULLISH" : (ema20 < ema50 ? "BEARISH" : "NEUTRAL");
-    
-    // EMA crossover detection
-    let emaSignal = "NEUTRAL";
-    if (ema20Array.length >= 2) {
-      const prevEma20 = ema20Array[ema20Array.length - 2];
-      const prevEma50 = ema50Array[ema50Array.length - 2];
-      
-      if (ema20 > ema50 && prevEma20 <= prevEma50) {
-        emaSignal = "GOLDEN_CROSS";
-      } else if (ema20 < ema50 && prevEma20 >= prevEma50) {
-        emaSignal = "DEATH_CROSS";
-      }
-    }
-    
-    // ═══════════════════════════════════════════════════════════════
-    // RULE 1: REMOVE MEAN-REVERSION - REPLACE WITH TREND PULLBACK
-    // NO RSI < 30 → LONG, NO RSI > 70 → SHORT
-    // ═══════════════════════════════════════════════════════════════
-    
-    // Calculate signals based on TREND PULLBACK only
-    let bullishScore = 0;
-    let bearishScore = 0;
-    const sigReasons = [];
-    
-    // TREND-FOLLOWING: Must align with EMA trend
-    if (trend === "BULLISH") {
-      bullishScore += 30; // Strong bias for trend-following
-      sigReasons.push(`HTF BULLISH: EMA20>EMA50 (${emaGap.toFixed(2)}%)`);
-    } else if (trend === "BEARISH") {
-      bearishScore += 30; // Strong bias for trend-following
-      sigReasons.push(`HTF BEARISH: EMA20<EMA50 (${emaGap.toFixed(2)}%)`);
-    }
-    
-    // RSI PULLBACK ZONE (not mean-reversion!)
-    // LONG: RSI 45-60 (pullback in bullish trend)
-    // SHORT: RSI 40-55 (pullback in bearish trend)
-    const rsiInLongPullback = rsi >= 45 && rsi <= 60;
-    const rsiInShortPullback = rsi >= 40 && rsi <= 55;
-    
-    if (trend === "BULLISH" && rsiInLongPullback) {
-      bullishScore += 25;
-      sigReasons.push(`RSI pullback: ${rsi.toFixed(1)} in [45-60]`);
-    } else if (trend === "BEARISH" && rsiInShortPullback) {
-      bearishScore += 25;
-      sigReasons.push(`RSI pullback: ${rsi.toFixed(1)} in [40-55]`);
-    } else if (trend === "BULLISH" && rsi > 60) {
-      sigReasons.push(`RSI ${rsi.toFixed(1)} too high for LONG`);
-    } else if (trend === "BEARISH" && rsi < 40) {
-      sigReasons.push(`RSI ${rsi.toFixed(1)} too low for SHORT`);
-    }
-    
-    // Price MUST be above/below EMAs (trend confirmation)
-    const priceAboveEma20 = currentPrice > ema20;
-    const priceAboveEma50 = currentPrice > ema50;
-    const priceBelowEma20 = currentPrice < ema20;
-    const priceBelowEma50 = currentPrice < ema50;
-    
-    if (trend === "BULLISH" && priceAboveEma20 && priceAboveEma50) {
-      bullishScore += 15;
-      sigReasons.push("Price above EMA20 & EMA50");
-    } else if (trend === "BEARISH" && priceBelowEma20 && priceBelowEma50) {
-      bearishScore += 15;
-      sigReasons.push("Price below EMA20 & EMA50");
-    }
-    
-    // Volume confirmation
-    if (volumeRatio >= MIN_VOLUME_RATIO) {
-      if (trend === "BULLISH") {
-        bullishScore += 10;
-      } else if (trend === "BEARISH") {
-        bearishScore += 10;
-      }
-      sigReasons.push(`Volume ${volumeRatio.toFixed(2)}x OK`);
-    } else {
-      sigReasons.push(`Volume ${volumeRatio.toFixed(2)}x too low`);
-    }
-    
-    // ATR confirmation
-    if (atrPct >= MIN_ATR_PERCENT) {
-      if (trend === "BULLISH") {
-        bullishScore += 10;
-      } else if (trend === "BEARISH") {
-        bearishScore += 10;
-      }
-      sigReasons.push(`ATR ${atrPct.toFixed(2)}% OK`);
-    }
-    
-    // EMA Crossover bonus (early entry)
-    if (emaSignal === "GOLDEN_CROSS" && trend === "BULLISH") {
-      bullishScore += 15;
-      sigReasons.push("Golden Cross detected");
-    } else if (emaSignal === "DEATH_CROSS" && trend === "BEARISH") {
-      bearishScore += 15;
-      sigReasons.push("Death Cross detected");
-    }
-    
-    // ═══════════════════════════════════════════════════════════════
-    // RULE 2: STRICT ENTRY FILTER (SNIPER MODE)
-    // ═══════════════════════════════════════════════════════
-    
-    const scoreGap = bullishScore - bearishScore;
-    const totalScore = Math.max(bullishScore, bearishScore);
-    const confidence = totalScore > 0 ? Math.round(scoreGap / totalScore * 100) : 0;
-    
-    // Determine action based on score and gap
+    let priority = getPriority(trendStrength, breakout.valid, lastTrade?.win, defenseMode);
     let action = "HOLD";
-    let actionReason = "";
+    let confidence = 0;
+    let reason = "";
+    let override = false;
+    let positionMultiplier = 1.0;
     
-    if (bullishScore >= MIN_ENTRY_SCORE && scoreGap >= SCORE_GAP && rsiInLongPullback) {
-      action = "LONG";
-      actionReason = `LONG: score=${bullishScore} gap=${scoreGap} RSI=${rsi.toFixed(1)}`;
-    } else if (bearishScore >= MIN_ENTRY_SCORE && scoreGap >= SCORE_GAP && rsiInShortPullback) {
-      action = "SHORT";
-      actionReason = `SHORT: score=${bearishScore} gap=${scoreGap} RSI=${rsi.toFixed(1)}`;
-    } else {
-      actionReason = `HOLD: score=${Math.max(bullishScore, bearishScore)} < ${MIN_ENTRY_SCORE} or gap=${scoreGap} < ${SCORE_GAP}`;
+    const signals = [];
+    
+    // ─── LAYER 2: AI DECISION ENGINE ─────────────────────────
+    // Build market context for ML scoring
+    const mlContext = {
+      trend,
+      momentumPullback: (trend === "BULLISH" && rsi >= RSI_LONG.min && rsi <= RSI_LONG.max) ||
+                       (trend === "BEARISH" && rsi >= RSI_SHORT.min && rsi <= RSI_SHORT.max),
+      momentumExhaustion: antiExhaustion.exhausted,
+      volumeOK: volumeRatio >= MIN_VOLUME_RATIO,
+      volumeSpike: whale.volumeSpike,
+      breakout: breakout.valid,
+      fakeBreakoutRisk: breakout.valid ? (1 - breakout.bodyPercent) * 100 : 50,
+      whaleActive: whale.score >= WHALE_CONFIG.WHALE_BOOST_THRESHOLD
+    };
+    
+    // Apply ML weights
+    const mlResult = applyMLWeights(mlContext);
+    let baseScore = mlResult.score;
+    let mlFactors = mlResult.factors;
+    
+    // Apply self-learning adjustments
+    const selfLearnAdjust = getSelfLearnAdjustment(baseScore, marketPhase);
+    baseScore += selfLearnAdjust.scoreModifier;
+    mlFactors = mlFactors.concat(selfLearnAdjust.reasons.map(r => ({
+      text: r,
+      type: "neutral",
+      value: 0
+    })));
+    
+    // Apply whale boost
+    const whaleBoost = applyWhaleBoost(whale, baseScore / 100, baseScore);
+    let finalScore = whaleBoost.score;
+    let finalConfidence = whaleBoost.confidence;
+    
+    // Score threshold check
+    let scoreRequired = MIN_ENTRY_SCORE;
+    if (selfLearnAdjust.scoreModifier > 0) {
+      scoreRequired += selfLearnAdjust.scoreModifier;
+    }
+    if (defenseMode) {
+      scoreRequired = 85;
+      signals.push("Defense mode: score raised to 85");
     }
     
-    // ═══════════════════════════════════════════════════════════════
-    // RULE 5: ADAPTIVE PROFIT TARGETS
-    // ═══════════════════════════════════════════════════════════════
-    
-    let targetProfit;
-    if (trendStrength === "STRONG") {
-      targetProfit = PROFIT_STRONG;
-    } else if (trendStrength === "NORMAL") {
-      targetProfit = PROFIT_NORMAL;
-    } else {
-      targetProfit = PROFIT_WEAK;
+    // Check anti-fomo and anti-exhaustion
+    if (antiFomo.fomo) {
+      signals.push(`ANTI-FOMO: ${antiFomo.reason}`);
+      mlFactors.push({ text: antiFomo.reason, type: "negative", value: -10 });
+      finalConfidence -= 0.1;
     }
     
-    // ═══════════════════════════════════════════════════════════════
-    // RULE 6: FEE PROTECTION
-    // (Handled at exit level, not here)
+    if (antiExhaustion.exhausted) {
+      signals.push(`ANTI-EXHAUSTION: ${antiExhaustion.reason}`);
+      mlFactors.push({ text: antiExhaustion.reason, type: "negative", value: -15 });
+      finalConfidence -= 0.15;
+    }
     
-    // Calculate SL and TP levels
+    // ─── DECISION LOGIC ───────────────────────────────────────
+    const fastEntryAllowed = 
+      priority === "P1" && 
+      trendStrength === "STRONG" && 
+      breakout.valid && 
+      volumeRatio >= VOLUME_FAST_ENTRY && 
+      breakout.bodyPercent >= CANDLE_BODY_FAST_ENTRY;
+    
+    let entryReady = false;
+    
+    if (trend === "BULLISH" && finalScore >= scoreRequired) {
+      if (fastEntryAllowed) {
+        action = "LONG";
+        confidence = Math.min(90, finalConfidence * 100);
+        reason = `FAST ENTRY P1: score=${finalScore.toFixed(0)} RSI=${rsi.toFixed(1)}`;
+        signals.push("FAST ENTRY: P1 + STRONG breakout + whale boost");
+        entryReady = true;
+      } else if (breakout.valid) {
+        const confirmation = checkConfirmation(klines, "LONG");
+        if (confirmation.confirmed) {
+          action = "LONG";
+          confidence = Math.min(85, finalConfidence * 100 - 5);
+          reason = `CONFIRMED ENTRY: score=${finalScore.toFixed(0)} RSI=${rsi.toFixed(1)}`;
+          signals.push("Confirmation candle confirmed");
+          entryReady = true;
+        } else {
+          reason = `Waiting confirmation: ${confirmation.reasons.join(", ")}`;
+        }
+      } else {
+        reason = `No breakout: ${breakout.reasons.join(", ")}`;
+      }
+    } else if (trend === "BEARISH" && finalScore >= scoreRequired) {
+      if (fastEntryAllowed) {
+        action = "SHORT";
+        confidence = Math.min(90, finalConfidence * 100);
+        reason = `FAST ENTRY P1: score=${finalScore.toFixed(0)} RSI=${rsi.toFixed(1)}`;
+        signals.push("FAST ENTRY: P1 + STRONG breakout + whale boost");
+        entryReady = true;
+      } else if (breakout.valid) {
+        const confirmation = checkConfirmation(klines, "SHORT");
+        if (confirmation.confirmed) {
+          action = "SHORT";
+          confidence = Math.min(85, finalConfidence * 100 - 5);
+          reason = `CONFIRMED ENTRY: score=${finalScore.toFixed(0)} RSI=${rsi.toFixed(1)}`;
+          signals.push("Confirmation candle confirmed");
+          entryReady = true;
+        } else {
+          reason = `Waiting confirmation: ${confirmation.reasons.join(", ")}`;
+        }
+      } else {
+        reason = `No breakout: ${breakout.reasons.join(", ")}`;
+      }
+    } else {
+      reason = `Score ${finalScore.toFixed(0)} < ${scoreRequired}`;
+    }
+    
+    // ─── EXPECTANCY ADJUSTMENT ────────────────────────────────
+    const expStatus = getExpectancyStatus();
+    if (action !== "HOLD") {
+      positionMultiplier = calculatePositionSize(1.0, trendStrength, defenseMode);
+      positionMultiplier *= expStatus.sizeMultiplier;
+    }
+    
+    // ─── OVERRIDE CHECK ────────────────────────────────────────
+    if (entryReady && priority !== "P1") {
+      override = true;
+      confidence -= OVERRIDE_SCORE_REDUCTION;
+      positionMultiplier *= (1 - OVERRIDE_SIZE_REDUCTION / 100);
+      signals.push(`OVERRIDE used: conf -${OVERRIDE_SCORE_REDUCTION}, size -${OVERRIDE_SIZE_REDUCTION}%`);
+    }
+    
+    if (marketPhase === "CHOP" && action !== "HOLD") {
+      positionMultiplier *= 0.5;
+      signals.push("CHOP: size reduced to 50%");
+    }
+    
+    confidence = Math.max(0, Math.min(100, confidence));
+    
+    // ─── CALCULATE SL/TP ───────────────────────────────────────
     let stopLoss = null;
     let takeProfit = null;
     
     if (action === "LONG") {
       const recentLow = Math.min(...lows.slice(-10));
-      stopLoss = Math.min(recentLow, ema50) * (1 - 0.015); // 1.5% SL for BTC
-      takeProfit = currentPrice * (1 + targetProfit.max / 100);
+      stopLoss = Math.min(recentLow, ema50) * (1 - SL_PERCENT / 100);
+      takeProfit = currentPrice * (1 + PROFIT_LOCK_3 / 100);
     } else if (action === "SHORT") {
       const recentHigh = Math.max(...highs.slice(-10));
-      stopLoss = Math.max(recentHigh, ema50) * (1 + 0.015); // 1.5% SL for BTC
-      takeProfit = currentPrice * (1 - targetProfit.max / 100);
+      stopLoss = Math.max(recentHigh, ema50) * (1 + SL_PERCENT / 100);
+      takeProfit = currentPrice * (1 - PROFIT_LOCK_3 / 100);
     }
     
-    return {
+    const result = {
       symbol: SYMBOL,
       timeframe: TIMEFRAME,
       action,
-      confidence,
+      confidence: Math.round(confidence),
       price: currentPrice,
-      priceChange: ((currentPrice - prevPrice) / prevPrice) * 100,
+      priceChange: priceChangePct,
       trend,
       trend_strength: trendStrength,
-      trend_ema_gap: emaGap,
-      reason: actionReason + " | " + sigReasons.slice(0, 3).join(", "),
+      market_phase: marketPhase,
+      priority,
+      reason: reason + " | " + signals.slice(0, 4).join(", "),
       indicators: {
         ema20: ema20?.toFixed(2),
         ema50: ema50?.toFixed(2),
+        ema_gap: emaGap?.toFixed(3),
         rsi: rsi?.toFixed(1),
         atr: atr?.toFixed(2),
         atrPct: atrPct?.toFixed(3),
         volumeRatio: volumeRatio?.toFixed(2)
       },
-      scores: {
-        bullish: bullishScore,
-        bearish: bearishScore,
-        gap: scoreGap
+      breakout: {
+        valid: breakout.valid,
+        bodyPercent: breakout.bodyPercent?.toFixed(2),
+        direction: breakout.direction
       },
-      target_profit: targetProfit,
+      whale: {
+        score: whale.score,
+        level: whale.score >= WHALE_CONFIG.WHALE_AGGRESSIVE_THRESHOLD ? "AGGRESSIVE" : 
+               whale.score >= WHALE_CONFIG.WHALE_BOOST_THRESHOLD ? "ACTIVE" : "NORMAL",
+        signals: whale.signals,
+        volumeSpike: whale.volumeSpike,
+        suddenMove: whale.suddenMove,
+        absorption: whale.absorption,
+        liquidationCluster: whale.liquidationCluster
+      },
+      mlWeights: mlResult.weights,
+      mlFactors: mlFactors.slice(0, 6),
+      selfLearn: {
+        status: getSelfLearnStatus(),
+        adjustments: selfLearnAdjust
+      },
+      expectancy: getExpectancyForDecision(),
+      expectancyStatus: expStatus,
+      scores: {
+        mlScore: Math.round(finalScore),
+        scoreRequired
+      },
+      position_multiplier: positionMultiplier.toFixed(2),
+      override_used: override,
+      validation: {
+        trendValid: trend !== "NEUTRAL",
+        volumeValid: volumeRatio >= MIN_VOLUME_RATIO,
+        atrValid: atrPct >= MIN_ATR_PERCENT,
+        notChop: marketPhase !== "CHOP" || priority === "P1",
+        breakoutValid: breakout.valid,
+        blocked: ruleResult.blocked
+      },
       levels: {
         stopLoss: stopLoss?.toFixed(8),
         takeProfit: takeProfit?.toFixed(8)
       },
+      exit_rules: {
+        sl_percent: SL_PERCENT,
+        peak_drop_percent: PEAK_DROP_PERCENT,
+        trailing_start: TRAILING_START,
+        locks: {
+          [`${PROFIT_LOCK_1}%`]: `${LOCK_1_PERCENT}%`,
+          [`${PROFIT_LOCK_2}%`]: `${LOCK_2_PERCENT}%`,
+          [`${PROFIT_LOCK_3}%`]: `${LOCK_3_PERCENT}%`
+        },
+        partials: {
+          [`${PROFIT_LOCK_1}%`]: `${PARTIAL_1_PERCENT}%`,
+          [`${PROFIT_LOCK_2}%`]: `${PARTIAL_2_PERCENT}%`
+        }
+      },
+      signals: signals.slice(0, 6),
       timestamp: Date.now()
     };
+    
+    console.log(`[v5.0 HYBRID] ${action} | Conf: ${result.confidence} | Score: ${finalScore.toFixed(0)} | ${trend} ${trendStrength} | Whale: ${whale.score} | Exp: ${expStatus.expectancy.toFixed(3)}`);
+    
+    return result;
     
   } catch (error) {
     return {
@@ -508,180 +1120,106 @@ async function analyzeBTC() {
   }
 }
 
-/**
- * Quick analysis for trading loop — BTC TREND PULLBACK STRATEGY
- * Entry only on pullback continuation. Counter-trend entries blocked.
- * LONG : HTF BULLISH + EMA9>EMA21 + RSI 45-52 + price near EMA21 + vol>=0.8
- * SHORT: HTF BEARISH + EMA9<EMA21 + RSI 48-55 + price near EMA21 + vol>=0.8
- * @param {number} lossStreak - consecutive losses (0 = none)
- */
-async function quickAnalysis(lossStreak = 0) {
-  try {
-    const klines = await fetchKlines(SYMBOL, TIMEFRAME, 100);
-    const closes  = klines.map(k => k.close);
-    const volumes = klines.map(k => k.volume);
+// ═══════════════════════════════════════════════════════════════
+// RECORD TRADE FOR LEARNING
+// ═══════════════════════════════════════════════════════════════
 
-    const ema9  = calculateEMA(closes, 9);
-    const ema21 = calculateEMA(closes, 21);
-    const ema20 = calculateEMA(closes, 20);
-    const ema50 = calculateEMA(closes, 50);
-    const rsi   = calculateRSI(klines, 14);
-    const atr   = calculateATR(klines, 14);
-
-    const currentPrice = closes[closes.length - 1];
-    const atrPct       = atr ? (atr / currentPrice) * 100 : 0;
-
-    const nonZeroVols = volumes.slice(-20).filter(v => v > 0);
-    const avgVol      = nonZeroVols.length > 0
-      ? nonZeroVols.reduce((a, b) => a + b, 0) / nonZeroVols.length : 1;
-    const volumeRatio = volumes[volumes.length - 1] / avgVol;
-
-    // HTF trend from EMA20/EMA50
-    const trend = ema20 > ema50 ? "BULLISH" : (ema20 < ema50 ? "BEARISH" : "NEUTRAL");
-
-    let action     = "HOLD";
-    let confidence = 0;
-    let reason     = "";
-    const signals  = [];
-
-    // === PART 3: ATR ENTRY GATE ===
-    if (atrPct < 0.15) {
-      reason = `ATR too low (${atrPct.toFixed(3)}% < 0.15%) — no trade`;
-      console.log(`[STRATEGY] ATR gate blocked: ${atrPct.toFixed(3)}%`);
-      console.log(`[ENTRY CHECK BTC] Trend: ${trend} | RSI: ${rsi?.toFixed(1)} | ATR%: ${atrPct.toFixed(3)} | Confidence: 0 | Decision: HOLD | Reason: ${reason}`);
-      return { action: "HOLD", price: currentPrice, trend, rsi, ema9, ema21, ema20, ema50, atr, atrPct, volumeRatio, confidence: 0, reason, signals: [reason], timestamp: Date.now() };
-    }
-
-    // === PART 4: LOSS STREAK GUARD ===
-    if (lossStreak >= 3) {
-      reason = `Loss streak ${lossStreak}x — paused 30 min`;
-      console.log(`[STRATEGY] Loss streak protection active — streak ${lossStreak}, trading PAUSED`);
-      console.log(`[ENTRY CHECK BTC] Trend: ${trend} | RSI: ${rsi?.toFixed(1)} | ATR%: ${atrPct.toFixed(3)} | Confidence: 0 | Decision: HOLD | Reason: ${reason}`);
-      return { action: "HOLD", price: currentPrice, trend, rsi, ema9, ema21, ema20, ema50, atr, atrPct, volumeRatio, confidence: 0, reason, signals: [reason], lossStreakPause: true, timestamp: Date.now() };
-    }
-    const lossStreakConfBonus = lossStreak >= 2 ? 10 : 0;
-    if (lossStreak >= 2) {
-      console.log(`[STRATEGY] Loss streak protection active — streak ${lossStreak}, required confidence +${lossStreakConfBonus}`);
-    }
-
-    // === PART 1: HARD TREND FILTER ===
-    const trendStrengthPct = ema9 && ema21 ? Math.abs(ema9 - ema21) / currentPrice * 100 : 0;
-    const isStrongTrend    = trendStrengthPct > 0.25;
-    console.log(`[STRATEGY] TrendStrength: ${trendStrengthPct.toFixed(3)}% | Regime: ${isStrongTrend ? "STRONG_TREND" : "WEAK_TREND"} | HTF: ${trend}`);
-
-    // ── Recent price momentum (last 5 candles = ~75 min) ──
-    // Guards against EMA lag when price has already reversed
-    const last5closes       = closes.slice(-5);
-    const netMove5          = (last5closes[4] - last5closes[0]) / last5closes[0] * 100;
-    const greenCount        = klines.slice(-5).filter(k => k.close > k.open).length;
-    const redCount          = klines.slice(-5).filter(k => k.close < k.open).length;
-    const priceMomentumBullish = netMove5 > 0.3 || greenCount >= 3;
-    const priceMomentumBearish = netMove5 < -0.3 || redCount >= 3;
-
-    // === PART 2: PULLBACK ENTRY ===
-    const distFromEMA21  = ema21 ? Math.abs(currentPrice - ema21) / ema21 * 100 : 999;
-    const nearEMA21      = distFromEMA21 < 0.15;
-    const inLongPullback  = rsi != null && rsi >= 45 && rsi <= 52;
-    const inShortPullback = rsi != null && rsi >= 48 && rsi <= 55;
-    const volOK           = volumeRatio >= 0.8;
-
-    if (trend === "BULLISH" && ema9 > ema21 && nearEMA21 && inLongPullback && volOK && !priceMomentumBearish) {
-
-      // === PART 1: Counter-trend block (LONG is WITH trend — no block needed) ===
-      action     = "LONG";
-      confidence = 58;
-      signals.push(`HTF BULLISH (EMA20>EMA50: ${((ema20 - ema50) / ema50 * 100).toFixed(2)}%)`);
-      signals.push(`EMA9(${ema9?.toFixed(2)}) > EMA21(${ema21?.toFixed(2)})`);
-      signals.push(`RSI pullback: ${rsi.toFixed(1)} in [45-52]`);
-      signals.push(`Price near EMA21: dist ${distFromEMA21.toFixed(3)}%`);
-      signals.push(`Vol ${volumeRatio.toFixed(2)}x avg`);
-      confidence += 10; // pullback confirmed bonus
-      if (atrPct > 0.18) { confidence += 5; signals.push(`ATR active: ${atrPct.toFixed(3)}%`); }
-      confidence = Math.min(85, confidence + lossStreakConfBonus);
-      reason = `[STRATEGY] Pullback detected — BTC LONG: RSI=${rsi.toFixed(1)}, dist=${distFromEMA21.toFixed(3)}%, vol=${volumeRatio.toFixed(2)}x`;
-      console.log(reason);
-
-    } else if (trend === "BEARISH" && ema9 < ema21 && nearEMA21 && inShortPullback && volOK && !priceMomentumBullish) {
-
-      // === PART 1: Counter-trend block — block LONG when STRONG BEARISH trend ===
-      if (isStrongTrend && priceMomentumBullish) {
-        console.log(`[STRATEGY] Counter-trend blocked — STRONG BEARISH but momentum bullish`);
-        reason = `Counter-trend blocked: strong BEARISH trend + bullish momentum`;
-      } else {
-        action     = "SHORT";
-        confidence = 58;
-        signals.push(`HTF BEARISH (EMA20<EMA50: ${((ema20 - ema50) / ema50 * 100).toFixed(2)}%)`);
-        signals.push(`EMA9(${ema9?.toFixed(2)}) < EMA21(${ema21?.toFixed(2)})`);
-        signals.push(`RSI pullback: ${rsi.toFixed(1)} in [48-55]`);
-        signals.push(`Price near EMA21: dist ${distFromEMA21.toFixed(3)}%`);
-        signals.push(`Vol ${volumeRatio.toFixed(2)}x avg`);
-        confidence += 10;
-        if (atrPct > 0.18) { confidence += 5; signals.push(`ATR active: ${atrPct.toFixed(3)}%`); }
-        confidence = Math.min(85, confidence + lossStreakConfBonus);
-        reason = `[STRATEGY] Pullback detected — BTC SHORT: RSI=${rsi.toFixed(1)}, dist=${distFromEMA21.toFixed(3)}%, vol=${volumeRatio.toFixed(2)}x`;
-        console.log(reason);
-      }
-
-    } else {
-      // === PART 1: Hard counter-trend block ===
-      if (isStrongTrend && trend === "BULLISH" && priceMomentumBullish) {
-        console.log(`[STRATEGY] Counter-trend blocked — STRONG BULLISH trend active, SHORT entries suppressed`);
-      }
-      if (isStrongTrend && trend === "BEARISH" && priceMomentumBearish) {
-        console.log(`[STRATEGY] Counter-trend blocked — STRONG BEARISH trend active, LONG entries suppressed`);
-      }
-
-      // Log which conditions failed
-      const whyNot = [];
-      if (trend === "NEUTRAL") whyNot.push("trend NEUTRAL");
-      if (trend === "BULLISH") {
-        if (!(ema9 > ema21))    whyNot.push(`EMA9(${ema9?.toFixed(0)})<EMA21(${ema21?.toFixed(0)})`);
-        if (!nearEMA21)         whyNot.push(`dist EMA21 ${distFromEMA21.toFixed(3)}%>0.15%`);
-        if (!inLongPullback)    whyNot.push(`RSI ${rsi?.toFixed(1)} not in 45-52`);
-        if (!volOK)             whyNot.push(`vol ${volumeRatio.toFixed(2)}x<0.8`);
-        if (priceMomentumBearish) whyNot.push("bearish momentum blocks LONG");
-      }
-      if (trend === "BEARISH") {
-        if (!(ema9 < ema21))    whyNot.push(`EMA9(${ema9?.toFixed(0)})>EMA21(${ema21?.toFixed(0)})`);
-        if (!nearEMA21)         whyNot.push(`dist EMA21 ${distFromEMA21.toFixed(3)}%>0.15%`);
-        if (!inShortPullback)   whyNot.push(`RSI ${rsi?.toFixed(1)} not in 48-55`);
-        if (!volOK)             whyNot.push(`vol ${volumeRatio.toFixed(2)}x<0.8`);
-        if (priceMomentumBullish) whyNot.push("bullish momentum blocks SHORT");
-      }
-      reason = `No pullback setup: ${whyNot.join(", ")}`;
-    }
-
-    console.log(`[ENTRY CHECK BTC] Trend: ${trend} | RSI: ${rsi?.toFixed(1)} | ATR%: ${atrPct.toFixed(3)} | TrendStr: ${trendStrengthPct.toFixed(3)}% | LossStreak: ${lossStreak} | Confidence: ${confidence} | Decision: ${action} | Reason: ${reason}`);
-
-    return { action, price: currentPrice, trend, rsi, ema9, ema21, ema20, ema50, atr, atrPct, volumeRatio, trendStrengthPct, isStrongTrend, confidence, reason, signals, timestamp: Date.now() };
-
-  } catch (error) {
-    return { error: true, action: "HOLD", message: error.message, timestamp: Date.now() };
+function recordTrade(trade) {
+  const { entryScore, confidence, marketPhase, result, pnl, features } = trade;
+  
+  TradeHistory.entries.push({
+    entryScore,
+    confidence,
+    marketPhase,
+    result,
+    pnl,
+    timestamp: Date.now()
+  });
+  
+  if (TradeHistory.entries.length > TradeHistory.maxSize) {
+    TradeHistory.entries.shift();
+  }
+  
+  // Update Expectancy
+  updateExpectancy({ pnl, result });
+  
+  // Log for Self-Learning
+  logTradeForLearning({
+    entryScore,
+    marketPhase,
+    result
+  });
+  
+  // Update ML Weights based on features
+  if (features) {
+    Object.entries(features).forEach(([feature, won]) => {
+      updateMLWeights({ feature, result: won ? "WIN" : "LOSS" }, features);
+    });
   }
 }
 
-/**
- * Get BTC-specific configuration
- */
+async function quickAnalysis() {
+  return analyzeBTC();
+}
+
 function getBTCConfig() {
   return {
     symbol: SYMBOL,
-    // BTC-specific risk parameters (more conservative than PEPE)
-    STOP_LOSS_PCT: 1.5,    // Lower SL for BTC (less volatile)
-    TAKE_PROFIT_PCT: 3.0,  // Lower TP (BTC moves smaller)
-    TRAILING_STOP: true,
-    TRAILING_OFFSET: 0.5,   // Tighter trailing for BTC
-    MIN_SL_PCT: 0.3,
-    MAX_SL_PCT: 2.0,
-    // Position sizing - BTC allows larger positions
-    POSITION_SIZE_USDT: 5,  // More USDT per trade for BTC
-    // Timeframe
-    TIMEFRAME: TIMEFRAME,
-    // Analysis — pullback entry confidence floor (Part 5)
-    OPEN_CONFIDENCE: 58,
-    // Cooldowns
-    SL_COOLDOWN_CANDLES: 2  // Shorter cooldown for BTC
+    timeframe: TIMEFRAME,
+    stopLoss: SL_PERCENT,
+    takeProfit: PROFIT_LOCK_3,
+    trailingStart: TRAILING_START,
+    peakDropExit: PEAK_DROP_PERCENT,
+    position_multipliers: {
+      strong: POSITION_STRONG,
+      normal: POSITION_NORMAL,
+      weak: POSITION_WEAK,
+      defense: POSITION_DEFENSE
+    },
+    mlWeights: getMLWeights(),
+    expectancy: getExpectancyForDecision(),
+    selfLearn: getSelfLearnStatus()
   };
+}
+
+function getSystemStatus() {
+  return {
+    mlWeights: getMLWeights(),
+    expectancy: getExpectancyForDecision(),
+    expectancyStatus: getExpectancyStatus(),
+    selfLearn: getSelfLearnStatus(),
+    whaleConfig: WHALE_CONFIG,
+    tradeHistory: TradeHistory.entries.slice(-10)
+  };
+}
+
+function resetLearning() {
+  ExpectancyState = {
+    trades: [],
+    winRate: 0,
+    avgWin: 0,
+    avgLoss: 0,
+    expectancy: 0,
+    consecutiveLosses: 0,
+    consecutiveWins: 0
+  };
+  
+  SelfLearnState = {
+    tradeLog: [],
+    patternScores: {},
+    marketPhasePerformance: {},
+    scoreRangePerformance: {},
+    sessionPerformance: {}
+  };
+  
+  TradeHistory = {
+    entries: [],
+    maxSize: 100
+  };
+  
+  resetMLWeights();
+  
+  console.log("[HYBRID AI] All learning data reset");
 }
 
 module.exports = {
@@ -690,11 +1228,20 @@ module.exports = {
   analyzeBTC,
   quickAnalysis,
   getBTCConfig,
-  // Utility functions exported for testing
+  getSystemStatus,
+  recordTrade,
+  resetLearning,
   calculateEMA,
   calculateEMAArray,
   calculateRSI,
   calculateATR,
-  calculateATRPct,
-  fetchKlines
+  fetchKlines,
+  // Export sub-engines for external access
+  detectWhaleActivity,
+  getExpectancyStatus,
+  getMLWeights,
+  getSelfLearnStatus,
+  updateExpectancy,
+  WHALE_CONFIG,
+  ML_WEIGHTS
 };

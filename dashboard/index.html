@@ -36,7 +36,7 @@
   --topbar-h:     48px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%;overflow:hidden}
+html,body{height:100%;overflow:hidden;overscroll-behavior:none}
 body{background:var(--bg-base);color:var(--text-primary);font-family:'Inter',sans-serif;font-size:13px;line-height:1.5}
 .mono{font-family:'JetBrains Mono',monospace}
 ::-webkit-scrollbar{width:4px;height:4px}
@@ -238,17 +238,13 @@ body{background:var(--bg-base);color:var(--text-primary);font-family:'Inter',san
 .bnav-icon{font-size:15px;line-height:1}
 
 /* ── MOBILE TOPBAR (hamburger) ── */
-#topbar{display:none;background:var(--bg-surface);border-bottom:1px solid var(--border);height:var(--topbar-h);padding:0 14px;align-items:center;justify-content:space-between;flex-shrink:0}
-#hamburger{background:none;border:none;cursor:pointer;padding:6px;display:flex;flex-direction:column;gap:4px}
-#hamburger span{display:block;width:20px;height:2px;background:var(--text-secondary);border-radius:1px;transition:all 200ms}
-#hamburger.open span:nth-child(1){transform:translateY(6px) rotate(45deg)}
-#hamburger.open span:nth-child(2){opacity:0}
-#hamburger.open span:nth-child(3){transform:translateY(-6px) rotate(-45deg)}
+#topbar{display:none;background:var(--bg-surface);border-bottom:1px solid var(--border);height:var(--topbar-h);padding:0 14px;align-items:center;justify-content:space-between;flex-shrink:0;z-index:1000;position:relative}
+#hamburger{background:none;border:none;cursor:pointer;padding:8px 6px;display:flex;flex-direction:column;justify-content:center;gap:5px;width:36px;height:36px;box-sizing:border-box;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+#hamburger span{display:block;width:100%;height:2px;background:var(--text-secondary);border-radius:1px;transition:all 200ms}
+#hamburger.open span:nth-child(1){transform:translateY(7px) rotate(45deg)}
+#hamburger.open span:nth-child(2){opacity:0;transform:scaleX(0)}
+#hamburger.open span:nth-child(3){transform:translateY(-7px) rotate(-45deg)}
 #topbar-brand{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:14px;color:var(--amber);letter-spacing:.06em}
-
-/* ── MOBILE SIDEBAR OVERLAY ── */
-#sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:998}
-#sidebar.mobile-open{display:flex;position:fixed;top:0;left:0;height:100vh;z-index:999;box-shadow:4px 0 20px rgba(0,0,0,.4)}
 
 /* ── FLASH ANIMATIONS ── */
 @keyframes flash-green{0%,100%{background:transparent}50%{background:var(--green-dim)}}
@@ -267,10 +263,10 @@ body{background:var(--bg-base);color:var(--text-primary);font-family:'Inter',san
   .perf-grid-3{grid-template-columns:1fr 1fr}
 }
 @media(max-width:767px){
-  #topbar{display:flex}
-  #sidebar-overlay{display:block}
-  #sidebar{transform:translateX(-100%);transition:transform 200ms}
-  #sidebar.mobile-open{transform:translateX(0)}
+  #topbar{display:flex;position:relative;z-index:1000}
+  #sidebar{display:none;position:fixed;top:var(--topbar-h);left:0;bottom:0;width:var(--sidebar-w);z-index:999;box-shadow:4px 0 20px rgba(0,0,0,.4)}
+  #sidebar.mobile-open{display:flex}
+  #main{padding-top:var(--topbar-h)}
   #bottom-nav{display:block}
   .metrics-grid{grid-template-columns:repeat(2,1fr)}
   .ai-grid{grid-template-columns:1fr}
@@ -287,9 +283,6 @@ body{background:var(--bg-base);color:var(--text-primary);font-family:'Inter',san
 <body>
 <div id="app">
 
-<!-- MOBILE SIDEBAR OVERLAY -->
-<div id="sidebar-overlay"></div>
-
 <!-- MOBILE TOPBAR -->
 <div id="topbar">
   <button id="hamburger" aria-label="Menu">
@@ -301,9 +294,12 @@ body{background:var(--bg-base);color:var(--text-primary);font-family:'Inter',san
 
 <!-- SIDEBAR -->
 <nav id="sidebar">
-  <div class="sb-logo">
-    <div class="sb-brand">DAFFABOT</div>
-    <div class="sb-sub">BTC/USDT PERP · BITGET</div>
+  <div class="sb-logo" style="display:flex;align-items:center;justify-content:space-between">
+    <div>
+      <div class="sb-brand">DAFFABOT</div>
+      <div class="sb-sub">BTC/USDT PERP · BITGET</div>
+    </div>
+    <button id="sidebar-close" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:18px;padding:4px;display:none" aria-label="Close">&#10005;</button>
   </div>
   <div class="sb-nav">
     <div class="nav-item active" data-sec="overview">
@@ -1288,10 +1284,11 @@ document.querySelectorAll('.nav-item,.bnav-item').forEach(el=>{
 
 const hamburger=document.getElementById('hamburger');
 const sidebar=document.getElementById('sidebar');
-const overlay=document.getElementById('sidebar-overlay');
-function closeSidebar(){hamburger?.classList.remove('open');sidebar?.classList.remove('mobile-open');}
-hamburger?.addEventListener('click',()=>{hamburger.classList.toggle('open');sidebar?.classList.toggle('mobile-open');});
-overlay?.addEventListener('click',closeSidebar);
+const sidebarClose=document.getElementById('sidebar-close');
+function closeSidebar(){hamburger?.classList.remove('open');sidebar?.classList.remove('mobile-open');sidebarClose.style.display='none';}
+function openSidebar(){hamburger?.classList.add('open');sidebar?.classList.add('mobile-open');sidebarClose.style.display='block';}
+hamburger?.addEventListener('click',()=>{if(sidebar?.classList.contains('mobile-open')){closeSidebar();}else{openSidebar();}});
+sidebarClose?.addEventListener('click',closeSidebar);
 
 document.querySelectorAll('[data-range]').forEach(btn=>{
   btn.addEventListener('click',()=>{

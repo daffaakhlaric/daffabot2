@@ -157,24 +157,36 @@ async function fetchLiveData() {
   }
 
   // ── POSISI AKTIF ─────────────────────────────────────────
-  // Prioritas: Bitget real position (live trading) > global.botState (dry run / fallback)
   const posOk = posRes?.code === "00000";
   if (posOk) {
     const pos = Array.isArray(posRes.data) ? posRes.data[0] : posRes.data;
-    const qty = parseFloat(pos?.total || pos?.available || 0);
+    const qty = parseFloat(pos?.total || 0);
     if (pos && qty > 0) {
-      // Posisi real ada di Bitget → pakai data Bitget (lebih lengkap: PnL live)
       liveData.activePosition = {
-        side:     pos.holdSide === "long" ? "LONG" : "SHORT",
-        entry:    parseFloat(pos.openPriceAvg  || pos.openPrice || 0),
-        size:     qty,
-        pnl:      parseFloat(pos.unrealizedPL  || pos.unrealisedPL || 0),
-        pnlPct:   parseFloat(pos.unrealizedPLR || 0) * 100,
-        leverage: parseFloat(pos.leverage      || 1),
+        // Core
+        side:         pos.holdSide === "long" ? "LONG" : "SHORT",
+        marginMode:   pos.marginMode || "isolated",
+        leverage:     parseFloat(pos.leverage        || 1),
+        // Size
+        size:         qty,
+        sizeUSDT:     parseFloat(pos.notionalUsd     || 0),
+        available:    parseFloat(pos.available        || 0),
+        // Prices
+        entry:        parseFloat(pos.openPriceAvg    || 0),
+        markPrice:    parseFloat(pos.markPrice        || 0),
+        breakEven:    parseFloat(pos.breakEvenPrice   || 0),
+        liquidation:  parseFloat(pos.liquidationPrice || 0),
+        // PnL
+        pnl:          parseFloat(pos.unrealizedPL     || 0),
+        pnlPct:       parseFloat(pos.unrealizedPLR    || 0) * 100, // ROE
+        realizedPnL:  parseFloat(pos.achievedProfits  || 0),
+        // Margin
+        margin:       parseFloat(pos.margin           || 0),
+        marginRatio:  parseFloat(pos.marginRatio      || 0) * 100,
+        mmr:          parseFloat(pos.keepMarginRate   || 0) * 100,
       };
     }
-    // Jika Bitget bilang kosong TAPI bot punya posisi (DRY_RUN) → biarkan tetap dari botState
-    // Tidak overwrite dengan null
+    // DRY_RUN: kalau Bitget kosong, biarkan dari botState
   }
 
   // ── HARGA ────────────────────────────────────────────────

@@ -817,14 +817,39 @@ function updStrategyIntel(a) {
 
 function updPosition(pos) {
   const p = $('pos-panel'); if (!p) return;
-  if (!pos) { p.innerHTML='<div class="muted" style="font-size:11px;padding:6px 0">No open position</div>'; return; }
-  const pc = (pos.pnl||0)>=0?'green':'red';
-  p.innerHTML = `
-    <div class="prow"><span class="pkey">SIDE</span><span class="${pos.side==='LONG'?'green':'red'}" style="font-weight:700">${pos.side}</span></div>
-    <div class="prow"><span class="pkey">ENTRY</span><span>$${(pos.entry||0).toFixed(2)}</span></div>
-    <div class="prow"><span class="pkey">LEVERAGE</span><span class="yellow">${pos.leverage||'—'}×</span></div>
-    <div class="prow"><span class="pkey">UNREAL. PnL</span><span class="${pc}" style="font-weight:700">${(pos.pnl||0)>=0?'+':''}${(pos.pnl||0).toFixed(2)} $</span></div>
-    <div class="prow"><span class="pkey">PnL %</span><span class="${pc}">${fmtPct(pos.pnlPct)}</span></div>`;
+  if (!pos) {
+    p.innerHTML = '<div class="muted" style="font-size:11px;padding:6px 0">No open position</div>';
+    return;
+  }
+
+  const pc      = (pos.pnl||0) >= 0 ? 'green' : 'red';
+  const sideCls = pos.side === 'LONG' ? 'green' : 'red';
+  const mode    = pos.marginMode
+    ? pos.marginMode.charAt(0).toUpperCase() + pos.marginMode.slice(1)
+    : 'Isolated';
+
+  const r = (lbl, val, cls='') =>
+    `<div class="prow"><span class="pkey">${lbl}</span><span class="${cls}">${val}</span></div>`;
+  const rb = (lbl, val, cls='') =>
+    `<div class="prow"><span class="pkey">${lbl}</span><span class="${cls}" style="font-weight:700">${val}</span></div>`;
+  const price = v => v > 0 ? '$'+v.toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1}) : '—';
+  const usdt  = (v, dec=4) => v !== undefined && v !== 0 ? (v>=0?'+':'')+v.toFixed(dec)+' USDT' : '—';
+
+  p.innerHTML =
+    rb('SIDE',         `${pos.side} · ${mode}`, sideCls) +
+    rb('LEVERAGE',     `${pos.leverage||'—'}×`, 'yellow') +
+    r ('SIZE',         `${(pos.size||0).toFixed(4)} BTC`) +
+    r ('NOTIONAL',     pos.sizeUSDT > 0 ? '≈ $'+(pos.sizeUSDT).toFixed(4) : '—') +
+    r ('ENTRY',        price(pos.entry)) +
+    r ('MARK PRICE',   price(pos.markPrice)) +
+    r ('BREAK EVEN',   price(pos.breakEven)) +
+    rb('UNREAL. PnL',  usdt(pos.pnl), pc) +
+    rb('ROE',          fmtPct(pos.pnlPct), pc) +
+    r ('REAL. PnL',    usdt(pos.realizedPnL)) +
+    r ('MARGIN',       pos.margin > 0 ? pos.margin.toFixed(4)+' USDT' : '—') +
+    r ('MARGIN RATIO', pos.marginRatio > 0 ? pos.marginRatio.toFixed(2)+'%' : '—') +
+    r ('MMR',          pos.mmr > 0 ? pos.mmr.toFixed(2)+'%' : '—') +
+    rb('LIQ. PRICE',   price(pos.liquidation), 'red');
 }
 
 function updRisk(live, a) {

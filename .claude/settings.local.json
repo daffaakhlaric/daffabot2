@@ -4,7 +4,10 @@
       "Bash(node -e \":*)",
       "Bash(timeout /t 18 /nobreak)",
       "Bash(node -e \"require\\(''''./pepe-futures-bot.js''''\\)\")",
-      "Bash(node -e ':*)"
+      "Bash(node -e ':*)",
+      "Bash(ls c:/Users/HP/Documents/Daffabot2/*.js)",
+      "Bash(grep -E '\\\\.\\(js|mjs|ts\\)$')",
+      "Bash(node --check btcStrategy.js)"
     ]
   }
 }

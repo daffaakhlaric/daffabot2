@@ -363,25 +363,12 @@ function checkSessionFilter(mode, trendStrength, volumeRatio, breakout, whaleSco
   const session = getCurrentSession();
   
   if (session === "ASIA") {
-    const strongTrend = trendStrength === "STRONG";
-    const volumeOK = volumeRatio >= SESSION_CONFIG.ASIA_VOLUME_MULTIPLIER;
-    const breakoutOK = breakout;
-    
-    if (!strongTrend || !volumeOK || !breakoutOK) {
-      return {
-        valid: false,
-        session,
-        mode: "STRICT",
-        reason: `ASIA SESSION: BLOCKED - need STRONG trend (${strongTrend}), Vol≥1.5x (${volumeOK}), Breakout (${breakoutOK})`,
-        blocked: true
-      };
-    }
-    
     return {
-      valid: true,
+      valid: false,
       session,
-      mode: "STRICT",
-      reason: "ASIA SESSION: Allowed - STRONG trend + Volume OK + Breakout confirmed"
+      mode: "SKIPPED",
+      reason: "ASIA SESSION: SKIPPED - No trading during Asia session",
+      blocked: true
     };
   }
   
@@ -1425,9 +1412,9 @@ function calculatePositionSize(baseSize, trendStrength, defenseMode) {
 // HYBRID AI MAIN ANALYZER
 // ═══════════════════════════════════════════════════════════════
 
-async function analyzeBTC(lastTrade = null, defenseMode = false) {
+async function analyzeBTC(lastTrade = null, defenseMode = false, prefetchedKlines = null) { // FIX: accept pre-fetched klines (PERF-1)
   try {
-    const klines = await fetchKlines(SYMBOL, TIMEFRAME, KLINE_LIMIT);
+    const klines = prefetchedKlines || await fetchKlines(SYMBOL, TIMEFRAME, KLINE_LIMIT); // FIX: skip fetch if klines provided (PERF-1)
     
     if (!klines || klines.length < 50) {
       throw new Error("Insufficient data");
@@ -1498,7 +1485,19 @@ async function analyzeBTC(lastTrade = null, defenseMode = false) {
     
     // ─── 🛡️ DEFENSE MODE CHECK (First Priority) ───────────────
     const defenseCheck = checkDefenseMode();
-    
+
+    // FIX: check defense mode before rule engine — lossStreakPause guard (BUG-8)
+    if (defenseCheck.blocked) {
+      return {
+        signal: "HOLD",
+        action: "HOLD",
+        confidence: 0,
+        reason: defenseCheck.reason,
+        lossStreakPause: true,     // FIX: was missing — caused guard to always be falsy (BUG-8)
+        defense: defenseCheck
+      };
+    }
+
     if (defenseCheck.blocked && defenseCheck.mode === "HARD_PAUSE") {
       return {
         symbol: SYMBOL,
@@ -1519,6 +1518,7 @@ async function analyzeBTC(lastTrade = null, defenseMode = false) {
           loss_streak: ExpectancyState.consecutiveLosses,
           remaining_minutes: defenseCheck.remaining_minutes
         },
+        lossStreakPause: true, // FIX: added for type consistency (BUG-8)
         whale: { score: whale.score, signals: whale.signals },
         expectancy: getExpectancyForDecision(),
         mlWeights: getMLWeights(),
@@ -1986,8 +1986,8 @@ function recordTrade(trade) {
   }
 }
 
-async function quickAnalysis() {
-  return analyzeBTC();
+async function quickAnalysis(_lossStreak = 0, prefetchedKlines = null) { // FIX: pass through pre-fetched klines (PERF-1)
+  return analyzeBTC(null, false, prefetchedKlines);
 }
 
 function getBTCConfig() {

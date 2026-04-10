@@ -661,6 +661,9 @@ let state = {
 
   // ═══ TRADING BEHAVIOR CONTROLLER ═══
   lastTradeTime:       0,            // Timestamp of last trade close
+  lastTradeCloseTime:  0,            // FIX: dedicated field for TRADE_COOLDOWN_MIN check (BUG-5)
+  lastWinCloseTime:    0,            // FIX: dedicated field for POST_WIN cooldown check (BUG-5)
+  lastLossCloseTime:   0,            // FIX: dedicated field for REVENGE_BLOCK check (BUG-5)
   lastTradeResult:     null,          // "WIN" or "LOSS" or null
   lastTradeProfitPct:  0,            // Profit % of last trade
   lastTradeProfitUSDT: 0,            // Profit USDT of last trade
@@ -758,6 +761,16 @@ let state = {
   priorityOverrideActive: false,  // Priority override is active
   reducedSizeDueToPriority: 1.0,  // Size reduction due to priority conflict
   lastConflictReason: "",          // Reason for last priority conflict
+
+  // ═══ RUNTIME STATE OVERRIDES (moved from CONFIG._*) ═══
+  revengeConfidenceBoost:    0,    // FIX: was state.revengeConfidenceBoost (ARCH-1)
+  revengePositionMultiplier: 1.0,  // FIX: was state.revengePositionMultiplier (ARCH-1)
+  activeDefenseMode:         false, // FIX: was state.activeDefenseMode (ARCH-1)
+  defenseMinScore:           70,    // FIX: was state.defenseMinScore (ARCH-1)
+  defenseSizeMultiplier:     1.0,  // FIX: was state.defenseSizeMultiplier (ARCH-1)
+  consistencyConfidenceBoost: 0,   // FIX: was state.consistencyConfidenceBoost (ARCH-1)
+  consistencyRiskMultiplier:  1.0, // FIX: was state.consistencyRiskMultiplier (ARCH-1)
+  recoverySizeMultiplier:     1.0, // FIX: was state.recoverySizeMultiplier (ARCH-1)
 
   // ═══ DYNAMIC STRICTNESS ENGINE STATE ═══
   marketStrictnessLevel: "NORMAL", // "HOT", "NORMAL", "COLD"
@@ -2152,33 +2165,6 @@ function calculateKillerTrailingStop(pos, price, trailingOffset) {
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * Check if expected move is sufficient for trade
- * @param {Object} indicators - Market indicators
- * @param {Object} config - Bot config
- * @returns {{sufficient: boolean, expectedMove: number, reason: string}}
- */
-function checkExpectedMove(indicators, config) {
-  const minExpectedMove = config.MIN_EXPECTED_MOVE_PCT || 0.4;
-  const atrPct = indicators.atrPct || 0;
-  
-  // Expected move is based on ATR
-  const expectedMove = atrPct;
-  
-  if (expectedMove < minExpectedMove) {
-    return {
-      sufficient: false,
-      expectedMove,
-      reason: `Expected move ${expectedMove.toFixed(2)}% < ${minExpectedMove}% minimum`
-    };
-  }
-  
-  return {
-    sufficient: true,
-    expectedMove,
-    reason: `Expected move ${expectedMove.toFixed(2)}% ≥ ${minExpectedMove}% minimum`
-  };
-}
-
 // ═══════════════════════════════════════════════════════════════
 // DAILY PROFIT LOCK SYSTEM
 // Stop trading if daily profit ≥ 2%, Safe mode if ≥ 1.5%
@@ -2586,13 +2572,20 @@ function updateConsistencyTracker(state, config, isWin) {
   }
 }
 
+function getConsistencyAdjustments(state) { // FIX: new function — was never defined, caused ReferenceError (CRITICAL-2)
+  return {
+    confidenceBoost: state.consistencyConfidenceAdjust || 0,
+    riskMultiplier:  state.consistencyRiskAdjust       || 1.0,
+  };
+}
+
 /**
  * @param {Object} indicators - Market indicators
  * @param {Object} config - Bot config
  * @param {string} trendStrength - Current trend strength (STRONG/NORMAL/WEAK)
  * @returns {{sufficient: boolean, expectedMove: number, reason: string}}
  */
-function checkExpectedMove(indicators, config, trendStrength) {
+function checkExpectedMove(indicators, config, trendStrength) { // FIX: removed duplicate — kept the 3-param version (CRITICAL-5)
   const adaptiveConfig = (config.ADAPTIVE_EXPECTED_MOVE || {}).ENABLED ? config.ADAPTIVE_EXPECTED_MOVE : null;
   const atrPct = indicators.atrPct || 0;
   
@@ -2926,9 +2919,12 @@ function checkAntiOverfilter(state, config) {
     log("SNIPER", "[ANTI-OVERFILTER] Activated - no trade for " + noTradeHours + "+ hours - relaxing rules");
   }
   
-  // Check if we should deactivate (after first trade with relaxed rules)
-  if (state.antiOverfilterActive && antiConfig.STRICT_AFTER_ENTRY) {
-    // Will be deactivated after next trade in recordTradeResult
+  // Check if we should deactivate (after first attempt with relaxed rules)
+  if (state._antiOverfilterAttempted) { // FIX: deactivate after first attempt (LOGIC-2)
+    state.antiOverfilterActive         = false;
+    state.antiOverfilterRelaxedScore   = 0;
+    state._antiOverfilterAttempted     = false;
+    log("SNIPER", "[ANTI-OVERFILTER] Deactivated — entry attempted");
   }
   
   if (!state.antiOverfilterActive) {
@@ -3901,6 +3897,7 @@ let externalDataCache  = null;
 let externalDataLastTs = 0;
 const EXTERNAL_CACHE_MS = 10 * 60 * 1000;
 let cmcDisabledUntil   = 0; // disable CMC sementara kalau quota habis
+let _externalDataFetching = false; // FIX: in-flight guard to prevent concurrent fetches (PERF-2)
 
 /** Source #1: CoinGecko — data PEPE global (tanpa API key) */
 async function fetchCoinGeckoData() {
@@ -4013,33 +4010,39 @@ async function fetchAllExternalData() {
   if (externalDataCache && Date.now() - externalDataLastTs < EXTERNAL_CACHE_MS) {
     return externalDataCache;
   }
+  if (_externalDataFetching) return externalDataCache; // FIX: return cached while previous fetch is in-flight (PERF-2)
 
-  log("INFO", "Memperbarui data eksternal (CoinGecko + CMC + F&G)...");
-  const [geckoData, cmcData, fearGreedNew] = await Promise.all([
-    fetchCoinGeckoData(),
-    fetchCMCData(),
-    getFearGreedIndex(),
-  ]);
+  _externalDataFetching = true; // FIX: set in-flight guard (PERF-2)
+  try {
+    log("INFO", "Memperbarui data eksternal (CoinGecko + CMC + F&G)...");
+    const [geckoData, cmcData, fearGreedNew] = await Promise.all([
+      fetchCoinGeckoData(),
+      fetchCMCData(),
+      getFearGreedIndex(),
+    ]);
 
-  // Pertahankan cache lama jika data baru null
-  externalDataCache = {
-    geckoData: geckoData || externalDataCache?.geckoData || null,
-    cmcData:   cmcData   || externalDataCache?.cmcData   || null,
-    fearGreed: fearGreedNew || externalDataCache?.fearGreed || { value: 50, classification: "Neutral", trend: "STABLE", avg7d: 50, yesterday: 50 },
-  };
-  externalDataLastTs = Date.now();
+    // Pertahankan cache lama jika data baru null
+    externalDataCache = {
+      geckoData: geckoData || externalDataCache?.geckoData || null,
+      cmcData:   cmcData   || externalDataCache?.cmcData   || null,
+      fearGreed: fearGreedNew || externalDataCache?.fearGreed || { value: 50, classification: "Neutral", trend: "STABLE", avg7d: 50, yesterday: 50 },
+    };
+    externalDataLastTs = Date.now();
 
-  // Log ringkasan data baru
-  if (geckoData) {
-    log("INFO", `CoinGecko: PEPE 24h=${geckoData.change24h.toFixed(2)}% | Vol=$${(geckoData.volume24h/1e6).toFixed(1)}M | Trending: ${geckoData.isPepeTrending ? "YA #"+geckoData.trendingRank : "Tidak"}`);
+    // Log ringkasan data baru
+    if (geckoData) {
+      log("INFO", `CoinGecko: PEPE 24h=${geckoData.change24h.toFixed(2)}% | Vol=$${(geckoData.volume24h/1e6).toFixed(1)}M | Trending: ${geckoData.isPepeTrending ? "YA #"+geckoData.trendingRank : "Tidak"}`);
+    }
+    if (cmcData) {
+      log("INFO", `CMC: BTC Dom=${cmcData.btcDominance.toFixed(1)}% | Market ${cmcData.marketCapChange24h >= 0 ? "+" : ""}${cmcData.marketCapChange24h.toFixed(2)}%`);
+    }
+    const fg = externalDataCache.fearGreed;
+    log("INFO", `F&G: ${fg.value} (${fg.classification}) | Trend: ${fg.trend} | Avg7d: ${fg.avg7d}`);
+
+    return externalDataCache;
+  } finally {
+    _externalDataFetching = false; // FIX: always release guard (PERF-2)
   }
-  if (cmcData) {
-    log("INFO", `CMC: BTC Dom=${cmcData.btcDominance.toFixed(1)}% | Market ${cmcData.marketCapChange24h >= 0 ? "+" : ""}${cmcData.marketCapChange24h.toFixed(2)}%`);
-  }
-  const fg = externalDataCache.fearGreed;
-  log("INFO", `F&G: ${fg.value} (${fg.classification}) | Trend: ${fg.trend} | Avg7d: ${fg.avg7d}`);
-
-  return externalDataCache;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -4136,19 +4139,20 @@ async function getActivePosition() {
   return { side, entryPrice, size, leverage, liqPrice, unrealPnL, pnlPct, marginSize };
 }
 
-async function setLeverage(leverage) {
+async function setLeverage(leverage, symbol) { // FIX: added symbol parameter (CRITICAL-4)
+  const sym = symbol || CONFIG.SYMBOL; // FIX: use passed symbol or fall back to CONFIG (CRITICAL-4)
   if (CONFIG.DRY_RUN) {
     log("INFO", `[DRY] Set leverage ${leverage}x`);
     return;
   }
   try {
     await bitgetRequest("POST", "/api/v2/mix/account/set-leverage", {}, {
-      symbol:      CONFIG.SYMBOL,
+      symbol:      sym, // FIX: use sym instead of CONFIG.SYMBOL (CRITICAL-4)
       productType: CONFIG.PRODUCT_TYPE,
       marginCoin:  CONFIG.MARGIN_COIN,
       leverage:    leverage.toString(),
     });
-    log("INFO", `✅ Set leverage ${leverage}x for ${CONFIG.SYMBOL}`);
+    log("INFO", `✅ Set leverage ${leverage}x for ${sym}`);
   } catch (err) {
     log("WARN", `⚠️ Set leverage failed: ${err.message} - continuing anyway`);
   }
@@ -4192,7 +4196,7 @@ function calcOrderSize(price, leverage) {
   
   const phaseMultiplier2  = state.phase?.riskMultiplier ?? 1.0;
   const dryRunMultiplier2 = CONFIG.DRY_RUN ? (getAdaptiveRisk(stats.lossStreak || 0).riskMultiplier) : 1.0;
-  const revengeMultiplier  = CONFIG._revengePositionMultiplier || 1.0;
+  const revengeMultiplier  = state.revengePositionMultiplier || 1.0;
   const riskMultiplier    = phaseMultiplier2 * dryRunMultiplier2 * revengeMultiplier;
   const notional          = CONFIG.POSITION_SIZE_USDT * riskMultiplier * leverage;
   const qty       = notional / price;
@@ -4719,6 +4723,9 @@ async function closePosition(reason, currentPrice, symbol = null) {
 
   // Track last close time for trade cooldown (15-min gate)
   state.lastTradeTime = Date.now();
+  state.lastTradeCloseTime = Date.now(); // FIX: dedicated close timestamp (BUG-5)
+  if (pnlPct >= 0) state.lastWinCloseTime  = Date.now(); // FIX: win timestamp (BUG-5)
+  else             state.lastLossCloseTime = Date.now(); // FIX: loss timestamp (BUG-5)
 
   // Update stats
   stats.totalTrades++;
@@ -4796,6 +4803,23 @@ async function closePosition(reason, currentPrice, symbol = null) {
   updateCompoundBalance(pnlUSDT);
   updateWinRateTracker(pnlUSDT, pnlPct);
   autoAdjustStrategy();
+
+  // FIX: sync trade result to btcStrategy learning engine (ARCH-3)
+  const btcTradeResult = {
+    pnl:         pnlUSDT,
+    result:      pnlPct >= 0 ? "WIN" : "LOSS",
+    entryScore:  pos._entryScore   || 0,
+    confidence:  pos._entryScore   || 0,
+    marketPhase: state.marketPhase || "UNKNOWN",
+    features: {
+      trend:     (pos._smcData?.htfTrend === (pos.side === "LONG" ? "BULLISH" : "BEARISH")),
+      volume:    (pos.volumeRatio || 1) >= 1.2,
+      structure: !!(pos._smcData?.bos?.detected || pos._smcData?.sweep?.detected),
+      momentum:  !!(pos._smcData?.choch?.detected),
+      whale:     !!(pos._smcData?.liquidityGrab?.detected),
+    }
+  };
+  btcStrategy.recordTrade(btcTradeResult); // FIX: was never called — learning state was always stale (ARCH-3)
 
   // ── MODE 7: Capital Growth Loop ───────────────────────────────
   // After a WIN: grow factor slightly → bigger next position
@@ -4944,10 +4968,12 @@ async function closePosition(reason, currentPrice, symbol = null) {
 
       if (cooldownMs > 0) {
         // Switch to MARKET_BAD phase on 3+ losses (STOP trading)
-        if (lossStreak >= 3) {
-          state.phase = { phase: "MARKET_BAD", reason: `Loss streak ${lossStreak}x — STOP today` };
-          state.dailyLossPaused = true; // block new entries for rest of day
+        if (lossStreak >= 3 && !CONFIG.DRY_RUN) { // FIX: suppress MARKET_BAD in DRY_RUN mode (LOGIC-7)
+          state.phase = { phase: "MARKET_BAD", reason: `Loss streak ${lossStreak}x` };
+          state.dailyLossPaused = true;
           log("LOSS PROTECTION", `[RULE 8] LossStreak=${lossStreak} ≥ 3 → STOP trading today + MARKET_BAD + ${cooldownMs/60000}min pause`);
+        } else if (lossStreak >= 3 && CONFIG.DRY_RUN) {
+          log("WARN", `[DRY_RUN] Loss streak ${lossStreak}x — MARKET_BAD suppressed in training mode`); // FIX: DRY_RUN guard (LOGIC-7)
         } else if (lossStreak >= 2) {
           log("LOSS PROTECTION", `[RULE 8] LossStreak=2 → PAUSE ${cooldownMs/60000}min (revenge trading prevention)`);
         }
@@ -5620,7 +5646,7 @@ async function exitSpecialistEngine(pos, price, rawProfitPct, ctx) {
   // If trend is STRONG, lock less to capture large moves
   // ═══════════════════════════════════════════════════════════════
   
-  const KILLER_CONFIG = config.KILLER_EXIT || {};
+  const KILLER_CONFIG = CONFIG.KILLER_EXIT || {}; // FIX: config → CONFIG (CRITICAL-1)
   const KILLER_TRAILING_ACTIVATE = KILLER_CONFIG.TRAILING_ACTIVATE_PCT || 0.5;
   const KILLER_LOCK_30_AT = KILLER_CONFIG.LOCK_30_AT_PCT || 1.0;
   const KILLER_LOCK_50_AT = KILLER_CONFIG.LOCK_50_AT_PCT || 2.0;
@@ -5681,17 +5707,17 @@ async function exitSpecialistEngine(pos, price, rawProfitPct, ctx) {
 
   // ── INTELLIGENT EXIT: Analyze market conditions ─────────────
   // INTELLIGENT EXIT SYSTEM - STEP 3: Market-aware exit conditions
-  const exitConditions = analyzeIntelligentExitConditions(indicators, klines, config, pos.side);
-  
+  const exitConditions = analyzeIntelligentExitConditions(indicators, klines, CONFIG, pos.side); // FIX: config → CONFIG (CRITICAL-1)
+
   // SMART TREND BOOST: Check if should allow runner earlier
   const breakoutDetected = exitConditions.breakout;
   const smartTrendBoost = checkSmartTrendBoost(state, CONFIG, trendStrength, breakoutDetected);
-  
+
   // PARTIAL CLOSE ADAPTIVE: Check partial close levels
-  const partialClose = checkPartialCloseAdaptive(state, config, rawProfitPct, trendStrength, breakoutDetected);
-  
+  const partialClose = checkPartialCloseAdaptive(state, CONFIG, rawProfitPct, trendStrength, breakoutDetected); // FIX: config → CONFIG (CRITICAL-1)
+
   // INTELLIGENT TRAILING: Adjust based on market conditions
-  const intelligentTrailing = getIntelligentTrailingOffset(killerTrailingOffset, exitConditions, config);
+  const intelligentTrailing = getIntelligentTrailingOffset(killerTrailingOffset, exitConditions, CONFIG); // FIX: config → CONFIG (CRITICAL-1)
   
   // ── STEP 3: Partial close (already handled by ATX — skip unless partial close adaptive) ─
   if (partialClose.action === "CLOSE" && !pos.partialCloseActivated) {
@@ -6137,41 +6163,37 @@ async function getHTFTrend() {
     return ema;
   }
 
+  // FIX: parallel fetch instead of sequential — reduces from 4 sequential to 1 parallel round (PERF-4)
+  const [res5m, res1H, res4H, res15m] = await Promise.allSettled([
+    getKlines("5m", 110),
+    getKlines("1H", 6),
+    getKlines("4H", 25),
+    getKlines("15m", 6)
+  ]);
+  const klines5m_htf = res5m.status  === "fulfilled" ? res5m.value  : [];
+  const h1Candles    = res1H.status  === "fulfilled" ? res1H.value  : [];
+  const h4Candles    = res4H.status  === "fulfilled" ? res4H.value  : [];
+  const m15Candles   = res15m.status === "fulfilled" ? res15m.value : [];
+
   // ── Base trend: 5m EMA50 vs EMA100 (existing logic) ─────────
   let baseTrend = "NEUTRAL", baseStrength = "WEAK", ema50 = 0, ema100 = 0, sep = 0;
-  try {
-    const klines5m = await getKlines("5m", 110);
-    if (klines5m.length >= 100) {
-      const closes = klines5m.map(k => k.close);
-      ema50  = emaLocal(closes, 50);
-      ema100 = emaLocal(closes, 100);
-      sep    = Math.abs((ema50 - ema100) / ema100 * 100);
-      baseTrend    = ema50 > ema100 ? "BULLISH" : "BEARISH";
-      baseStrength = sep > 0.5 ? "STRONG" : "WEAK";
-    }
-  } catch (_) {}
+  if (klines5m_htf.length >= 100) {
+    const closes = klines5m_htf.map(k => k.close);
+    ema50  = emaLocal(closes, 50);
+    ema100 = emaLocal(closes, 100);
+    sep    = Math.abs((ema50 - ema100) / ema100 * 100);
+    baseTrend    = ema50 > ema100 ? "BULLISH" : "BEARISH";
+    baseStrength = sep > 0.5 ? "STRONG" : "WEAK";
+  }
 
-  // ── 1H candles: last 6 for consecutive candle check ─────────
-  let h1Candles = [];
-  try { h1Candles = await getKlines("1H", 6); } catch (_) {}
-
-  // ── 4H candles: last 10 for EMA21 check ─────────────────────
-  let h4Candles = [];
+  // ── 4H EMA21 ─────────────────────────────────────────────────
   let h4ema21 = 0;
-  try {
-    h4Candles = await getKlines("4H", 25);
-    if (h4Candles.length >= 10) {
-      const h4c = h4Candles.map(k => k.close);
-      h4ema21 = emaLocal(h4c, Math.min(21, h4c.length));
-    }
-  } catch (_) {}
+  if (h4Candles.length >= 10) {
+    const h4c = h4Candles.map(k => k.close);
+    h4ema21 = emaLocal(h4c, Math.min(21, h4c.length));
+  }
 
-  // ── 15m candles: last 6 for HH/LL detection ─────────────────
-  let m15Candles = [];
-  try { m15Candles = await getKlines("15m", 6); } catch (_) {}
-
-  // ── 1m candles for last-30min price move ─────────────────────
-  // We'll use the last 3 × 10m (30 candles of 1m) to measure 30m move
+  // ── 1m candles for last-30min price move (separate small fetch) ──
   let m1For30 = [];
   try { m1For30 = await getKlines("1m", 32); } catch (_) {}
 
@@ -6525,7 +6547,8 @@ function calcATRStops(side, entryPrice, atr) {
  * Menghindari entry saat market sedang konsolidasi/squeeze.
  * Returns { pass, atr, avgATR, ratio }
  */
-function checkVolatilityFilter(klines, indicators) {
+function checkVolatilityFilter(klines, indicators, currentPrice) { // FIX: added currentPrice parameter (BUG-6)
+  const _price = currentPrice || 0; // FIX: avoid capturing outer scope price (BUG-6)
   if (klines.length < 28) return { pass: true, atr: 0, avgATR: 0, ratio: 1 };
   // Hitung ATR 14 dari seluruh klines, lalu ambil rata-rata 14 ATR terakhir
   const atrs = [];
@@ -6537,11 +6560,11 @@ function checkVolatilityFilter(klines, indicators) {
   const avgATR = atrs.slice(-14).reduce((a, b) => a + b, 0) / Math.min(atrs.length, 14);
   const ratio  = avgATR > 0 ? atr / avgATR : 1;
   const pass   = ratio >= CONFIG.ATR_MIN_MULTIPLIER;
-  
+
   // HARD BLOCK: ATR < 0.12% = no trade regardless
-  const atrPct = indicators?.atrPct || (price > 0 ? atr / price * 100 : 0);
+  const atrPct = indicators?.atrPct || (_price > 0 ? atr / _price * 100 : 0); // FIX: use _price (BUG-6)
   const hardBlock = atrPct < CONFIG.ATR_LOW_THRESHOLD;
-  
+
   return { pass: pass && !hardBlock, atr, avgATR, ratio: parseFloat(ratio.toFixed(3)), hardBlock };
 }
 
@@ -6833,6 +6856,7 @@ const smcState = {
   // [4] Post-SL cooldown
   lastSLTime:       0,        // timestamp terakhir SL hit
   slCooldownCount:  0,        // candle counter sejak SL terakhir
+  slCooldownUntil:  0,        // FIX: time-based cooldown (BUG-1)
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -6983,21 +7007,16 @@ async function tradingLoop() {
     return;
   }
 
-  // ── PAIR SELECTION (BTC ONLY) ────────────────────────────────
+  // ── PAIR SELECTION (BTC ONLY) — CONFIG.SYMBOL mutation moved to startup (BUG-4) ────
+  // FIX: removed in-loop CONFIG.SYMBOL mutation — enforcement now happens once at startup (BUG-4)
   if (!CONFIG.ADAPTIVE_PAIR_ENABLED) {
-    // Fixed pair mode - use DEFAULT_SYMBOL (BTCUSDT)
     const fixedSymbol = CONFIG.DEFAULT_SYMBOL || "BTCUSDT";
     if (state.currentPair !== fixedSymbol) {
+      // Only update state.currentPair, NOT CONFIG.SYMBOL — that is set once at startup
       log("INFO", `🔄 Using fixed pair: ${fixedSymbol}`);
-      state.currentPair = fixedSymbol;
+      state.currentPair     = fixedSymbol;
       state.currentPairMode = "BTC";
-      CONFIG.SYMBOL = fixedSymbol;
-      
-      // Apply BTC-specific config
-      CONFIG.STOP_LOSS_PCT = CONFIG.BTC_SPECIFIC_CONFIG.STOP_LOSS_PCT;
-      CONFIG.TAKE_PROFIT_PCT = CONFIG.BTC_SPECIFIC_CONFIG.TAKE_PROFIT_PCT;
-      CONFIG.TRAILING_OFFSET = CONFIG.BTC_SPECIFIC_CONFIG.TRAILING_OFFSET;
-      CONFIG.POSITION_SIZE_USDT = CONFIG.BTC_SPECIFIC_CONFIG.POSITION_SIZE_USDT;
+      // CONFIG.SYMBOL = fixedSymbol; // FIX: removed — moved to main() startup (BUG-4)
     }
   }
 
@@ -7798,7 +7817,8 @@ async function tradingLoop() {
       // [4] Post-SL cooldown hanya untuk actual stop loss (bukan profit stop)
       if (slReason2 === "STOP_LOSS") {
         smcState.lastSLTime      = Date.now();
-        smcState.slCooldownCount = 0;
+        smcState.slCooldownUntil = Date.now() + (CONFIG.SL_COOLDOWN_CANDLES * 60 * 1000); // FIX: candles → minutes (BUG-1)
+        smcState.slCooldownCount = 0; // FIX: reset count (BUG-1)
       }
       return;
     }
@@ -7909,6 +7929,16 @@ async function tradingLoop() {
 
   if (!pos) {
 
+    // FIX: reset per-tick transient CONFIG overrides to prevent bleed between ticks (BUG-2)
+    state.revengeConfidenceBoost    = 0;
+    state.revengePositionMultiplier = 1.0;
+    state.activeDefenseMode         = false;
+    state.defenseMinScore           = CONFIG.ENTRY_SCORE_MIN;
+    state.defenseSizeMultiplier     = 1.0;
+    state.consistencyConfidenceBoost = 0;
+    state.consistencyRiskMultiplier  = 1.0;
+    state.recoverySizeMultiplier     = 1.0;
+
     // ── Manual Trading Stop ──────────────────────────────────
     if (state.manualTradingStop) {
       if (state.tickCount % 12 === 0)
@@ -7918,7 +7948,7 @@ async function tradingLoop() {
 
     // ── A. Update HTF Trend setiap 1 menit ─────────────────
     // Refresh every 2 min — needed for 30m momentum calc (was 60s)
-    if (Date.now() - smcState.htfLastUpdate > 120000 || !smcState.htfTrend) {
+    if (Date.now() - smcState.htfLastUpdate > 180000 || !smcState.htfTrend) { // FIX: extended cache to 3 min (PERF-4)
       smcState.htfTrend      = await getHTFTrend();
       smcState.htfLastUpdate = Date.now();
     }
@@ -8324,22 +8354,22 @@ async function tradingLoop() {
     ].join(" ");
     log("INFO", `[${tradeSide}] ${checks} | ATR:${atrPct.toFixed(3)}% | RevScore:${revScore.score}(${revScore.grade})`);
 
-    // ── [4] Post-SL cooldown — tunggu N candle setelah stop loss ──
-    if (smcState.lastSLTime > 0) {
-      smcState.slCooldownCount++;
-      if (smcState.slCooldownCount < CONFIG.SL_COOLDOWN_CANDLES) {
-        const remaining = CONFIG.SL_COOLDOWN_CANDLES - smcState.slCooldownCount;
-        if (state.tickCount % 3 === 0) log("INFO", `Post-SL cooldown — tunggu ${remaining} candle lagi`);
-        return;
-      } else {
-        // Cooldown selesai
-        smcState.lastSLTime      = 0;
-        smcState.slCooldownCount = 0;
-      }
+    // ── [4] Post-SL cooldown — time-based (BUG-1 FIX) ──
+    if (smcState.slCooldownUntil > 0 && Date.now() < smcState.slCooldownUntil) { // FIX: time-based SL cooldown (BUG-1)
+      const remaining = Math.ceil((smcState.slCooldownUntil - Date.now()) / 60000);
+      if (state.tickCount % 3 === 0) log("INFO", `Post-SL cooldown — tunggu ${remaining} menit lagi`);
+      return;
+    } else if (smcState.slCooldownUntil > 0 && Date.now() >= smcState.slCooldownUntil) {
+      smcState.lastSLTime      = 0; // FIX: reset after cooldown expires (BUG-1)
+      smcState.slCooldownUntil = 0;
     }
 
+    // FIX: single cached detectMarketPhaseV2 call for entire tick (ARCH-2)
+    const tickMarketPhase = detectMarketPhaseV2(klines, indicators, CONFIG);
+    updateChopConfirmation(state, tickMarketPhase.phase === "CHOP");
+
     // ── [2] Volatility filter — skip saat ATR terlalu rendah ──────
-    const volFilter = checkVolatilityFilter(klines5m, indicators);
+    const volFilter = checkVolatilityFilter(klines5m, indicators, price); // FIX: pass price explicitly (BUG-6)
     if (!volFilter.pass) {
       if (state.tickCount % 6 === 0) {
         if (volFilter.hardBlock) {
@@ -8382,8 +8412,15 @@ async function tradingLoop() {
       && ((btcA.action === "LONG"  && tradeSide === "BULLISH") ||
           (btcA.action === "SHORT" && tradeSide === "BEARISH"));
 
+    const tradeSideLong = tradeSide === "BULLISH" ? "LONG" : "SHORT"; // FIX: conversion for LONG/SHORT-expecting functions (LOGIC-5)
+
     const smcReady = sdReady || smcFull || revReady || bosDirectEntry || btcPullbackReady;
-    
+
+    // FIX: mark attempt so anti-overfilter can deactivate even if later filter blocks entry (LOGIC-2)
+    if (state.antiOverfilterActive) {
+      state._antiOverfilterAttempted = true;
+    }
+
     // ── STEP 5: FAKE BREAKOUT FILTER - Skip if breakout without return ─
     // Only enter if fake breakout detected (stop hunt) OR no breakout
     const validEntry = fakeBreakout.detected || !bos.detected;
@@ -8581,6 +8618,20 @@ async function tradingLoop() {
         orderQty = isUncertain ? btcCfg.BTC_LOW_QTY
                  : isHighConf  ? btcCfg.BTC_HIGH_QTY
                                : btcCfg.BTC_STD_QTY;
+      }
+
+      // FIX: cap fixed-tier qty to prevent overriding position size budget (LOGIC-3)
+      {
+        const effectiveMargin = (orderQty * price) / leverage;
+        const maxAllowedMargin = Math.min(
+          CONFIG.POSITION_SIZE_USDT * 1.5,
+          (state.totalAccountBalance || 100) * 0.25
+        );
+        if (effectiveMargin > maxAllowedMargin) {
+          const adjustedQty = Math.floor((maxAllowedMargin * leverage / price) / 0.001) * 0.001;
+          orderQty = Math.max(adjustedQty, 0.001);
+          log("WARN", `[BTC SIZING] Fixed tier scaled: ${orderQty} BTC (margin ${(orderQty*price/leverage).toFixed(2)} USDT)`);
+        }
       }
 
       log("INFO", `📊 BTC Order: Qty=${orderQty} BTC | Lev=${leverage}x | Margin≈${(orderQty * price / leverage).toFixed(2)} USDT`);
@@ -8870,8 +8921,8 @@ async function tradingLoop() {
       // ════════════════════════════════════════════════════════════
       // TRADE COOLDOWN — 15 min minimum between trades
       // ════════════════════════════════════════════════════════════
-      if (state.lastTradeTime > 0) {
-        const minSinceLastTrade = (Date.now() - state.lastTradeTime) / 60000;
+      if (state.lastTradeCloseTime > 0) { // FIX: use dedicated close timestamp (BUG-5)
+        const minSinceLastTrade = (Date.now() - state.lastTradeCloseTime) / 60000;
         if (minSinceLastTrade < CONFIG.TRADE_COOLDOWN_MIN) {
           if (state.tickCount % 9 === 0)
             log("FILTER", `[COOLDOWN] Last trade ${minSinceLastTrade.toFixed(1)}min ago — need ${CONFIG.TRADE_COOLDOWN_MIN}min → SKIP`);
@@ -8933,28 +8984,14 @@ async function tradingLoop() {
         
         // Apply confidence boost from protection mode
         if (revengeProtection.confidenceBoost > 0) {
-          CONFIG._revengeConfidenceBoost = revengeProtection.confidenceBoost;
+          state.revengeConfidenceBoost = revengeProtection.confidenceBoost;
         }
         if (revengeProtection.positionMultiplier < 1.0) {
-          CONFIG._revengePositionMultiplier = revengeProtection.positionMultiplier;
+          state.revengePositionMultiplier = revengeProtection.positionMultiplier;
         }
       }
 
-      // ════════════════════════════════════════════════════════════
-      // MARKET PHASE CONTROLLER — Final Decision Layer
-      // ════════════════════════════════════════════════════════════
-      {
-        const decision = marketPhaseController(state, CONFIG, indicators, klines, tradeSide, entryScore);
-        if (!decision.allow_trade) {
-          if (state.tickCount % 6 === 0) {
-            log("FILTER", `[MARKET PHASE] ${decision.mode}: ${decision.reason} → BLOCKED`);
-          }
-          return;
-        }
-        if (decision.mode !== "NORMAL" && state.tickCount % 12 === 0) {
-          log("INFO", `[MARKET PHASE] ${decision.mode}: ${decision.reason}`);
-        }
-      }
+      // FIX: removed deprecated marketPhaseController — detectMarketPhaseV2 is authoritative (LOGIC-4)
 
       // ════════════════════════════════════════════════════════════
       // SNIPER MODE: POST-WIN COOLDOWN CHECK
@@ -8989,9 +9026,13 @@ async function tradingLoop() {
       {
         const hardFilter = checkPostWinHardFilter(state, CONFIG);
         if (hardFilter.blocked) {
-          const trendPhase = detectMarketPhaseV2(klines, indicators, CONFIG);
-          const breakoutDetected = sweep && sweep.detected;
-          const isPriority1 = trendPhase.trendStrength === "STRONG" && breakoutDetected;
+          // FIX: use proxy conditions matching evaluatePriorityLevel instead of separate detectMarketPhaseV2 call (LOGIC-6)
+          const isPriority1HardFilter = (
+            htf.strength === "STRONG" &&
+            sweep.detected &&
+            indicators.volumeRatio >= 1.5
+          );
+          const isPriority1 = isPriority1HardFilter; // FIX: renamed to use proxy (LOGIC-6)
           
           if (!isPriority1 || !hardFilter.canOverride) {
             if (state.tickCount % 6 === 0) {
@@ -9043,7 +9084,7 @@ async function tradingLoop() {
       // 🚨 ANTI FAKE BREAKOUT: Validate breakout before entry
       // ════════════════════════════════════════════════════════════
       {
-        const breakoutValidation = validateBreakout(klines, indicators, CONFIG, tradeSide === "BULLISH" ? "LONG" : "SHORT");
+        const breakoutValidation = validateBreakout(klines, indicators, CONFIG, tradeSideLong); // FIX: use tradeSideLong (LOGIC-5)
         if (breakoutValidation.isFakeBreakout) {
           if (state.tickCount % 6 === 0) {
             log("FILTER", `[FAKE BREAKOUT] ${breakoutValidation.reason} → HOLD`);
@@ -9060,7 +9101,7 @@ async function tradingLoop() {
       // 🚨 EXHAUSTION MOVE BLOCK: Prevent late entry after strong move
       // ════════════════════════════════════════════════════════════
       {
-        const exhaustionCheck = checkExhaustionMove(indicators, price, CONFIG, tradeSide === "BULLISH" ? "LONG" : "SHORT");
+        const exhaustionCheck = checkExhaustionMove(indicators, price, CONFIG, tradeSideLong); // FIX: use tradeSideLong (LOGIC-5)
         if (exhaustionCheck.blocked) {
           if (state.tickCount % 6 === 0) {
             log("FILTER", `[EXHAUSTION] ${exhaustionCheck.reason} → HOLD`);
@@ -9073,7 +9114,7 @@ async function tradingLoop() {
       // 🚨 FOMO ENTRY BLOCK: Prevent chasing after price moved
       // ════════════════════════════════════════════════════════════
       {
-        const fomoCheck = checkFomoEntry(klines, indicators, CONFIG, tradeSide === "BULLISH" ? "LONG" : "SHORT");
+        const fomoCheck = checkFomoEntry(klines, indicators, CONFIG, tradeSideLong); // FIX: use tradeSideLong (LOGIC-5)
         if (fomoCheck.blocked) {
           if (state.tickCount % 6 === 0) {
             log("FILTER", `[FOMO BLOCK] ${fomoCheck.reason} → HOLD`);
@@ -9225,13 +9266,13 @@ async function tradingLoop() {
         const recovery = checkLossRecovery(state, CONFIG);
         if (recovery.active) {
           // Apply size reduction from recovery
-          CONFIG._recoverySizeMultiplier = recovery.reduceSize;
+          state.recoverySizeMultiplier = recovery.reduceSize;
           
           if (state.tickCount % 12 === 0) {
             log("SNIPER", "[LOSS RECOVERY] " + recovery.reason);
           }
         } else {
-          CONFIG._recoverySizeMultiplier = 1.0;
+          state.recoverySizeMultiplier = 1.0;
         }
       }
 
@@ -9244,15 +9285,15 @@ async function tradingLoop() {
         
         // Apply consistency adjustments to CONFIG
         if (consistency.confidenceBoost > 0) {
-          CONFIG._consistencyConfidenceBoost = consistency.confidenceBoost;
+          state.consistencyConfidenceBoost = consistency.confidenceBoost;
         } else {
-          CONFIG._consistencyConfidenceBoost = 0;
+          state.consistencyConfidenceBoost = 0;
         }
         
         if (consistency.riskMultiplier < 1.0) {
-          CONFIG._consistencyRiskMultiplier = consistency.riskMultiplier;
+          state.consistencyRiskMultiplier = consistency.riskMultiplier;
         } else {
-          CONFIG._consistencyRiskMultiplier = 1.0;
+          state.consistencyRiskMultiplier = 1.0;
         }
         
         if (state.tickCount % 20 === 0 && (consistency.confidenceBoost > 0 || consistency.riskMultiplier < 1.0)) {
@@ -9262,20 +9303,27 @@ async function tradingLoop() {
       }
 
       // ════════════════════════════════════════════════════════════
-      // CONSECUTIVE LOSS PAUSE — use checkDefenseMode() from btcStrategy
+      // CONSECUTIVE LOSS PAUSE — inline check using main bot stats
       // ════════════════════════════════════════════════════════════
-      const lossStreakCheck = require('./btcStrategy').checkDefenseMode();
+      // FIX: replaced btcStrategy.checkDefenseMode() with inline check using main bot stats (BUG-3)
+      const lossStreakCheck = (() => {
+        const losses = stats.lossStreak || 0;
+        if (losses >= 4) return { mode: "HARD_PAUSE", blocked: true, reason: `${losses} consecutive losses — 60min pause`, min_score: 100, position_size: 0 };
+        if (losses >= 3) return { mode: "HARD_PAUSE", blocked: true, reason: `${losses} consecutive losses — 30min pause`, min_score: 100, position_size: 0 };
+        if (losses >= 2) return { mode: "DEFENSE",    blocked: false, reason: `${losses} consecutive losses — Defense Mode`, min_score: 85, position_size: 0.5 };
+        return { mode: "NORMAL", blocked: false, reason: "Normal operation", min_score: CONFIG.ENTRY_SCORE_MIN, position_size: 1.0 };
+      })();
       if (lossStreakCheck.blocked) {
         if (state.tickCount % 12 === 0)
           log("FILTER", `[DEFENSE] ${lossStreakCheck.reason} → BLOCKED`);
         return;
       }
       if (lossStreakCheck.mode === "DEFENSE") {
-        CONFIG._activeDefenseMode = true;
-        CONFIG._defenseMinScore = lossStreakCheck.min_score;
-        CONFIG._defenseSizeMultiplier = lossStreakCheck.position_size;
+        state.activeDefenseMode = true;
+        state.defenseMinScore = lossStreakCheck.min_score;
+        state.defenseSizeMultiplier = lossStreakCheck.position_size;
       } else {
-        CONFIG._activeDefenseMode = false;
+        state.activeDefenseMode = false;
       }
 
       // ════════════════════════════════════════════════════════════
@@ -9480,7 +9528,7 @@ async function tradingLoop() {
       }
       const baseConfThreshold = CONFIG.OPEN_CONFIDENCE; // 65 (Sniper mode)
       // Add revenge protection confidence boost if active
-      const revengeConfBoost = CONFIG._revengeConfidenceBoost || 0;
+      const revengeConfBoost = state.revengeConfidenceBoost || 0;
       const confThreshold = baseConfThreshold + (adaptive?.confidenceBoost ?? 0) + revengeConfBoost;
 
       // ── ANTI-LOSS STREAK: Get adaptive minimum confidence ───────────
@@ -9549,8 +9597,14 @@ async function tradingLoop() {
       // ADAPTIVE ENTRY: Get dynamic minScore based on market mode
       const momentumStrong = momentumCondCount >= 2;
       const breakoutDetected = sweep && sweep.detected;
-      const adaptiveEntry = getAdaptiveEntryThreshold(state, CONFIG, trendPhase.trendStrength, momentumStrong);
-      
+
+      // FIX: moved before priority block to prevent use-before-declaration (CRITICAL-3)
+      const breakoutDetectedForSizing = sweep && sweep.detected;
+      const trendPhaseForSizing = detectMarketPhaseV2(klines, indicators, CONFIG);
+      const momentumSizing = getMomentumSizeFactor(state, CONFIG, trendPhaseForSizing.trendStrength, breakoutDetectedForSizing);
+
+      const adaptiveEntry = getAdaptiveEntryThreshold(state, CONFIG, trendPhaseForSizing.trendStrength, momentumStrong);
+
       // ANTI-OVERFILTER: Check if should relax rules due to no trades
       const antiOverfilter = checkAntiOverfilter(state, CONFIG);
       let effectiveMinScore = adaptiveEntry.minScore;
@@ -9558,17 +9612,17 @@ async function tradingLoop() {
         effectiveMinScore = Math.max(0, effectiveMinScore - antiOverfilter.scoreReduction);
         log("SNIPER", "[ANTI-OVERFILTER] Using relaxed score: " + effectiveMinScore + " (normal: " + adaptiveEntry.minScore + ")");
       }
-      
+
       // SMART TREND BOOST: Check if should activate aggressive mode
-      const trendBoost = checkSmartTrendBoost(state, CONFIG, trendPhase.trendStrength, breakoutDetected);
-      
+      const trendBoost = checkSmartTrendBoost(state, CONFIG, trendPhaseForSizing.trendStrength, breakoutDetected);
+
       // ════════════════════════════════════════════════════════════════════
       // PRIORITY-BASED LOGIC SYSTEM
       // Evaluate priority level and check for override opportunities
       // ════════════════════════════════════════════════════════════════════
-      
+
       // Evaluate priority level
-      const priorityEval = evaluatePriorityLevel(indicators, klines, CONFIG, trendPhase.trendStrength);
+      const priorityEval = evaluatePriorityLevel(indicators, klines, CONFIG, trendPhaseForSizing.trendStrength);
       
       // Check opportunity override
       const opportunityOverride = checkOpportunityOverride(indicators, CONFIG);
@@ -9620,13 +9674,18 @@ async function tradingLoop() {
       
       // Apply stacking penalty to confidence
       const effectiveConfThreshold = confThreshold + stackingPenalty;
-      
+
+      // FIX: relaxed confidence gate for rule-based direct entries (LOGIC-1)
+      const confidenceGate = claudeFilter.direct
+        ? Math.max(60, CONFIG.OPEN_CONFIDENCE - 5)
+        : effectiveConfThreshold;
+
       // Allow entry if: score >= final minScore AND confidence >= threshold AND squeeze is safe
       // OR if opportunity override is active
-      const entryAllowed = opportunityOverride.shouldOverride 
-        ? true 
+      const entryAllowed = opportunityOverride.shouldOverride
+        ? true
         : (entryScore >= finalMinScore &&
-           claudeFilter.confidence >= effectiveConfThreshold &&
+           claudeFilter.confidence >= confidenceGate && // FIX: use confidenceGate (LOGIC-1)
            squeezeSafe &&
            !volumeTooLow);
       
@@ -9657,9 +9716,7 @@ async function tradingLoop() {
         leverage = Math.min(leverage, CONFIG.MAX_LEVERAGE);     // max 10x
         let sniperMarginUSDT = maxLossPerTrade / (slFraction * leverage);
         
-        // MOMENTUM SIZING: Apply dynamic position size factor
-        const momentumSizing = getMomentumSizeFactor(state, CONFIG, trendPhase.trendStrength, breakoutDetected);
-        
+        // MOMENTUM SIZING: use pre-computed momentumSizing (FIX: removed duplicate declaration — CRITICAL-3)
         // Apply all multipliers
         sniperMarginUSDT = sniperMarginUSDT * state.capitalGrowthFactor * entryQualityFactor;
         sniperMarginUSDT = sniperMarginUSDT * momentumSizing.sizeFactor;
@@ -10699,7 +10756,11 @@ function startDashboard() {
         // Tambahkan posisi aktif yang belum tercatat di Supabase
         const activeBonus = state.activePosition ? 1 : 0;
         const effectiveSupabase = result.count + activeBonus;
-        state.dailyTradeCount = Math.max(localCount, effectiveSupabase);
+        // FIX: only update if Supabase is strictly higher — never let it lower the local count (BUG-9)
+        if (effectiveSupabase > localCount) {
+          state.dailyTradeCount = effectiveSupabase;
+          log("INFO", `[DAILY LIMIT] Supabase sync: ${effectiveSupabase} trades (was ${localCount})`);
+        }
         state.dailyTradeDate  = result.date;
       }
     } catch (_) {}
@@ -10853,6 +10914,20 @@ async function main() {
 
   // Load data tersimpan
   loadPersistedData();
+
+  // FIX: moved BTC-only enforcement to startup, not inside the hot loop (BUG-4)
+  if (!CONFIG.ADAPTIVE_PAIR_ENABLED) {
+    const fixedSymbol = CONFIG.DEFAULT_SYMBOL || "BTCUSDT";
+    CONFIG.SYMBOL           = fixedSymbol;
+    state.currentPair       = fixedSymbol;
+    state.currentPairMode   = "BTC";
+    CONFIG.STOP_LOSS_PCT    = CONFIG.BTC_SPECIFIC_CONFIG?.STOP_LOSS_PCT    || CONFIG.STOP_LOSS_PCT;
+    CONFIG.TAKE_PROFIT_PCT  = CONFIG.BTC_SPECIFIC_CONFIG?.TAKE_PROFIT_PCT  || CONFIG.TAKE_PROFIT_PCT;
+    CONFIG.TRAILING_OFFSET  = CONFIG.BTC_SPECIFIC_CONFIG?.TRAILING_OFFSET  || CONFIG.TRAILING_OFFSET;
+    CONFIG.POSITION_SIZE_USDT = CONFIG.BTC_SPECIFIC_CONFIG?.POSITION_SIZE_USDT || CONFIG.POSITION_SIZE_USDT;
+    log("INFO", `Fixed pair mode: ${fixedSymbol} (BTC only)`);
+  }
+
   // Evaluasi phase langsung dari data yang sudah di-load
   // supaya dashboard tidak perlu menunggu trade close pertama
   state.phase = evaluatePhase(tradeLog, stats);

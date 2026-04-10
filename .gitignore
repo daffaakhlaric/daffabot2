@@ -5,3 +5,4 @@ logs/
 npm-debug.log*
 .vscode
 .kilo
+.claude

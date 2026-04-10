@@ -115,50 +115,53 @@ let liveData = {
 
 async function fetchLiveData() {
   // ── Bot state: ambil field non-API dari global.botState ──
+  // ── 1. Baca dari global.botState (sumber kebenaran utama) ─
   if (global.botState) {
     const s = global.botState;
-    if (s.price)         liveData.price        = s.price;
-    if (s.marketState)   liveData.marketState  = s.marketState;
-    if (s.lastDecision)  liveData.lastDecision = s.lastDecision;
-    if (s.botStatus)     liveData.botStatus    = s.botStatus;
-    if (s.tradeHistory?.length) tradeHistory   = s.tradeHistory;
-    // Jangan return — tetap fetch balance dari Bitget di bawah
+    if (s.price)                    liveData.price          = s.price;
+    if (s.marketState)              liveData.marketState    = s.marketState;
+    if (s.lastDecision)             liveData.lastDecision   = s.lastDecision;
+    if (s.botStatus)                liveData.botStatus      = s.botStatus;
+    if (s.tradeHistory?.length)     tradeHistory            = s.tradeHistory;
+
+    // Posisi dari bot selalu prioritas — termasuk saat DRY_RUN
+    // (Bitget tidak punya posisi jika DRY_RUN, jadi jangan overwrite dengan null)
+    liveData.activePosition = s.activePosition !== undefined
+      ? s.activePosition
+      : liveData.activePosition;
   } else {
     liveData.botStatus = "RUNNING";
   }
 
-  // ── Fetch semua data Bitget secara paralel ──────────────
+  // ── 2. Fetch Bitget secara paralel (balance + harga) ─────
   const [accsRes, posRes, tickRes] = await Promise.all([
-    // accounts (plural) → total USDT futures balance + equity
     bitgetRequest("GET", `/api/v2/mix/account/accounts?productType=${PRODUCT_TYPE}`),
-    // posisi aktif
     bitgetRequest("GET", `/api/v2/mix/position/single-position?symbol=${SYMBOL}&productType=${PRODUCT_TYPE}&marginCoin=USDT`),
-    // harga terkini
     bitgetRequest("GET", `/api/v2/mix/market/ticker?symbol=${SYMBOL}&productType=${PRODUCT_TYPE}`),
   ]);
 
-  // Simpan raw response untuk debug endpoint
-  liveData._raw = { accsRes, posRes, tickRes };
+  liveData._raw        = { accsRes, posRes, tickRes };
   liveData.lastUpdate  = Date.now();
 
-  // ── BALANCE & EQUITY ─────────────────────────────────────
+  // ── BALANCE & EQUITY (dari Bitget) ───────────────────────
   const accsOk = accsRes?.code === "00000" && Array.isArray(accsRes.data);
   if (accsOk) {
-    // cari akun USDT (ada bisa beberapa coin margin)
     const usdt = accsRes.data.find(a => a.marginCoin === "USDT") || accsRes.data[0];
     if (usdt) {
-      liveData.balance       = parseFloat(usdt.available        || 0);
-      liveData.equity        = parseFloat(usdt.usdtEquity       || usdt.equity || 0);
-      liveData.unrealizedPnL = parseFloat(usdt.unrealizedPL     || usdt.crossedUnrealizedPL || 0);
+      liveData.balance       = parseFloat(usdt.available                              || 0);
+      liveData.equity        = parseFloat(usdt.usdtEquity  || usdt.equity             || 0);
+      liveData.unrealizedPnL = parseFloat(usdt.unrealizedPL || usdt.crossedUnrealizedPL || 0);
     }
   }
 
   // ── POSISI AKTIF ─────────────────────────────────────────
+  // Prioritas: Bitget real position (live trading) > global.botState (dry run / fallback)
   const posOk = posRes?.code === "00000";
   if (posOk) {
     const pos = Array.isArray(posRes.data) ? posRes.data[0] : posRes.data;
     const qty = parseFloat(pos?.total || pos?.available || 0);
     if (pos && qty > 0) {
+      // Posisi real ada di Bitget → pakai data Bitget (lebih lengkap: PnL live)
       liveData.activePosition = {
         side:     pos.holdSide === "long" ? "LONG" : "SHORT",
         entry:    parseFloat(pos.openPriceAvg  || pos.openPrice || 0),
@@ -167,9 +170,9 @@ async function fetchLiveData() {
         pnlPct:   parseFloat(pos.unrealizedPLR || 0) * 100,
         leverage: parseFloat(pos.leverage      || 1),
       };
-    } else {
-      liveData.activePosition = null;
     }
+    // Jika Bitget bilang kosong TAPI bot punya posisi (DRY_RUN) → biarkan tetap dari botState
+    // Tidak overwrite dengan null
   }
 
   // ── HARGA ────────────────────────────────────────────────

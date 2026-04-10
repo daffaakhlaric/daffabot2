@@ -10,7 +10,8 @@
       "Bash(node --check btcStrategy.js)",
       "Bash(node -e \"require\\('./dashboard-server'\\); require\\('./pepe-futures-bot.js'\\)\")",
       "Bash(node -e \"require\\('./dashboard-server'\\).start\\(\\)\")",
-      "Bash(node -e \"require\\('./pepe-futures-bot.js'\\)\")"
+      "Bash(node -e \"require\\('./pepe-futures-bot.js'\\)\")",
+      "Bash(node --check featureEngine.js)"
     ]
   }
 }

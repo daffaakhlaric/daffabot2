@@ -29,7 +29,7 @@ const COOLDOWNS = {
 function getCached(key) {
   const entry = CACHE[key];
   if (!entry) return null;
-  const cooldown = COOLDOWNS[key] || 60000;
+  const cooldown = COOLDOWNS[key] || COOLDOWNS["exit"] || 20000;
   if (Date.now() - entry.ts < cooldown) return entry.result;
   return null;
 }
@@ -631,8 +631,9 @@ async function macroCorrelation({ btc_price, btc_change_24h }) {
 // ── EXIT OPTIMIZER ────────────────────────────────────────
 async function exitOptimizer({ side, entry, current_price, pnl_pct, peak_pnl_pct,
   current_sl, tp1, tp2, klines_15m, klines_5m, duration_minutes, setup_type }) {
-  const cached = getCached("exit");
-  if (cached && cached._entry === entry) return cached;
+  const exitCacheKey = `exit_${entry}`;
+  const cached = getCached(exitCacheKey);
+  if (cached) return cached;
 
   const t0 = Date.now();
   const pnl_usdt = 15 * 7 * (pnl_pct / 100);
@@ -666,8 +667,8 @@ async function exitOptimizer({ side, entry, current_price, pnl_pct, peak_pnl_pct
   const lat = Date.now() - t0;
 
   if (result) {
-    result._entry = entry;
-    setCache("exit", result);
+    setCache(exitCacheKey, result);
+    CACHE["exit"] = CACHE[exitCacheKey]; // kompatibilitas key umum
     if (global.botState) global.botState.features = { ...(global.botState.features || {}), exit: result };
     aiLog("EXIT", lat, `mode=${result.exit_mode} urgency=${result.urgency}`);
   }

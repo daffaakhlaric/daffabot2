@@ -1151,7 +1151,7 @@ function renderLogs() {
   const filtered=allLogs.filter(l=>matchLogFilter(l.msg));
   const wasAtBottom=box.scrollHeight-box.scrollTop-box.clientHeight<50;
 
-  box.innerHTML=filtered.slice(-500).map(l=>{
+  box.innerHTML=filtered.slice(-300).map(l=>{
     const cls=classifyLog(l.msg);
     const ts=fmtTime(l.ts);
     return `<div class="log-line"><span class="log-ts">${ts}</span><span class="${cls}">${l.msg.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span></div>`;
@@ -1235,7 +1235,7 @@ async function pollTrades() {
   try{const r=await fetch('/api/trades');if(r.ok){state.trades=await r.json();renderTrades();}}catch{}
 }
 async function pollLogs() {
-  try{const r=await fetch('/api/logs');if(r.ok){allLogs=await r.json();renderLogs();}}catch{}
+  try{const r=await fetch('/api/logs');if(r.ok){const fresh=await r.json();allLogs=Array.isArray(fresh)?fresh.slice(-300):allLogs;renderLogs();}}catch{}
 }
 
 // ══ NAVIGATION ══════════════════════════════════════════

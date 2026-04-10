@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const btcStrategy  = require("./btcStrategy");
 const orchestrator = require("./botOrchestrator");
 const riskGuard    = require("./riskGuard");
+const analytics    = require("./analytics");
 
 // ================= CONFIG =================
 const CONFIG = {
@@ -65,6 +66,15 @@ function log(msg) {
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
+
+function withTimeout(promise, ms, fallback = null) {
+  return Promise.race([
+    promise,
+    new Promise(resolve => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
+
+let _tickRunning = false;
 
 // ================= SAFE REQUEST =================
 function safeJsonParse(data) {
@@ -311,11 +321,20 @@ async function addPosition(level) {
 async function run() {
   while (true) {
     try {
+      // Bug 5: skip tick if previous still running
+      if (_tickRunning) {
+        log("⏭ Tick skipped — previous still running");
+        await sleep(CONFIG.CHECK_INTERVAL);
+        continue;
+      }
+      _tickRunning = true;
+
       const now = Date.now();
 
       const klines = await getKlines();
       if (!klines || klines.length < 10) {
         log("⚠️ INVALID KLINES");
+        _tickRunning = false;
         await sleep(CONFIG.CHECK_INTERVAL);
         continue;
       }
@@ -323,6 +342,12 @@ async function run() {
       const price = klines[klines.length - 1].close;
 
       const liveEquity = global.liveData?.equity || CONFIG.POSITION_SIZE_USDT * 10;
+
+      // Bug 1: compute equityCurve once per tick (not [])
+      const equityCurve = analytics.calcEquityCurve(
+        global.botState.tradeHistory || [],
+        parseFloat(process.env.INITIAL_EQUITY || "1000")
+      );
 
       // Fetch HTF klines setiap 3 tick (hemat API quota)
       if (tickCount % 3 === 0 || !klines_4h.length) {
@@ -342,17 +367,22 @@ async function run() {
 
       let decision;
       if (aiEnabled) {
-        decision = await orchestrator.orchestrate({
-          klines_1m:      klines,
-          klines_15m:     klines_15m.length ? klines_15m : klines,
-          klines_1h:      klines_1h.length  ? klines_1h  : klines,
-          klines_4h:      klines_4h.length  ? klines_4h  : klines,
-          price,
-          activePosition: state.activePosition,
-          tradeHistory:   global.botState.tradeHistory,
-          equityCurve:    [],
-          equity:         liveEquity,
-        });
+        // Bug 5: wrap dengan 12s timeout agar loop tidak hang
+        decision = await withTimeout(
+          orchestrator.orchestrate({
+            klines_1m:      klines,
+            klines_15m:     klines_15m.length ? klines_15m : klines,
+            klines_1h:      klines_1h.length  ? klines_1h  : klines,
+            klines_4h:      klines_4h.length  ? klines_4h  : klines,
+            price,
+            activePosition: state.activePosition,
+            tradeHistory:   global.botState.tradeHistory,
+            equityCurve,
+            equity:         liveEquity,
+          }),
+          12000,
+          { action: "HOLD", reason: "AI timeout >12s", source: "TIMEOUT_GUARD" }
+        );
       } else {
         decision = btcStrategy.analyze({ klines, position: state.activePosition });
         decision.source = "BTCSTRATEGY_ONLY_MODE";
@@ -385,11 +415,21 @@ async function run() {
       }
 
       if (decision.action === "LONG" || decision.action === "SHORT") {
-        if (!decision.entry) continue;
+        // Bug 2: gunakan == null agar entry angka valid (termasuk 0) tidak ter-skip
+        if (decision.entry == null) { _tickRunning = false; continue; }
+
+        // Bug 2: normalize entry — AI bisa return number atau object
+        const entryPrice = typeof decision.entry === "number"
+          ? decision.entry
+          : decision.entry?.price || price;
+
+        const entryConfig = typeof decision.entry === "object" && decision.entry !== null
+          ? decision.entry
+          : { price: entryPrice, sl: 0.7, trailActivate: 1.5, trailDrop: 0.3, pyr1: 1.5, pyr2: 3.0 };
 
         if (!state.activePosition && now - state.lastTradeTime > CONFIG.TRADE_COOLDOWN_MS) {
           const setup = decision.setup || "TREND";
-          await openPosition(decision.action, price, decision.entry, setup);
+          await openPosition(decision.action, entryPrice, entryConfig, setup);
         }
       }
 
@@ -436,7 +476,10 @@ async function run() {
         }
       }
 
+      _tickRunning = false;
+
     } catch (err) {
+      _tickRunning = false;
       log("ERROR: " + err.message);
     }
 

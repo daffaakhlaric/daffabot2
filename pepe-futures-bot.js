@@ -638,7 +638,6 @@ let state = {
   dailyLossPaused:      false,        // SMC: stop trading — daily loss limit hit
   lastTradeWasLoss:     false,        // SMC: require 1 confirmed setup after loss before re-entry
   lastSetupConfirmed:   false,        // SMC: tracks if 1 valid setup was seen after last loss
-  lastTradeTime:        0,            // timestamp of last close — used for 15-min cooldown gate
   hourlyTrades:         [],           // timestamps of trades this rolling hour
 
   // Mode 5: Scale-in tracking
@@ -736,7 +735,6 @@ let state = {
   consistencyRiskAdjust: 1.0,      // Risk multiplier from consistency
 
   // ═══ ADAPTIVE ENTRY THRESHOLD STATE ═══
-  lastTradeTime: 0,                 // Last trade timestamp for anti-overfilter
   antiOverfilterActive: false,      // Anti-overfilter triggered
   antiOverfilterRelaxedScore: 0,   // Reduced score requirement
 
@@ -9264,12 +9262,20 @@ async function tradingLoop() {
       }
 
       // ════════════════════════════════════════════════════════════
-      // CONSECUTIVE LOSS PAUSE — stop after 2 losses, require fresh structure
+      // CONSECUTIVE LOSS PAUSE — use checkDefenseMode() from btcStrategy
       // ════════════════════════════════════════════════════════════
-      if ((stats.lossStreak || 0) >= CONFIG.MAX_CONSEC_LOSSES) {
+      const lossStreakCheck = require('./btcStrategy').checkDefenseMode();
+      if (lossStreakCheck.blocked) {
         if (state.tickCount % 12 === 0)
-          log("FILTER", `[LOSS PAUSE] ${stats.lossStreak} consecutive losses ≥ ${CONFIG.MAX_CONSEC_LOSSES} → waiting for streak reset`);
+          log("FILTER", `[DEFENSE] ${lossStreakCheck.reason} → BLOCKED`);
         return;
+      }
+      if (lossStreakCheck.mode === "DEFENSE") {
+        CONFIG._activeDefenseMode = true;
+        CONFIG._defenseMinScore = lossStreakCheck.min_score;
+        CONFIG._defenseSizeMultiplier = lossStreakCheck.position_size;
+      } else {
+        CONFIG._activeDefenseMode = false;
       }
 
       // ════════════════════════════════════════════════════════════

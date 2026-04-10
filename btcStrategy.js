@@ -1192,6 +1192,7 @@ function checkBreakoutConfirmation(klines, trend) {
   const body = Math.abs(candle.close - candle.open);
   const upperWick = candle.high - Math.max(candle.close, candle.open);
   const lowerWick = Math.min(candle.close, candle.open) - candle.low;
+  const bodyPercent = range > 0 ? body / range : 0;
   
   const wickDominant = upperWick > body || lowerWick > body;
   
@@ -1456,6 +1457,8 @@ async function analyzeBTC(lastTrade = null, defenseMode = false) {
     const trend = ema20 > ema50 ? "BULLISH" : (ema20 < ema50 ? "BEARISH" : "NEUTRAL");
     const trendStrength = getTrendStrength(emaGap, volumeRatio);
     const marketPhase = getMarketPhase(emaGap, rsi);
+    
+    const signals = [];
     
     // ─── LAYER 1: RULE ENGINE ───────────────────────────────
     const indicators = {

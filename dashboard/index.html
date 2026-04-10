@@ -94,27 +94,28 @@ body{background:var(--bg-base);color:var(--text-primary);font-family:'Inter',san
 .chip-dot.live{background:var(--green)}
 
 /* ── CARD ── */
-.card{background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:16px}
-.card-title{font-size:10px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text-muted);margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.card{background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:16px;overflow:hidden}
+.card-title{font-size:10px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text-muted);margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
 
 /* ── SECTIONS ── */
-.section{display:none;padding:14px 16px;gap:10px;flex-direction:column}
+.section{display:none;padding:14px 16px;gap:10px;flex-direction:column;overflow-x:hidden}
 .section.active{display:flex}
 
 /* ── METRIC CARDS ── */
 .metrics-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
-.mc{background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px;cursor:default;position:relative}
+.mc{background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px;cursor:default;position:relative;min-width:0}
+.mc>*{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .mc:hover{border-color:var(--border-focus)}
 .mc-label{font-size:9px;font-weight:600;letter-spacing:.9px;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px}
-.mc-val{font-family:'JetBrains Mono',monospace;font-size:22px;font-weight:700;color:var(--text-primary);line-height:1}
-.mc-sub{font-size:11px;margin-top:4px;color:var(--text-muted)}
+.mc-val{font-family:'JetBrains Mono',monospace;font-size:22px;font-weight:700;color:var(--text-primary);line-height:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mc-sub{font-size:11px;margin-top:4px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mc-val.pos{color:var(--green)}
 .mc-val.neg{color:var(--red)}
 .mc-val.warn{color:var(--amber)}
 
 /* ── CHART ── */
-.chart-row{display:grid;grid-template-columns:65fr 35fr;gap:10px}
-.chart-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:16px}
+.chart-row{display:grid;grid-template-columns:65fr 35fr;gap:10px;overflow-x:hidden}
+.chart-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:16px;overflow:hidden}
 .chart-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:8px;flex-wrap:wrap}
 .chart-title{font-size:10px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text-muted)}
 .range-btns{display:flex;gap:4px}
@@ -195,7 +196,8 @@ body{background:var(--bg-base);color:var(--text-primary);font-family:'Inter',san
 
 /* ── RISK ── */
 .gauge-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
-.gauge-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:16px;text-align:center}
+.gauge-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:16px;text-align:center;min-width:0;overflow:hidden}
+.gauge-card>*{min-width:0}
 .gauge-label{font-size:9px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text-muted);margin-bottom:8px}
 .gauge-val{font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:700;margin:8px 0 4px}
 .gauge-sub{font-size:10px;color:var(--text-muted)}
@@ -268,15 +270,26 @@ body{background:var(--bg-base);color:var(--text-primary);font-family:'Inter',san
   #sidebar.mobile-open{display:flex}
   #main{padding-top:var(--topbar-h)}
   #bottom-nav{display:block}
-  .metrics-grid{grid-template-columns:repeat(2,1fr)}
-  .ai-grid{grid-template-columns:1fr}
-  .chart-row{grid-template-columns:1fr}
-  .gauge-grid{grid-template-columns:repeat(2,1fr)}
-  .perf-grid{grid-template-columns:1fr}
-  .perf-grid-3{grid-template-columns:1fr}
-  .section{padding:10px 10px}
   #app{flex-direction:column}
   #main{flex:1;overflow:hidden}
+  #content{overflow-x:hidden}
+  .section{padding:8px;gap:8px;overflow-x:hidden}
+  .section>*{max-width:100%;overflow-x:hidden;min-width:0;box-sizing:border-box}
+  .card{padding:10px;overflow-x:hidden}
+  .chart-card{padding:10px;overflow-x:hidden}
+  #ai-panel{padding:10px;overflow-x:hidden}
+  /* 2-column grids that fit on mobile */
+  .metrics-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}
+  .gauge-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}
+  .gauge-card{padding:10px}
+  /* single-column grids — must not be 2-col on small screens */
+  .chart-row{display:grid;grid-template-columns:1fr;gap:8px}
+  .ai-grid{display:grid;grid-template-columns:1fr;gap:8px}
+  .perf-grid{display:grid;grid-template-columns:1fr;gap:8px}
+  .perf-grid-3{display:grid;grid-template-columns:1fr;gap:8px}
+  /* metric card sizing */
+  .mc{padding:10px 12px}
+  .mc-val{font-size:18px}
 }
 </style>
 </head>

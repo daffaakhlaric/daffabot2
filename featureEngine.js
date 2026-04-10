@@ -279,7 +279,7 @@ async function judasSweepDetector({ klines_15m, klines_5m, klines_1m, price }) {
     h1_h:  lastH1.high?.toFixed(1),
     h1_l:  lastH1.low?.toFixed(1),
     h1_c:  lastH1.close?.toFixed(1),
-    htf_bias: "UNKNOWN",
+    htf_bias: global.botState?.features?.f1?.htf_bias || "UNKNOWN",
   };
   const userPrompt = PROMPTS.fillTemplate(PROMPTS.JUDAS.user, vars);
   const result = await claudeCall(PROMPTS.JUDAS.system, userPrompt);

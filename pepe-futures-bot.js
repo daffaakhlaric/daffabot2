@@ -75,6 +75,7 @@ function withTimeout(promise, ms, fallback = null) {
 }
 
 let _tickRunning = false;
+let _openingPosition = false;
 
 // ================= SAFE REQUEST =================
 function safeJsonParse(data) {
@@ -428,9 +429,14 @@ async function run() {
           ? decision.entry
           : { price: entryPrice, sl: 0.7, trailActivate: 1.5, trailDrop: 0.3, pyr1: 1.5, pyr2: 3.0 };
 
-        if (!state.activePosition && now - state.lastTradeTime > CONFIG.TRADE_COOLDOWN_MS) {
+        if (!state.activePosition && !_openingPosition && now - state.lastTradeTime > CONFIG.TRADE_COOLDOWN_MS) {
           const setup = decision.setup || "TREND";
-          await openPosition(decision.action, entryPrice, entryConfig, setup);
+          _openingPosition = true;
+          try {
+            await openPosition(decision.action, entryPrice, entryConfig, setup);
+          } finally {
+            _openingPosition = false;
+          }
         }
       }
 

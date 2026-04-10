@@ -136,7 +136,7 @@ async function orchestrate({
   }
 
   // STEP 6: Judas override (high-priority fake-move signal)
-  if (judas?.judas_detected && (judas.confidence || 0) >= 70 && judas.signal && judas.signal !== "HOLD") {
+  if (judas?.judas_detected && (judas.confidence || 0) >= 80 && judas.signal && judas.signal !== "HOLD" && (htf?.confidence || 0) >= 65) {
     const ct = isCounterTrend(judas.signal, htf, regime);
     if (ct.isCounter) {
       if (ct.againstRegime) {

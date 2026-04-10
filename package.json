@@ -5,6 +5,7 @@
   "main": "pepe-futures-bot.js",
   "scripts": {
     "start": "node pepe-futures-bot.js",
+    "dashboard": "node dashboard-server.js",
     "dry": "node pepe-futures-bot.js",
     "live": "node -e \"process.env.FORCE_LIVE=1\" pepe-futures-bot.js",
     "migrate": "node migrate.js",
@@ -16,7 +17,8 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.44.0",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "ws": "^8.17.0"
   },
   "engines": {
     "node": ">=18.0.0"

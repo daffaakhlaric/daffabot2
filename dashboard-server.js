@@ -18,10 +18,12 @@ const WebSocket = require("ws");
 const analytics = require("./analytics");
 
 // ── CONFIG ──────────────────────────────────────────────
-const PORT          = parseInt(process.env.MONITOR_PORT || process.env.DASHBOARD_PORT || "3000", 10);
-const INITIAL_EQ    = parseFloat(process.env.INITIAL_EQUITY || "1000");
-const SYMBOL        = process.env.BTC_SYMBOL || "BTCUSDT";
-const PRODUCT_TYPE  = "usdt-futures";
+const PORT             = parseInt(process.env.MONITOR_PORT || process.env.DASHBOARD_PORT || "3000", 10);
+const INITIAL_EQ       = parseFloat(process.env.INITIAL_EQUITY || "1000");
+const SYMBOL           = process.env.BTC_SYMBOL || "BTCUSDT";
+const PRODUCT_TYPE     = "usdt-futures";
+const POSITION_SIZE    = parseFloat(process.env.POSITION_SIZE_USDT || "15");
+const DEFAULT_LEVERAGE = parseFloat(process.env.LEVERAGE || "7");
 const TRADE_FILE    = path.join(__dirname, "trade-history.json");
 const DASHBOARD_DIR = path.join(__dirname, "dashboard");
 
@@ -183,10 +185,23 @@ async function fetchLiveData() {
     if (raw > 0) liveData.price = raw;
   }
 
+  // ── FALLBACK PnL — hitung dari harga live jika PnL masih 0 ─
+  // (terjadi saat: baru buka posisi, atau Bitget API gagal return PnL)
+  if (liveData.activePosition && liveData.price > 0) {
+    const p = liveData.activePosition;
+    if ((!p.pnl || p.pnl === 0) && p.entry > 0) {
+      const lev  = p.leverage || DEFAULT_LEVERAGE;
+      const pct  = p.side === "LONG"
+        ? (liveData.price - p.entry) / p.entry * 100
+        : (p.entry - liveData.price) / p.entry * 100;
+      p.pnlPct = +pct.toFixed(3);
+      p.pnl    = +(POSITION_SIZE * lev * (pct / 100)).toFixed(3);
+    }
+  }
+
   // ── STATUS KONEKSI ────────────────────────────────────────
   liveData.apiConnected = accsOk || posOk || tickOk;
 
-  // Log ke console hanya jika ada masalah
   if (!liveData.apiConnected) {
     console.warn("[DASHBOARD] ⚠️ Semua Bitget API gagal — cek API key / koneksi");
   }

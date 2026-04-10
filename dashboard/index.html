@@ -255,7 +255,7 @@
     </div>
     <div class="sep"></div>
     <div class="status-item" style="text-align:right">
-      <span class="status-label">UTC</span>
+      <span class="status-label">WIB</span>
       <span id="clock" class="muted" style="font-size:12px">—</span>
     </div>
   </div>
@@ -629,8 +629,7 @@ function fmtPct(n) {
 function pnlClass(n) { return n > 0 ? 'green' : n < 0 ? 'red' : 'muted'; }
 
 function tLabel(ts) {
-  const d = new Date(ts);
-  return d.toLocaleDateString('en-US', { month:'short', day:'numeric' });
+  return new Date(ts).toLocaleDateString('id-ID', { timeZone: TZ, month:'short', day:'numeric' });
 }
 
 function msHuman(ms) {
@@ -869,7 +868,7 @@ function updRisk(live, a) {
     `<div class="alert ${cls[a.t]}"><span class="alert-icon">${a.i}</span><span>${a.m}</span></div>`).join('');
 
   const rt = $('risk-ts');
-  if (rt) rt.textContent = 'Updated '+new Date().toLocaleTimeString();
+  if (rt) rt.textContent = 'Updated '+new Date().toLocaleTimeString('id-ID',{timeZone:TZ,hour12:false});
 }
 
 // ── BOT LOGS ────────────────────────────────────────────
@@ -912,7 +911,7 @@ function renderLogs(logs) {
   // Render semua log (sudah dibalik di server — terbaru di bawah)
   box.innerHTML = filtered.map(l => {
     const { cls, label } = classifyLog(l.msg);
-    const time = new Date(l.ts).toLocaleTimeString('en-US', { hour12: false });
+    const time = new Date(l.ts).toLocaleTimeString('id-ID', { timeZone: TZ, hour12: false });
     const escaped = l.msg.replace(/</g,'&lt;').replace(/>/g,'&gt;');
     return `<div class="log-line ${cls}">` +
       `<span class="log-time">${time}</span>` +
@@ -948,9 +947,16 @@ let thAllTrades = [];
 let thPage_cur  = 1;
 const TH_PER_PAGE = 25;
 
+const TZ = 'Asia/Jakarta'; // WIB UTC+7
+
 function getSession(ts) {
+  // Session berdasarkan UTC (bukan WIB) supaya klasifikasi market tetap akurat
   const h = new Date(ts).getUTCHours();
   return h < 8 ? 'Asia' : h < 14 ? 'London' : 'New York';
+}
+
+function fmtWIB(ts, opts) {
+  return new Date(ts).toLocaleString('id-ID', { timeZone: TZ, ...opts });
 }
 
 function minH(m) {
@@ -960,9 +966,11 @@ function minH(m) {
 
 function fmtTime(ts) {
   if (!ts) return '—';
-  const d = new Date(ts);
-  return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' +
-         d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:false});
+  return new Date(ts).toLocaleString('id-ID', {
+    timeZone: TZ,
+    day:'2-digit', month:'short',
+    hour:'2-digit', minute:'2-digit', hour12: false,
+  });
 }
 
 function renderTradeTable() {
@@ -1028,7 +1036,7 @@ function renderTradeTable() {
     </tr>`;
   }).join('');
 
-  setEl('th-updated', 'Updated '+new Date().toLocaleTimeString());
+  setEl('th-updated', 'Updated '+new Date().toLocaleTimeString('id-ID',{timeZone:TZ,hour12:false}));
 }
 
 function thPage(dir) {
@@ -1084,7 +1092,8 @@ function connect() {
 (async () => {
   setInterval(() => {
     const d=new Date();
-    const s=`${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}:${String(d.getUTCSeconds()).padStart(2,'0')} UTC`;
+    const wib = new Date(d.getTime() + 7*3600000);
+    const s=`${String(wib.getUTCHours()).padStart(2,'0')}:${String(wib.getUTCMinutes()).padStart(2,'0')}:${String(wib.getUTCSeconds()).padStart(2,'0')} WIB`;
     setEl('clock',s);
   }, 1000);
 

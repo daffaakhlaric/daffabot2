@@ -73,22 +73,22 @@ function analyze({ klines, position }) {
 
     // ================= TREND =================
     if (isBull && current.close > prev.high && volRatio > CONFIG.VOLUME_MIN) {
-      return buildEntry("LONG", price);
+      return buildEntry("LONG", price, "TREND");
     }
 
     if (isBear && current.close < prev.low && volRatio > CONFIG.VOLUME_MIN) {
-      return buildEntry("SHORT", price);
+      return buildEntry("SHORT", price, "TREND");
     }
 
     // ================= SNIPER =================
     const dist = Math.abs(price - ema50) / ema50 * 100;
 
     if (isBull && dist < CONFIG.PULLBACK_ZONE && current.close > current.open) {
-      return buildEntry("LONG", price);
+      return buildEntry("LONG", price, "SNIPER");
     }
 
     if (isBear && dist < CONFIG.PULLBACK_ZONE && current.close < current.open) {
-      return buildEntry("SHORT", price);
+      return buildEntry("SHORT", price, "SNIPER");
     }
 
     return { action: "HOLD" };
@@ -99,9 +99,10 @@ function analyze({ klines, position }) {
 }
 
 // ================= ENTRY =================
-function buildEntry(side, price) {
+function buildEntry(side, price, setup = "TREND") {
   return {
     action: side,
+    setup,
     entry: {
       price,
       sl: CONFIG.SL,

@@ -359,6 +359,9 @@ body{background:var(--bg-base);color:var(--text-primary);font-family:'Inter',san
     <div class="chip"><span class="chip-label">JUDAS</span><span id="chip-judas" class="chip-val">—</span></div>
     <div class="chip"><span class="chip-label">MOMENTUM</span><span id="chip-momentum" class="chip-val">—</span></div>
     <div class="chip"><span class="chip-label">PSYCH</span><span id="chip-psych" class="chip-val ok">NORMAL</span></div>
+    <div class="chip"><span class="chip-label">SCORE</span><span id="chip-score" class="chip-val">—</span></div>
+    <div class="chip"><span class="chip-label">MARKET</span><span id="chip-market" class="chip-val">—</span></div>
+    <div class="chip"><span class="chip-label">MODE</span><span id="chip-mode" class="chip-val">SAFE</span></div>
     <div class="chip" style="margin-left:auto"><span class="chip-label">SIGNAL</span><span id="chip-signal" class="chip-val">HOLD</span></div>
     <div class="chip"><span class="chip-label">UPTIME</span><span id="chip-uptime" class="chip-val mono">—</span></div>
   </div>
@@ -600,6 +603,11 @@ body{background:var(--bg-base);color:var(--text-primary);font-family:'Inter',san
       <div class="card">
         <div class="card-title">Account Balance (Bitget)</div>
         <div id="bal-rows"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Trade Memory — Setup Performance</div>
+        <div id="memory-rows"></div>
       </div>
     </div>
 
@@ -845,6 +853,19 @@ function updateStatusChips(live) {
 
   const ps = live?.psychState;
   const pEl=$('chip-psych'); if(pEl){pEl.textContent=ps?.state||'NORMAL';pEl.style.color=psychColor(ps?.state);}
+
+  // Decision score
+  const score = live?.decisionScore;
+  const scoreEl=$('chip-score');
+  if(scoreEl){scoreEl.textContent=score!=null?score:'—';scoreEl.className='chip-val'+(score>=75?' bull':score>=60?'':' bear');}
+
+  // Market state
+  const ms=live?.marketState||'—';
+  const msEl=$('chip-market');
+  if(msEl){msEl.textContent=ms;msEl.className='chip-val'+(ms==='TRENDING'?' bull':ms==='VOLATILE'?' bear':ms==='RANGING'?' range':'');}
+
+  // Bot mode
+  setTxt('chip-mode', live?.botMode||'SAFE');
 }
 
 function updateMetrics(live, a) {
@@ -1049,6 +1070,34 @@ function updateRisk(live, a) {
       r('Unrealized PnL',fmtPnL(live?.unrealizedPnL),(live?.unrealizedPnL||0)>=0?'var(--green)':'var(--red)')+
       r('Margin Used',live?.activePosition?.margin?fmtPrice(live.activePosition.margin):'—')+
       r('Margin Ratio',live?.activePosition?.marginRatio?live.activePosition.marginRatio.toFixed(2)+'%':'—');
+  }
+
+  // Trade Memory
+  const mem = live?.tradeMemory;
+  const mr=$('memory-rows');
+  if(mr){
+    if(mem && typeof mem==='object' && Object.keys(mem).length){
+      const entries=Object.entries(mem).sort((a,b)=>(b[1].win+b[1].loss)-(a[1].win+a[1].loss));
+      mr.innerHTML=entries.slice(0,8).map(([setup,s])=>{
+        const total=s.win+s.loss;
+        const wr=total>0?(s.win/total*100).toFixed(0):'—';
+        const allowed=!(total>=5&&s.win/total<0.3)&&s.streak>-3;
+        const streakText=s.streak>0?`+${s.streak}W`:s.streak<0?`${s.streak}L`:'—';
+        return `<div class="bal-row">
+          <span class="bal-key" style="display:flex;align-items:center;gap:6px">
+            <span style="width:5px;height:5px;border-radius:50%;background:${allowed?'var(--green)':'var(--red)'};display:inline-block;flex-shrink:0"></span>
+            ${setup}
+          </span>
+          <span class="bal-val" style="display:flex;gap:12px">
+            <span style="color:var(--text-muted)">${total}T</span>
+            <span style="color:${(+wr||0)>=50?'var(--green)':'var(--amber)'}">${wr}%</span>
+            <span style="color:${s.streak>0?'var(--green)':s.streak<0?'var(--red)':'var(--text-muted)'};font-size:10px">${streakText}</span>
+          </span>
+        </div>`;
+      }).join('');
+    } else {
+      mr.innerHTML='<div style="color:var(--text-muted);padding:8px 0;font-size:11px">No data yet</div>';
+    }
   }
 
   // Psych state

@@ -131,6 +131,23 @@ async function fetchLiveData() {
     liveData.activePosition = s.activePosition !== undefined
       ? s.activePosition
       : liveData.activePosition;
+
+    // Upgrade data: decision score, bot mode, trade memory
+    liveData.decisionScore = s.decisionScore ?? null;
+    liveData.botMode       = process.env.BOT_MODE || "SAFE";
+    try {
+      const tm = require("./tradeMemory");
+      liveData.tradeMemory = s.tradeMemory || null;
+      if (!liveData.tradeMemory) {
+        const rawStats = tm.getStats();
+        if (rawStats.length) {
+          liveData.tradeMemory = rawStats.reduce((acc, entry) => {
+            acc[entry.setup] = { win: 0, loss: 0, totalPnL: 0, streak: 0, ...require("./trade-memory.json")?.[entry.setup] };
+            return acc;
+          }, {});
+        }
+      }
+    } catch {}
   } else {
     liveData.botStatus = "RUNNING";
   }

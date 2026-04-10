@@ -11,7 +11,13 @@
       "Bash(node -e \"require\\('./dashboard-server'\\); require\\('./pepe-futures-bot.js'\\)\")",
       "Bash(node -e \"require\\('./dashboard-server'\\).start\\(\\)\")",
       "Bash(node -e \"require\\('./pepe-futures-bot.js'\\)\")",
-      "Bash(node --check featureEngine.js)"
+      "Bash(node --check featureEngine.js)",
+      "Bash(ls /c/Users/HP/Documents/Daffabot2/*.env*)",
+      "Bash(ls /c/Users/HP/Documents/Daffabot2/.env*)",
+      "Bash(node --check /c/Users/HP/Documents/Daffabot2/pepe-futures-bot.js)",
+      "Bash(node --check /c/Users/HP/Documents/Daffabot2/botOrchestrator.js)",
+      "Bash(node --check /c/Users/HP/Documents/Daffabot2/tradeMemory.js)",
+      "Bash(node --check /c/Users/HP/Documents/Daffabot2/dashboard-server.js)"
     ]
   }
 }

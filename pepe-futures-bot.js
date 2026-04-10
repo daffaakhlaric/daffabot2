@@ -8,6 +8,7 @@ const btcStrategy  = require("./btcStrategy");
 const orchestrator = require("./botOrchestrator");
 const riskGuard    = require("./riskGuard");
 const analytics    = require("./analytics");
+const tradeMemory  = require("./tradeMemory");
 
 // ================= CONFIG =================
 const CONFIG = {
@@ -24,9 +25,18 @@ const CONFIG = {
   TRADE_COOLDOWN_MS: 5 * 60 * 1000,
   CHECK_INTERVAL: 20000,
 
-  DRY_RUN:      process.env.DRY_RUN      !== "false",
-  AI_ENABLED:   process.env.AI_ENABLED   !== "false",
-  SNIPER_MODE:  process.env.SNIPER_MODE  !== "false",
+  DRY_RUN:        process.env.DRY_RUN        !== "false",
+  AI_ENABLED:     process.env.AI_ENABLED     !== "false",
+  SNIPER_MODE:    process.env.SNIPER_MODE    !== "false",
+  SNIPER_ENABLED: process.env.SNIPER_ENABLED !== "false",
+  MODE:           process.env.BOT_MODE       || "SAFE",   // SAFE | FAST
+  SNIPER_CONFIG: {
+    risk:               0.02,
+    leverage:           10,
+    tp_r:               [2, 5, 10],
+    max_daily_trades:   3,
+    post_loss_cooldown_ms: 30 * 60 * 1000,
+  },
 };
 
 // ================= STATE =================
@@ -297,6 +307,7 @@ async function closePosition(price, reason = "UNKNOWN") {
   };
 
   global.botState.tradeHistory.push(trade);
+  tradeMemory.updateSetupStats(trade.setup, trade.pnlUSDT);
 
   try {
     const dash = require("./dashboard-server");
@@ -381,6 +392,7 @@ async function run() {
             tradeHistory:   global.botState.tradeHistory,
             equityCurve,
             equity:         liveEquity,
+            mode:           CONFIG.MODE,
           }),
           12000,
           { action: "HOLD", reason: "AI timeout >12s", source: "TIMEOUT_GUARD" }

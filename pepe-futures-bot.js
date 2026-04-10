@@ -41,11 +41,19 @@ global.botState = {
   lastDecision:   "HOLD",
   marketState:    "UNKNOWN",
   botStatus:      "RUNNING",
+  logs:           [],
 };
 
 // ================= UTIL =================
 function log(msg) {
-  console.log(`[${new Date().toLocaleTimeString()}] ${msg}`);
+  const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  console.log(line);
+
+  // Simpan ke buffer — max 200 baris terakhir
+  global.botState.logs.push({ ts: Date.now(), msg });
+  if (global.botState.logs.length > 200) {
+    global.botState.logs.shift();
+  }
 }
 
 function sleep(ms) {

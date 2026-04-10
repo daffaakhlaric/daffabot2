@@ -7,7 +7,8 @@
       "Bash(node -e ':*)",
       "Bash(ls c:/Users/HP/Documents/Daffabot2/*.js)",
       "Bash(grep -E '\\\\.\\(js|mjs|ts\\)$')",
-      "Bash(node --check btcStrategy.js)"
+      "Bash(node --check btcStrategy.js)",
+      "Bash(node -e \"require\\('./dashboard-server'\\); require\\('./pepe-futures-bot.js'\\)\")"
     ]
   }
 }

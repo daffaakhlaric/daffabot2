@@ -36,9 +36,7 @@ function loadTrades() {
       return JSON.parse(fs.readFileSync(TRADE_FILE, "utf8"));
     }
   } catch {}
-  // Return demo data when no real trades exist
-  console.log("[DASHBOARD] No trade-history.json found — loading demo data");
-  return analytics.generateDemoTrades(60);
+  return [];
 }
 
 function saveTrades(trades) {
@@ -116,63 +114,78 @@ let liveData = {
 };
 
 async function fetchLiveData() {
-  // Prefer in-process bot state if available
+  // ── Bot state: ambil field non-API dari global.botState ──
   if (global.botState) {
     const s = global.botState;
-    liveData.price         = s.price || liveData.price;
-    liveData.balance       = s.balance || liveData.balance;
-    liveData.equity        = s.equity  || liveData.equity;
-    liveData.unrealizedPnL = s.unrealizedPnL || 0;
-    liveData.activePosition = s.activePosition || null;
-    liveData.marketState   = s.marketState  || "UNKNOWN";
-    liveData.lastDecision  = s.lastDecision || "HOLD";
-    liveData.botStatus     = s.botStatus    || "RUNNING";
-    liveData.lastUpdate    = Date.now();
-    liveData.apiConnected  = true;
-
-    if (s.tradeHistory && s.tradeHistory.length) {
-      tradeHistory = s.tradeHistory;
-    }
-    return;
+    if (s.price)         liveData.price        = s.price;
+    if (s.marketState)   liveData.marketState  = s.marketState;
+    if (s.lastDecision)  liveData.lastDecision = s.lastDecision;
+    if (s.botStatus)     liveData.botStatus    = s.botStatus;
+    if (s.tradeHistory?.length) tradeHistory   = s.tradeHistory;
+    // Jangan return — tetap fetch balance dari Bitget di bawah
+  } else {
+    liveData.botStatus = "RUNNING";
   }
 
-  // Fetch from Bitget REST API
-  const [accRes, posRes, tickRes] = await Promise.all([
-    bitgetRequest("GET", `/api/v2/mix/account/account?symbol=${SYMBOL}&productType=${PRODUCT_TYPE}&marginCoin=USDT`),
+  // ── Fetch semua data Bitget secara paralel ──────────────
+  const [accsRes, posRes, tickRes] = await Promise.all([
+    // accounts (plural) → total USDT futures balance + equity
+    bitgetRequest("GET", `/api/v2/mix/account/accounts?productType=${PRODUCT_TYPE}`),
+    // posisi aktif
     bitgetRequest("GET", `/api/v2/mix/position/single-position?symbol=${SYMBOL}&productType=${PRODUCT_TYPE}&marginCoin=USDT`),
+    // harga terkini
     bitgetRequest("GET", `/api/v2/mix/market/ticker?symbol=${SYMBOL}&productType=${PRODUCT_TYPE}`),
   ]);
 
-  liveData.apiConnected = !!(accRes || posRes || tickRes);
-  liveData.lastUpdate   = Date.now();
-  liveData.botStatus    = "RUNNING";
+  // Simpan raw response untuk debug endpoint
+  liveData._raw = { accsRes, posRes, tickRes };
+  liveData.lastUpdate  = Date.now();
 
-  if (accRes?.data) {
-    const acc = Array.isArray(accRes.data) ? accRes.data[0] : accRes.data;
-    liveData.balance = parseFloat(acc?.available || 0);
-    liveData.equity  = parseFloat(acc?.accountEquity || acc?.equity || 0);
-    liveData.unrealizedPnL = parseFloat(acc?.unrealizedPL || acc?.crossUnrealizedPL || 0);
+  // ── BALANCE & EQUITY ─────────────────────────────────────
+  const accsOk = accsRes?.code === "00000" && Array.isArray(accsRes.data);
+  if (accsOk) {
+    // cari akun USDT (ada bisa beberapa coin margin)
+    const usdt = accsRes.data.find(a => a.marginCoin === "USDT") || accsRes.data[0];
+    if (usdt) {
+      liveData.balance       = parseFloat(usdt.available        || 0);
+      liveData.equity        = parseFloat(usdt.usdtEquity       || usdt.equity || 0);
+      liveData.unrealizedPnL = parseFloat(usdt.unrealizedPL     || usdt.crossedUnrealizedPL || 0);
+    }
   }
 
-  if (posRes?.data) {
+  // ── POSISI AKTIF ─────────────────────────────────────────
+  const posOk = posRes?.code === "00000";
+  if (posOk) {
     const pos = Array.isArray(posRes.data) ? posRes.data[0] : posRes.data;
-    if (pos && parseFloat(pos.total || 0) > 0) {
+    const qty = parseFloat(pos?.total || pos?.available || 0);
+    if (pos && qty > 0) {
       liveData.activePosition = {
-        side:    pos.holdSide === "long" ? "LONG" : "SHORT",
-        entry:   parseFloat(pos.openPriceAvg || 0),
-        size:    parseFloat(pos.total || 0),
-        pnl:     parseFloat(pos.unrealizedPL || 0),
-        pnlPct:  parseFloat(pos.unrealizedPLR || 0) * 100,
-        leverage: parseFloat(pos.leverage || 1),
+        side:     pos.holdSide === "long" ? "LONG" : "SHORT",
+        entry:    parseFloat(pos.openPriceAvg  || pos.openPrice || 0),
+        size:     qty,
+        pnl:      parseFloat(pos.unrealizedPL  || pos.unrealisedPL || 0),
+        pnlPct:   parseFloat(pos.unrealizedPLR || 0) * 100,
+        leverage: parseFloat(pos.leverage      || 1),
       };
     } else {
       liveData.activePosition = null;
     }
   }
 
-  if (tickRes?.data) {
+  // ── HARGA ────────────────────────────────────────────────
+  const tickOk = tickRes?.code === "00000";
+  if (tickOk) {
     const tick = Array.isArray(tickRes.data) ? tickRes.data[0] : tickRes.data;
-    liveData.price = parseFloat(tick?.lastPr || tick?.last || 0);
+    const raw  = parseFloat(tick?.lastPr || tick?.last || tick?.close || 0);
+    if (raw > 0) liveData.price = raw;
+  }
+
+  // ── STATUS KONEKSI ────────────────────────────────────────
+  liveData.apiConnected = accsOk || posOk || tickOk;
+
+  // Log ke console hanya jika ada masalah
+  if (!liveData.apiConnected) {
+    console.warn("[DASHBOARD] ⚠️ Semua Bitget API gagal — cek API key / koneksi");
   }
 }
 
@@ -215,9 +228,24 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify(tradeHistory.slice(-200)));
   }
 
+  if (url === "/api/logs") {
+    const logs = global.botState?.logs || [];
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(logs));
+  }
+
   if (url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ status: "ok", uptime: process.uptime() }));
+  }
+
+  // Debug: lihat raw response Bitget → buka di browser: http://localhost:3000/api/debug
+  if (url === "/api/debug") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      liveData: { ...liveData, _raw: undefined }, // tanpa raw
+      raw: liveData._raw || "belum ada data — tunggu 5 detik",
+    }, null, 2));
   }
 
   res.writeHead(404, { "Content-Type": "text/plain" });

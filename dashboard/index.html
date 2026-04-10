@@ -211,6 +211,8 @@
   }
   .th-btn:hover:not(:disabled) { color:var(--text); border-color:var(--border2); }
   .th-btn:disabled { opacity:.35; cursor:default; }
+  .th-win  { display:inline-block; padding:1px 7px; border-radius:3px; font-size:9px; font-weight:700; letter-spacing:.1em; background:rgba(0,232,122,.12); color:var(--green); border:1px solid rgba(0,232,122,.25); }
+  .th-loss { display:inline-block; padding:1px 7px; border-radius:3px; font-size:9px; font-weight:700; letter-spacing:.1em; background:rgba(255,48,96,.12);  color:var(--red);   border:1px solid rgba(255,48,96,.25); }
 </style>
 </head>
 <body>
@@ -458,6 +460,7 @@
           <tr>
             <th>#</th>
             <th>TIME</th>
+            <th>RESULT</th>
             <th>SIDE</th>
             <th>SETUP</th>
             <th>ENTRY</th>
@@ -466,10 +469,11 @@
             <th>PnL USDT</th>
             <th>DURATION</th>
             <th>SESSION</th>
+            <th>REASON</th>
           </tr>
         </thead>
         <tbody id="th-body">
-          <tr><td colspan="10" class="th-empty">Loading trade history...</td></tr>
+          <tr><td colspan="12" class="th-empty">Loading trade history...</td></tr>
         </tbody>
       </table>
     </div>
@@ -989,29 +993,38 @@ function renderTradeTable() {
   if (!body) return;
 
   if (!slice.length) {
-    body.innerHTML = '<tr><td colspan="10" class="th-empty">No trades found</td></tr>';
+    body.innerHTML = '<tr><td colspan="12" class="th-empty">No trades found</td></tr>';
     return;
   }
 
   body.innerHTML = slice.map((t, i) => {
-    const idx      = total - start - i;                       // descending row #
-    const pnlPos   = t.pnl > 0;
-    const pnlCls   = pnlPos ? 'green' : 'red';
-    const sideCls  = t.side === 'LONG' ? 'green' : 'red';
-    const session  = getSession(t.timestamp);
-    const sesCls   = session === 'Asia' ? 'blue' : session === 'London' ? 'purple' : 'yellow';
-    const isDemo   = t.demo ? '<span style="color:var(--dim);font-size:8px"> DEMO</span>' : '';
+    const idx     = total - start - i;
+    const pnlPos  = t.pnl > 0;
+    const pnlCls  = pnlPos ? 'green' : 'red';
+    const sideCls = t.side === 'LONG' ? 'green' : 'red';
+    const session = getSession(t.timestamp);
+    const sesCls  = session === 'Asia' ? 'blue' : session === 'London' ? 'purple' : 'yellow';
+
+    // RESULT badge
+    const result  = t.result || (pnlPos ? 'WIN' : 'LOSS');
+    const resCls  = result === 'WIN' ? 'th-win' : 'th-loss';
+
+    // REASON — singkat
+    const reason  = t.reason || '—';
+
     return `<tr>
       <td class="th-num">${idx}</td>
       <td class="th-time">${fmtTime(t.exitTime || t.timestamp)}</td>
+      <td><span class="${resCls}">${result}</span></td>
       <td class="${sideCls}" style="font-weight:700">${t.side}</td>
       <td class="yellow">${t.setup || '—'}</td>
       <td>$${(t.entry||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
       <td>$${(t.exit||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
       <td class="${pnlCls}" style="font-weight:600">${pnlPos?'+':''}${(t.pnl||0).toFixed(2)}%</td>
-      <td class="${pnlCls}" style="font-weight:700">${pnlPos?'+':''}${(t.pnlUSDT||0).toFixed(2)} $${isDemo}</td>
+      <td class="${pnlCls}" style="font-weight:700">${pnlPos?'+':''}${(t.pnlUSDT||0).toFixed(2)} $</td>
       <td class="muted">${minH(t.duration)}</td>
       <td class="${sesCls}">${session}</td>
+      <td class="muted" style="font-size:10px;max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${reason}">${reason}</td>
     </tr>`;
   }).join('');
 

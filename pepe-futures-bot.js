@@ -151,7 +151,7 @@ async function openPosition(side, price, entryConfig, setup = "TREND") {
   global.botState.activePosition = { side, entry: price, leverage: CONFIG.LEVERAGE, setup };
 }
 
-async function closePosition(price) {
+async function closePosition(price, reason = "UNKNOWN") {
   const pos = state.activePosition;
   if (!pos) return;
 
@@ -162,7 +162,7 @@ async function closePosition(price) {
 
   const pnlUSDT = +(CONFIG.POSITION_SIZE_USDT * CONFIG.LEVERAGE * (pnl / 100)).toFixed(3);
 
-  log(`💰 CLOSE @ ${price} | PnL: ${pnl.toFixed(2)}% (${pnlUSDT > 0 ? "+" : ""}${pnlUSDT} USDT)`);
+  log(`💰 CLOSE @ ${price} | PnL: ${pnl.toFixed(2)}% (${pnlUSDT > 0 ? "+" : ""}${pnlUSDT} USDT) | ${reason}`);
 
   // Record trade for dashboard analytics
   const trade = {
@@ -172,6 +172,8 @@ async function closePosition(price) {
     exit:      price,
     pnl:       +pnl.toFixed(4),
     pnlUSDT,
+    result:    pnl > 0 ? "WIN" : "LOSS",
+    reason,
     duration:  Math.round((Date.now() - state.lastTradeTime) / 60000),
     timestamp: state.lastTradeTime || Date.now(),
     exitTime:  Date.now(),
@@ -218,12 +220,28 @@ async function run() {
       log(`🧠 ${decision.action}`);
 
       // Sync live state to global.botState for dashboard
-      global.botState.price         = price;
-      global.botState.lastDecision  = decision.action;
-      global.botState.botStatus     = "RUNNING";
-      global.botState.activePosition = state.activePosition
-        ? { side: state.activePosition.side, entry: state.activePosition.entry, leverage: CONFIG.LEVERAGE, setup: state.activePosition.setup }
-        : null;
+      global.botState.price        = price;
+      global.botState.lastDecision = decision.action;
+      global.botState.botStatus    = "RUNNING";
+
+      if (state.activePosition) {
+        const pos = state.activePosition;
+        const pnlPct = pos.side === "LONG"
+          ? (price - pos.entry) / pos.entry * 100
+          : (pos.entry - price) / pos.entry * 100;
+        const pnlUSDT = CONFIG.POSITION_SIZE_USDT * CONFIG.LEVERAGE * (pnlPct / 100);
+
+        global.botState.activePosition = {
+          side:     pos.side,
+          entry:    pos.entry,
+          leverage: CONFIG.LEVERAGE,
+          setup:    pos.setup,
+          pnlPct:   +pnlPct.toFixed(3),
+          pnl:      +pnlUSDT.toFixed(3),
+        };
+      } else {
+        global.botState.activePosition = null;
+      }
 
       if (decision.action === "LONG" || decision.action === "SHORT") {
         if (!decision.entry) continue;
@@ -237,7 +255,7 @@ async function run() {
       else if (decision.action === "CLOSE") {
         if (state.activePosition) {
           log(`📉 ${decision.reason}`);
-          await closePosition(price);
+          await closePosition(price, decision.reason || "SIGNAL");
         }
       }
 

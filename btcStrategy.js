@@ -161,6 +161,353 @@ const WHALE_CONFIG = {
 };
 
 // ═══════════════════════════════════════════════════════════════
+// AUTO PAUSE AFTER LOSS STREAK (Defense Mode)
+// ═══════════════════════════════════════════════════════════════
+
+const DEFENSE_CONFIG = {
+  CONSECUTIVE_LOSSES_DEFENSE: 2,
+  CONSECUTIVE_LOSSES_HARD_PAUSE: 3,
+  CONSECUTIVE_LOSSES_EXTREME: 4,
+  HARD_PAUSE_MINUTES_30: 30,
+  HARD_PAUSE_MINUTES_60: 60,
+  MIN_SCORE_DEFENSE: 85,
+  POSITION_SIZE_DEFENSE: 0.50,
+  SCALP_BLOCK_IN_DEFENSE: true
+};
+
+let DefenseState = {
+  consecutive_losses: 0,
+  defense_mode_active: false,
+  hard_pause_until: null,
+  trend_reset_required: false
+};
+
+function checkDefenseMode() {
+  const losses = ExpectancyState.consecutiveLosses;
+  const now = Date.now();
+  
+  if (DefenseState.hard_pause_until && now < DefenseState.hard_pause_until) {
+    return {
+      mode: "HARD_PAUSE",
+      blocked: true,
+      remaining_minutes: Math.ceil((DefenseState.hard_pause_until - now) / 60000),
+      reason: `Hard pause until ${new Date(DefenseState.hard_pause_until).toISOString()}`
+    };
+  }
+  
+  DefenseState.hard_pause_until = null;
+  
+  if (losses >= DEFENSE_CONFIG.CONSECUTIVE_LOSSES_EXTREME) {
+    DefenseState.defense_mode_active = true;
+    DefenseState.trend_reset_required = true;
+    DefenseState.hard_pause_until = now + (DEFENSE_CONFIG.HARD_PAUSE_MINUTES_60 * 60000);
+    return {
+      mode: "EXTREME",
+      blocked: true,
+      remaining_minutes: DEFENSE_CONFIG.HARD_PAUSE_MINUTES_60,
+      reason: `${losses} consecutive losses - 60min hard pause + trend reset required`,
+      trend_reset_required: true
+    };
+  }
+  
+  if (losses >= DEFENSE_CONFIG.CONSECUTIVE_LOSSES_HARD_PAUSE) {
+    DefenseState.defense_mode_active = true;
+    DefenseState.trend_reset_required = false;
+    DefenseState.hard_pause_until = now + (DEFENSE_CONFIG.HARD_PAUSE_MINUTES_30 * 60000);
+    return {
+      mode: "HARD_PAUSE",
+      blocked: true,
+      remaining_minutes: DEFENSE_CONFIG.HARD_PAUSE_MINUTES_30,
+      reason: `${losses} consecutive losses - 30min hard pause`
+    };
+  }
+  
+  if (losses >= DEFENSE_CONFIG.CONSECUTIVE_LOSSES_DEFENSE) {
+    DefenseState.defense_mode_active = true;
+    return {
+      mode: "DEFENSE",
+      blocked: false,
+      min_score: DEFENSE_CONFIG.MIN_SCORE_DEFENSE,
+      position_size: DEFENSE_CONFIG.POSITION_SIZE_DEFENSE,
+      scalp_blocked: DEFENSE_CONFIG.SCALP_BLOCK_IN_DEFENSE,
+      reason: `${losses} consecutive losses - Defense Mode ACTIVE`
+    };
+  }
+  
+  DefenseState.defense_mode_active = false;
+  DefenseState.trend_reset_required = false;
+  
+  return {
+    mode: "NORMAL",
+    blocked: false,
+    reason: "Normal operation"
+  };
+}
+
+function getDefenseStatus() {
+  const defense = checkDefenseMode();
+  return {
+    ...defense,
+    consecutive_losses: ExpectancyState.consecutiveLosses,
+    defense_mode_active: DefenseState.defense_mode_active,
+    trend_reset_required: DefenseState.trend_reset_required
+  };
+}
+
+function resetDefenseState() {
+  DefenseState = {
+    consecutive_losses: 0,
+    defense_mode_active: false,
+    hard_pause_until: null,
+    trend_reset_required: false
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// AI TRADE CLASSIFIER (SCALP vs TREND)
+// ═══════════════════════════════════════════════════════════════
+
+const SCALP_TREND_CONFIG = {
+  EMA_GAP_SCALP: 0.20,
+  ATR_SCALP: 0.18,
+  VOLUME_SCALP_MIN: 1.3,
+  SCALP_TARGET_MIN: 0.30,
+  SCALP_TARGET_MAX: 0.60,
+  TREND_TARGET_MIN: 1.00,
+  TREND_TARGET_MAX: 2.50,
+  SCALP_COOLDOWN_MINUTES: 30
+};
+
+function classifyMarketMode(emaGap, atrPct, breakout, volumeRatio) {
+  const isScalpConditions = 
+    emaGap < SCALP_TREND_CONFIG.EMA_GAP_SCALP &&
+    atrPct < SCALP_TREND_CONFIG.ATR_SCALP &&
+    !breakout;
+  
+  const isTrendConditions =
+    emaGap >= SCALP_TREND_CONFIG.EMA_GAP_SCALP &&
+    atrPct >= SCALP_TREND_CONFIG.ATR_SCALP &&
+    breakout;
+  
+  let mode = "TRANSITION";
+  
+  if (isScalpConditions) {
+    mode = "SCALP";
+  } else if (isTrendConditions) {
+    mode = "TREND";
+  }
+  
+  const scalpVolumeOK = volumeRatio >= SCALP_TREND_CONFIG.VOLUME_SCALP_MIN;
+  
+  return {
+    mode,
+    scalpVolumeOK,
+    reasons: [
+      `EMA gap ${emaGap.toFixed(3)}% ${emaGap < SCALP_TREND_CONFIG.EMA_GAP_SCALP ? '<' : '≥'} ${SCALP_TREND_CONFIG.EMA_GAP_SCALP}%`,
+      `ATR ${atrPct.toFixed(3)}% ${atrPct < SCALP_TREND_CONFIG.ATR_SCALP ? '<' : '≥'} ${SCALP_TREND_CONFIG.ATR_SCALP}%`,
+      `Breakout: ${breakout}`,
+      `Volume: ${volumeRatio.toFixed(2)}x ${scalpVolumeOK ? 'OK' : 'low'}`
+    ]
+  };
+}
+
+function getTradeTargets(mode) {
+  if (mode === "SCALP") {
+    return {
+      target_min: SCALP_TREND_CONFIG.SCALP_TARGET_MIN,
+      target_max: SCALP_TREND_CONFIG.SCALP_TARGET_MAX,
+      type: "TIGHT"
+    };
+  }
+  return {
+    target_min: SCALP_TREND_CONFIG.TREND_TARGET_MIN,
+    target_max: SCALP_TREND_CONFIG.TREND_TARGET_MAX,
+    type: "NORMAL"
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SESSION FILTER (Anti-Asia Chop)
+// ═══════════════════════════════════════════════════════════════
+
+const SESSION_CONFIG = {
+  ASIA_START: 0,
+  ASIA_END: 7,
+  LONDON_START: 7,
+  LONDON_END: 13,
+  NY_START: 13,
+  NY_END: 22,
+  DEAD_ZONE_START: 22,
+  DEAD_ZONE_END: 0,
+  ASIA_VOLUME_MULTIPLIER: 1.5,
+  DEAD_ZONE_WHALE_THRESHOLD: 50
+};
+
+function getCurrentSession() {
+  const now = new Date();
+  const utcHour = now.getUTCHours();
+  
+  if (utcHour >= SESSION_CONFIG.ASIA_START && utcHour < SESSION_CONFIG.ASIA_END) {
+    return "ASIA";
+  }
+  if (utcHour >= SESSION_CONFIG.LONDON_START && utcHour < SESSION_CONFIG.LONDON_END) {
+    return "LONDON";
+  }
+  if (utcHour >= SESSION_CONFIG.NY_START && utcHour < SESSION_CONFIG.NY_END) {
+    return "NY";
+  }
+  return "DEAD_ZONE";
+}
+
+function checkSessionFilter(mode, trendStrength, volumeRatio, breakout, whaleScore) {
+  const session = getCurrentSession();
+  
+  if (session === "ASIA") {
+    const strongTrend = trendStrength === "STRONG";
+    const volumeOK = volumeRatio >= SESSION_CONFIG.ASIA_VOLUME_MULTIPLIER;
+    const breakoutOK = breakout;
+    
+    if (!strongTrend || !volumeOK || !breakoutOK) {
+      return {
+        valid: false,
+        session,
+        mode: "STRICT",
+        reason: `ASIA SESSION: BLOCKED - need STRONG trend (${strongTrend}), Vol≥1.5x (${volumeOK}), Breakout (${breakoutOK})`,
+        blocked: true
+      };
+    }
+    
+    return {
+      valid: true,
+      session,
+      mode: "STRICT",
+      reason: "ASIA SESSION: Allowed - STRONG trend + Volume OK + Breakout confirmed"
+    };
+  }
+  
+  if (session === "DEAD_ZONE") {
+    const whaleOK = whaleScore >= SESSION_CONFIG.DEAD_ZONE_WHALE_THRESHOLD;
+    const breakoutOK = breakout;
+    
+    if (!whaleOK && !breakoutOK) {
+      return {
+        valid: false,
+        session,
+        mode: "LOW_LIQUIDITY",
+        reason: `DEAD ZONE (${session}): BLOCKED - Low liquidity unless whale (${whaleOK}) or breakout (${breakoutOK})`,
+        blocked: true
+      };
+    }
+    
+    return {
+      valid: true,
+      session,
+      mode: "LOW_LIQUIDITY",
+      reason: `DEAD ZONE: Allowed - Whale detected (${whaleOK})`
+    };
+  }
+  
+  return {
+    valid: true,
+    session,
+    mode: "NORMAL",
+    reason: `${session} SESSION: Normal mode`
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// WHALE TRAP DETECTION
+// ═══════════════════════════════════════════════════════════════
+
+const TRAP_CONFIG = {
+  WICK_RATIO_TRAP: 0.60,
+  REVERSAL_CONFIRMATION: true
+};
+
+function detectWhaleTrap(klines, trend) {
+  const candle = klines[klines.length - 1];
+  const prevCandle = klines[klines.length - 2];
+  
+  const range = candle.high - candle.low;
+  const body = Math.abs(candle.close - candle.open);
+  const upperWick = candle.high - Math.max(candle.close, candle.open);
+  const lowerWick = Math.min(candle.close, candle.open) - candle.low;
+  
+  const volumes = klines.map(k => k.volume);
+  const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  const currentVolume = volumes[volumes.length - 1];
+  const volumeRatio = currentVolume / avgVolume;
+  
+  const wickRatio = range > 0 ? Math.max(upperWick, lowerWick) / range : 0;
+  const wickDominant = wickRatio >= TRAP_CONFIG.WICK_RATIO_TRAP;
+  
+  let trapType = null;
+  let trapValid = false;
+  const reasons = [];
+  
+  if (trend === "BULLISH") {
+    const brokeHigh = candle.close > prevCandle.high;
+    const longUpperWick = upperWick > lowerWick && upperWick > body * 0.5;
+    const volumeSpikeNoContinue = volumeRatio >= 1.3 && candle.close < candle.open;
+    
+    if (brokeHigh && longUpperWick) {
+      trapType = "LONG_TRAP";
+      trapValid = true;
+      reasons.push("Broke high but long upper wick - fake breakout");
+    }
+    
+    if (volumeSpikeNoContinue) {
+      trapType = "LONG_TRAP";
+      trapValid = true;
+      reasons.push("Volume spike but rejection - likely trap");
+    }
+  } else if (trend === "BEARISH") {
+    const brokeLow = candle.close < prevCandle.low;
+    const longLowerWick = lowerWick > upperWick && lowerWick > body * 0.5;
+    const volumeSpikeNoContinue = volumeRatio >= 1.3 && candle.close > candle.open;
+    
+    if (brokeLow && longLowerWick) {
+      trapType = "SHORT_TRAP";
+      trapValid = true;
+      reasons.push("Broke low but long lower wick - fake breakout");
+    }
+    
+    if (volumeSpikeNoContinue) {
+      trapType = "SHORT_TRAP";
+      trapValid = true;
+      reasons.push("Volume spike but rejection - likely trap");
+    }
+  }
+  
+  const reversal = TRAP_CONFIG.REVERSAL_CONFIRMATION &&
+    prevCandle.close < prevCandle.open && candle.close > candle.open ||
+    prevCandle.close > prevCandle.open && candle.close < candle.open;
+  
+  if (wickDominant && reversal) {
+    trapType = trapType || "REVERSAL_TRAP";
+    trapValid = true;
+    reasons.push("Wick dominant + immediate reversal");
+  }
+  
+  return {
+    trapDetected: trapValid,
+    trapType,
+    wickRatio,
+    wickDominant,
+    reversal,
+    reasons,
+    blockTrade: trapValid
+  };
+}
+
+function getTrapStatus() {
+  return {
+    config: TRAP_CONFIG,
+    currentSession: getCurrentSession()
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
 // FETCH KLINES
 // ═══════════════════════════════════════════════════════════════
 
@@ -788,6 +1135,284 @@ function getExpectedMove(trendStrength) {
   return null;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 🎯 ENTRY TIMING ENGINE (CRITICAL)
+// ═══════════════════════════════════════════════════════════════
+
+const ENTRY_TIMING_CONFIG = {
+  CANDLE_BODY_MIN: 0.60,           // Body ≥ 60% of range
+  CANDLE_SIZE_MULTIPLIER: 1.3,     // OR size ≥ 1.3x previous candle
+  MICRO_NOISE_THRESHOLD: 0.15,      // Block if last 3 candles < 0.15%
+  MIN_MOMENTUM_MOVE: 0.25,          // Price move ≥ 0.25% BEFORE entry
+  ANTI_REENTRY_MINUTES: 3,         // No re-entry if last trade < 3 min
+  OVERTRADE_WINDOW_MINUTES: 5,      // 2 trades in 5 min = cooldown
+  OVERTRADE_COOLDOWN_MINUTES: 10,  // Force cooldown 10 min
+  FAKE_WICK_RATIO: 1.0             // Wick > body = fake
+};
+
+let EntryTimingState = {
+  lastTradeTime: null,
+  recentTradeTimes: [],
+  lastEntryPrice: null
+};
+
+function checkCandleExpansion(klines) {
+  const candle = klines[klines.length - 1];
+  const prevCandle = klines[klines.length - 2];
+  
+  const range = candle.high - candle.low;
+  const body = Math.abs(candle.close - candle.open);
+  const bodyPercent = range > 0 ? body / range : 0;
+  
+  const prevRange = prevCandle.high - prevCandle.low;
+  const prevBody = Math.abs(prevCandle.close - prevCandle.open);
+  const sizeRatio = prevBody > 0 ? body / prevBody : 0;
+  
+  const passesBody = bodyPercent >= ENTRY_TIMING_CONFIG.CANDLE_BODY_MIN;
+  const passesSize = sizeRatio >= ENTRY_TIMING_CONFIG.CANDLE_SIZE_MULTIPLIER;
+  
+  return {
+    valid: passesBody || passesSize,
+    bodyPercent,
+    sizeRatio,
+    passesBody,
+    passesSize,
+    reasons: [
+      `body ${(bodyPercent * 100).toFixed(1)}% ${passesBody ? '≥' : '<'} ${ENTRY_TIMING_CONFIG.CANDLE_BODY_MIN * 100}%`,
+      `size ratio ${sizeRatio.toFixed(2)}x ${passesSize ? '≥' : '<'} ${ENTRY_TIMING_CONFIG.CANDLE_SIZE_MULTIPLIER}x`
+    ]
+  };
+}
+
+function checkBreakoutConfirmation(klines, trend) {
+  const candle = klines[klines.length - 1];
+  const prevCandle = klines[klines.length - 2];
+  
+  const range = candle.high - candle.low;
+  const body = Math.abs(candle.close - candle.open);
+  const upperWick = candle.high - Math.max(candle.close, candle.open);
+  const lowerWick = Math.min(candle.close, candle.open) - candle.low;
+  
+  const wickDominant = upperWick > body || lowerWick > body;
+  
+  let valid = false;
+  let reasons = [];
+  
+  if (trend === "LONG") {
+    const closeAbovePrevHigh = candle.close > prevCandle.high;
+    const notJustWick = !wickDominant || candle.close > prevCandle.open;
+    
+    valid = closeAbovePrevHigh && (notJustWick || bodyPercent > 0.5);
+    reasons = [
+      `close ${closeAbovePrevHigh ? '>' : '≤'} prev high: ${closeAbovePrevHigh}`,
+      `not just wick: ${notJustWick}`
+    ];
+  } else if (trend === "SHORT") {
+    const closeBelowPrevLow = candle.close < prevCandle.low;
+    const notJustWick = !wickDominant || candle.close < prevCandle.open;
+    
+    valid = closeBelowPrevLow && (notJustWick || bodyPercent > 0.5);
+    reasons = [
+      `close ${closeBelowPrevLow ? '<' : '≥'} prev low: ${closeBelowPrevLow}`,
+      `not just wick: ${notJustWick}`
+    ];
+  }
+  
+  return { valid, reasons };
+}
+
+function checkMicroNoise(klines) {
+  const last3 = klines.slice(-3);
+  const currentPrice = klines[klines.length - 1].close;
+  
+  const moves = last3.map((c, i) => {
+    if (i === 0) return Math.abs(c.close - c.open) / c.open * 100;
+    return Math.abs(c.close - last3[i-1].close) / last3[i-1].close * 100;
+  });
+  
+  const avgMove = moves.reduce((a, b) => a + b, 0) / moves.length;
+  const maxMove = Math.max(...moves);
+  
+  const isSideways = maxMove < ENTRY_TIMING_CONFIG.MICRO_NOISE_THRESHOLD;
+  
+  return {
+    valid: !isSideways,
+    avgMove,
+    maxMove,
+    reasons: [`avg move ${avgMove.toFixed(3)}%, max ${maxMove.toFixed(3)}%, threshold ${ENTRY_TIMING_CONFIG.MICRO_NOISE_THRESHOLD}%`]
+  };
+}
+
+function checkMinimumMomentum(klines, trend) {
+  const candle = klines[klines.length - 1];
+  const prevCandle = klines[klines.length - 2];
+  
+  let move = 0;
+  if (trend === "LONG") {
+    move = ((candle.close - prevCandle.close) / prevCandle.close) * 100;
+  } else if (trend === "SHORT") {
+    move = ((prevCandle.close - candle.close) / prevCandle.close) * 100;
+  }
+  
+  const valid = move >= ENTRY_TIMING_CONFIG.MIN_MOMENTUM_MOVE;
+  
+  return {
+    valid,
+    momentum: move,
+    threshold: ENTRY_TIMING_CONFIG.MIN_MOMENTUM_MOVE,
+    reasons: [`momentum ${move.toFixed(3)}% ${valid ? '≥' : '<'} ${ENTRY_TIMING_CONFIG.MIN_MOMENTUM_MOVE}%`]
+  };
+}
+
+function checkAntiReentry() {
+  if (!EntryTimingState.lastTradeTime) return { valid: true, reason: "no previous trade" };
+  
+  const minutesSince = (Date.now() - EntryTimingState.lastTradeTime) / (1000 * 60);
+  const valid = minutesSince >= ENTRY_TIMING_CONFIG.ANTI_REENTRY_MINUTES;
+  
+  return {
+    valid,
+    minutesSince: Math.round(minutesSince * 10) / 10,
+    threshold: ENTRY_TIMING_CONFIG.ANTI_REENTRY_MINUTES,
+    reason: valid ? `OK (${Math.round(minutesSince)} min since last trade)` : `BLOCK: last trade ${minutesSince.toFixed(1)} min ago`
+  };
+}
+
+function checkOvertrading() {
+  const now = Date.now();
+  const windowMs = ENTRY_TIMING_CONFIG.OVERTRADE_WINDOW_MINUTES * 60 * 1000;
+  
+  EntryTimingState.recentTradeTimes = EntryTimingState.recentTradeTimes.filter(t => now - t < windowMs);
+  
+  const tradesInWindow = EntryTimingState.recentTradeTimes.length;
+  
+  if (tradesInWindow >= 2) {
+    return {
+      valid: false,
+      tradesInWindow,
+      cooldownMinutes: ENTRY_TIMING_CONFIG.OVERTRADE_COOLDOWN_MINUTES,
+      reason: `BLOCK: ${tradesInWindow} trades in ${ENTRY_TIMING_CONFIG.OVERTRADE_WINDOW_MINUTES} min - force cooldown`
+    };
+  }
+  
+  return {
+    valid: true,
+    tradesInWindow,
+    reason: `${tradesInWindow} trade(s) in window - OK`
+  };
+}
+
+function checkFakeBreakout(klines, whale) {
+  const candle = klines[klines.length - 1];
+  const range = candle.high - candle.low;
+  const body = Math.abs(candle.close - candle.open);
+  const upperWick = candle.high - Math.max(candle.close, candle.open);
+  const lowerWick = Math.min(candle.close, candle.open) - candle.low;
+  
+  const wickToBody = body > 0 ? Math.max(upperWick, lowerWick) / body : 999;
+  const wickDominant = Math.max(upperWick, lowerWick) > body;
+  
+  const volumeNoFollow = whale.volumeSpike && wickDominant;
+  
+  let valid = true;
+  const reasons = [];
+  
+  if (wickDominant && wickToBody >= ENTRY_TIMING_CONFIG.FAKE_WICK_RATIO) {
+    valid = false;
+    reasons.push(`wick > body (${wickToBody.toFixed(2)}x)`);
+  }
+  
+  if (volumeNoFollow) {
+    valid = false;
+    reasons.push("volume spike but no follow-through");
+  }
+  
+  const prevCandle = klines[klines.length - 2];
+  const rejectionCandle = (candle.close < candle.open && prevCandle.close > prevCandle.open) ||
+                        (candle.close > candle.open && prevCandle.close < prevCandle.open);
+  
+  if (rejectionCandle && Math.abs(candle.close - candle.open) < body * 0.5) {
+    valid = false;
+    reasons.push("immediate rejection candle");
+  }
+  
+  return {
+    valid,
+    reasons
+  };
+}
+
+function applyEntryTimingEngine(klines, trend, whale, lastTrade) {
+  const checks = {
+    candleExpansion: checkCandleExpansion(klines),
+    breakoutConfirmation: checkBreakoutConfirmation(klines, trend),
+    microNoise: checkMicroNoise(klines),
+    momentum: checkMinimumMomentum(klines, trend),
+    antiReentry: checkAntiReentry(),
+    overtrading: checkOvertrading(),
+    fakeBreakout: checkFakeBreakout(klines, whale)
+  };
+  
+  const allValid = 
+    checks.candleExpansion.valid &&
+    checks.breakoutConfirmation.valid &&
+    checks.microNoise.valid &&
+    checks.momentum.valid &&
+    checks.antiReentry.valid &&
+    checks.overtrading.valid &&
+    checks.fakeBreakout.valid;
+  
+  const failedChecks = Object.entries(checks)
+    .filter(([_, v]) => !v.valid)
+    .map(([k, v]) => ({ check: k, ...v }));
+  
+  let primaryFailure = "ENTRY TIMING FAILED";
+  if (failedChecks.length > 0) {
+    primaryFailure = failedChecks[0].reason || failedChecks[0].check;
+  }
+  
+  return {
+    timing_valid: allValid,
+    allChecks: checks,
+    failedChecks,
+    primaryFailure,
+    reasons: {
+      candleExpansion: checks.candleExpansion.reasons,
+      breakout: checks.breakoutConfirmation.reasons,
+      microNoise: checks.microNoise.reasons,
+      momentum: checks.momentum.reasons,
+      antiReentry: [checks.antiReentry.reason],
+      overtrading: [checks.overtrading.reason],
+      fakeBreakout: checks.fakeBreakout.reasons
+    }
+  };
+}
+
+function recordTimingTrade() {
+  const now = Date.now();
+  EntryTimingState.lastTradeTime = now;
+  EntryTimingState.recentTradeTimes.push(now);
+  EntryTimingState.lastEntryPrice = null;
+}
+
+function getEntryTimingStatus() {
+  return {
+    lastTradeAgo: EntryTimingState.lastTradeTime 
+      ? Math.round((Date.now() - EntryTimingState.lastTradeTime) / 60000)
+      : null,
+    recentTradesCount: EntryTimingState.recentTradeTimes.length,
+    config: ENTRY_TIMING_CONFIG
+  };
+}
+
+function resetEntryTiming() {
+  EntryTimingState = {
+    lastTradeTime: null,
+    recentTradeTimes: [],
+    lastEntryPrice: null
+  };
+}
+
 function calculatePositionSize(baseSize, trendStrength, defenseMode) {
   if (defenseMode) return baseSize * POSITION_DEFENSE;
   if (trendStrength === "STRONG") return baseSize * POSITION_STRONG;
@@ -868,14 +1493,161 @@ async function analyzeBTC(lastTrade = null, defenseMode = false) {
     // ─── 🐋 WHALE TRACKING ENGINE ─────────────────────────────
     const whale = detectWhaleActivity(klines, currentPrice);
     
-    let priority = getPriority(trendStrength, breakout.valid, lastTrade?.win, defenseMode);
+    // ─── 🛡️ DEFENSE MODE CHECK (First Priority) ───────────────
+    const defenseCheck = checkDefenseMode();
+    
+    if (defenseCheck.blocked && defenseCheck.mode === "HARD_PAUSE") {
+      return {
+        symbol: SYMBOL,
+        action: "HOLD",
+        confidence: 0,
+        trend,
+        trend_strength: trendStrength,
+        reason: `DEFENSE MODE: ${defenseCheck.reason}`,
+        indicators: { rsi, atrPct: atrPct?.toFixed(3), volumeRatio: volumeRatio?.toFixed(2) },
+        signal: "DEFENSE_BLOCKED",
+        market_phase: marketPhase,
+        mode: "SCALP",
+        session: getCurrentSession(),
+        defense: {
+          defense_mode: true,
+          mode: defenseCheck.mode,
+          cooldown_active: true,
+          loss_streak: ExpectancyState.consecutiveLosses,
+          remaining_minutes: defenseCheck.remaining_minutes
+        },
+        whale: { score: whale.score, signals: whale.signals },
+        expectancy: getExpectancyForDecision(),
+        mlWeights: getMLWeights(),
+        selfLearn: getSelfLearnStatus(),
+        filters: {
+          timing_valid: false,
+          session_valid: false,
+          trap_detected: false
+        },
+        timestamp: Date.now()
+      };
+    }
+    
+    // ─── 🧠 AI TRADE CLASSIFIER (SCALP vs TREND) ──────────────
+    const marketMode = classifyMarketMode(emaGap, atrPct, breakout.valid, volumeRatio);
+    
+    if (marketMode.mode === "SCALP" && defenseCheck.defense_mode_active && DEFENSE_CONFIG.SCALP_BLOCK_IN_DEFENSE) {
+      return {
+        symbol: SYMBOL,
+        action: "HOLD",
+        confidence: 0,
+        trend,
+        trend_strength: trendStrength,
+        reason: `DEFENSE: SCALP blocked in Defense Mode`,
+        indicators: { rsi, atrPct: atrPct?.toFixed(3), volumeRatio: volumeRatio?.toFixed(2) },
+        signal: "SCALP_BLOCKED_DEFENSE",
+        market_phase: marketPhase,
+        mode: marketMode.mode,
+        session: getCurrentSession(),
+        defense: {
+          defense_mode: true,
+          mode: defenseCheck.mode,
+          cooldown_active: false,
+          loss_streak: ExpectancyState.consecutiveLosses
+        },
+        whale: { score: whale.score, signals: whale.signals },
+        expectancy: getExpectancyForDecision(),
+        mlWeights: getMLWeights(),
+        selfLearn: getSelfLearnStatus(),
+        filters: {
+          timing_valid: false,
+          session_valid: false,
+          trap_detected: false
+        },
+        timestamp: Date.now()
+      };
+    }
+    
+    // ─── 🐋 WHALE TRAP DETECTION ───────────────────────────────
+    const trapDetection = detectWhaleTrap(klines, trend);
+    
+    if (trapDetection.blockTrade) {
+      return {
+        symbol: SYMBOL,
+        action: "HOLD",
+        confidence: 0,
+        trend,
+        trend_strength: trendStrength,
+        reason: `WHALE TRAP: ${trapDetection.reasons.join(", ")}`,
+        indicators: { rsi, atrPct: atrPct?.toFixed(3), volumeRatio: volumeRatio?.toFixed(2) },
+        signal: "TRAP_DETECTED",
+        market_phase: marketPhase,
+        mode: marketMode.mode,
+        session: getCurrentSession(),
+        defense: {
+          defense_mode: defenseCheck.defense_mode_active,
+          mode: defenseCheck.mode,
+          cooldown_active: false,
+          loss_streak: ExpectancyState.consecutiveLosses
+        },
+        whale: { score: whale.score, signals: whale.signals },
+        trap: trapDetection,
+        expectancy: getExpectancyForDecision(),
+        mlWeights: getMLWeights(),
+        selfLearn: getSelfLearnStatus(),
+        filters: {
+          timing_valid: false,
+          session_valid: false,
+          trap_detected: true
+        },
+        timestamp: Date.now()
+      };
+    }
+    
+    // ─── 🌏 SESSION FILTER ─────────────────────────────────────
+    const sessionCheck = checkSessionFilter(marketMode.mode, trendStrength, volumeRatio, breakout.valid, whale.score);
+    
+    if (!sessionCheck.valid) {
+      return {
+        symbol: SYMBOL,
+        action: "HOLD",
+        confidence: 0,
+        trend,
+        trend_strength: trendStrength,
+        reason: sessionCheck.reason,
+        indicators: { rsi, atrPct: atrPct?.toFixed(3), volumeRatio: volumeRatio?.toFixed(2) },
+        signal: "SESSION_BLOCKED",
+        market_phase: marketPhase,
+        mode: marketMode.mode,
+        session: sessionCheck.session,
+        defense: {
+          defense_mode: defenseCheck.defense_mode_active,
+          mode: defenseCheck.mode,
+          cooldown_active: false,
+          loss_streak: ExpectancyState.consecutiveLosses
+        },
+        whale: { score: whale.score, signals: whale.signals },
+        trap: trapDetection,
+        expectancy: getExpectancyForDecision(),
+        mlWeights: getMLWeights(),
+        selfLearn: getSelfLearnStatus(),
+        filters: {
+          timing_valid: false,
+          session_valid: false,
+          trap_detected: trapDetection.blockTrade
+        },
+        timestamp: Date.now()
+      };
+    }
+    
+    // Apply defense mode score requirements
+    let effectiveDefenseMode = defenseCheck.defense_mode_active;
+    if (effectiveDefenseMode && defenseCheck.mode === "DEFENSE") {
+      signals.push(`DEFENSE MODE: Min score ${DEFENSE_CONFIG.MIN_SCORE_DEFENSE}, Size ${DEFENSE_CONFIG.POSITION_SIZE_DEFENSE * 100}%`);
+    }
+    
+    let priority = getPriority(trendStrength, breakout.valid, lastTrade?.win, effectiveDefenseMode);
     let action = "HOLD";
     let confidence = 0;
     let reason = "";
     let override = false;
     let positionMultiplier = 1.0;
-    
-    const signals = [];
     
     // ─── LAYER 2: AI DECISION ENGINE ─────────────────────────
     // Build market context for ML scoring
@@ -915,9 +1687,9 @@ async function analyzeBTC(lastTrade = null, defenseMode = false) {
     if (selfLearnAdjust.scoreModifier > 0) {
       scoreRequired += selfLearnAdjust.scoreModifier;
     }
-    if (defenseMode) {
-      scoreRequired = 85;
-      signals.push("Defense mode: score raised to 85");
+    if (effectiveDefenseMode) {
+      scoreRequired = Math.max(scoreRequired, DEFENSE_CONFIG.MIN_SCORE_DEFENSE);
+      signals.push(`Defense mode: score raised to ${scoreRequired}`);
     }
     
     // Check anti-fomo and anti-exhaustion
@@ -934,30 +1706,46 @@ async function analyzeBTC(lastTrade = null, defenseMode = false) {
     }
     
     // ─── DECISION LOGIC ───────────────────────────────────────
+    // Apply ENTRY TIMING ENGINE first - even P1 must pass timing
+    const timingCheck = applyEntryTimingEngine(klines, trend, whale, lastTrade);
+    
+    // SCALP mode: require volume >= 1.3x
+    const scalpVolumeOK = marketMode.mode !== "SCALP" || volumeRatio >= SCALP_TREND_CONFIG.VOLUME_SCALP_MIN;
+    
     const fastEntryAllowed = 
       priority === "P1" && 
       trendStrength === "STRONG" && 
       breakout.valid && 
       volumeRatio >= VOLUME_FAST_ENTRY && 
-      breakout.bodyPercent >= CANDLE_BODY_FAST_ENTRY;
+      breakout.bodyPercent >= CANDLE_BODY_FAST_ENTRY &&
+      scalpVolumeOK;
     
     let entryReady = false;
     
+    // If SCALP mode but no perfect entry, DO NOT TRADE
+    if (marketMode.mode === "SCALP" && !scalpVolumeOK) {
+      reason = `SCALP: Volume ${volumeRatio.toFixed(2)}x < ${SCALP_TREND_CONFIG.VOLUME_SCALP_MIN}x required`;
+      signals.push(`SCALP BLOCKED: Low volume ${volumeRatio.toFixed(2)}x`);
+    }
+    
     if (trend === "BULLISH" && finalScore >= scoreRequired) {
-      if (fastEntryAllowed) {
+      if (fastEntryAllowed && timingCheck.timing_valid) {
         action = "LONG";
         confidence = Math.min(90, finalConfidence * 100);
         reason = `FAST ENTRY P1: score=${finalScore.toFixed(0)} RSI=${rsi.toFixed(1)}`;
-        signals.push("FAST ENTRY: P1 + STRONG breakout + whale boost");
+        signals.push("FAST ENTRY: P1 + STRONG breakout + timing valid");
         entryReady = true;
       } else if (breakout.valid) {
         const confirmation = checkConfirmation(klines, "LONG");
-        if (confirmation.confirmed) {
+        if (confirmation.confirmed && timingCheck.timing_valid) {
           action = "LONG";
           confidence = Math.min(85, finalConfidence * 100 - 5);
           reason = `CONFIRMED ENTRY: score=${finalScore.toFixed(0)} RSI=${rsi.toFixed(1)}`;
-          signals.push("Confirmation candle confirmed");
+          signals.push("Confirmation candle confirmed + timing valid");
           entryReady = true;
+        } else if (!timingCheck.timing_valid) {
+          reason = `ENTRY TIMING FAILED: ${timingCheck.primaryFailure}`;
+          signals.push(`TIMING: ${timingCheck.primaryFailure}`);
         } else {
           reason = `Waiting confirmation: ${confirmation.reasons.join(", ")}`;
         }
@@ -965,20 +1753,23 @@ async function analyzeBTC(lastTrade = null, defenseMode = false) {
         reason = `No breakout: ${breakout.reasons.join(", ")}`;
       }
     } else if (trend === "BEARISH" && finalScore >= scoreRequired) {
-      if (fastEntryAllowed) {
+      if (fastEntryAllowed && timingCheck.timing_valid) {
         action = "SHORT";
         confidence = Math.min(90, finalConfidence * 100);
         reason = `FAST ENTRY P1: score=${finalScore.toFixed(0)} RSI=${rsi.toFixed(1)}`;
-        signals.push("FAST ENTRY: P1 + STRONG breakout + whale boost");
+        signals.push("FAST ENTRY: P1 + STRONG breakout + timing valid");
         entryReady = true;
       } else if (breakout.valid) {
         const confirmation = checkConfirmation(klines, "SHORT");
-        if (confirmation.confirmed) {
+        if (confirmation.confirmed && timingCheck.timing_valid) {
           action = "SHORT";
           confidence = Math.min(85, finalConfidence * 100 - 5);
           reason = `CONFIRMED ENTRY: score=${finalScore.toFixed(0)} RSI=${rsi.toFixed(1)}`;
-          signals.push("Confirmation candle confirmed");
+          signals.push("Confirmation candle confirmed + timing valid");
           entryReady = true;
+        } else if (!timingCheck.timing_valid) {
+          reason = `ENTRY TIMING FAILED: ${timingCheck.primaryFailure}`;
+          signals.push(`TIMING: ${timingCheck.primaryFailure}`);
         } else {
           reason = `Waiting confirmation: ${confirmation.reasons.join(", ")}`;
         }
@@ -992,7 +1783,7 @@ async function analyzeBTC(lastTrade = null, defenseMode = false) {
     // ─── EXPECTANCY ADJUSTMENT ────────────────────────────────
     const expStatus = getExpectancyStatus();
     if (action !== "HOLD") {
-      positionMultiplier = calculatePositionSize(1.0, trendStrength, defenseMode);
+      positionMultiplier = calculatePositionSize(1.0, trendStrength, effectiveDefenseMode);
       positionMultiplier *= expStatus.sizeMultiplier;
     }
     
@@ -1029,6 +1820,8 @@ async function analyzeBTC(lastTrade = null, defenseMode = false) {
       symbol: SYMBOL,
       timeframe: TIMEFRAME,
       action,
+      mode: marketMode.mode,
+      session: sessionCheck.session,
       confidence: Math.round(confidence),
       price: currentPrice,
       priceChange: priceChangePct,
@@ -1037,6 +1830,16 @@ async function analyzeBTC(lastTrade = null, defenseMode = false) {
       market_phase: marketPhase,
       priority,
       reason: reason + " | " + signals.slice(0, 4).join(", "),
+      protection: {
+        defense_mode: effectiveDefenseMode,
+        cooldown_active: defenseCheck.blocked || defenseCheck.cooldown_active,
+        loss_streak: ExpectancyState.consecutiveLosses
+      },
+      filters: {
+        timing_valid: timingCheck.timing_valid,
+        session_valid: sessionCheck.valid,
+        trap_detected: trapDetection.blockTrade
+      },
       indicators: {
         ema20: ema20?.toFixed(2),
         ema50: ema50?.toFixed(2),
@@ -1061,6 +1864,7 @@ async function analyzeBTC(lastTrade = null, defenseMode = false) {
         absorption: whale.absorption,
         liquidationCluster: whale.liquidationCluster
       },
+      trap: trapDetection,
       mlWeights: mlResult.weights,
       mlFactors: mlFactors.slice(0, 6),
       selfLearn: {
@@ -1081,7 +1885,8 @@ async function analyzeBTC(lastTrade = null, defenseMode = false) {
         atrValid: atrPct >= MIN_ATR_PERCENT,
         notChop: marketPhase !== "CHOP" || priority === "P1",
         breakoutValid: breakout.valid,
-        blocked: ruleResult.blocked
+        blocked: ruleResult.blocked,
+        scalpVolumeOK: scalpVolumeOK
       },
       levels: {
         stopLoss: stopLoss?.toFixed(8),
@@ -1101,6 +1906,23 @@ async function analyzeBTC(lastTrade = null, defenseMode = false) {
           [`${PROFIT_LOCK_2}%`]: `${PARTIAL_2_PERCENT}%`
         }
       },
+      timing_valid: timingCheck.timing_valid,
+      timing: {
+        candleExpansion: timingCheck.allChecks.candleExpansion,
+        breakout: timingCheck.allChecks.breakoutConfirmation,
+        microNoise: timingCheck.allChecks.microNoise,
+        momentum: timingCheck.allChecks.momentum,
+        antiReentry: timingCheck.allChecks.antiReentry,
+        overtrading: timingCheck.allChecks.overtrading,
+        fakeBreakout: timingCheck.allChecks.fakeBreakout
+      },
+      defense: {
+        mode: defenseCheck.mode,
+        status: defenseCheck,
+        config: DEFENSE_CONFIG
+      },
+      marketMode: marketMode,
+      sessionFilter: sessionCheck,
       signals: signals.slice(0, 6),
       timestamp: Date.now()
     };
@@ -1149,6 +1971,9 @@ function recordTrade(trade) {
     marketPhase,
     result
   });
+  
+  // Record for Entry Timing
+  recordTimingTrade();
   
   // Update ML Weights based on features
   if (features) {
@@ -1231,6 +2056,7 @@ module.exports = {
   getSystemStatus,
   recordTrade,
   resetLearning,
+  resetEntryTiming,
   calculateEMA,
   calculateEMAArray,
   calculateRSI,
@@ -1242,6 +2068,22 @@ module.exports = {
   getMLWeights,
   getSelfLearnStatus,
   updateExpectancy,
+  getEntryTimingStatus,
+  ENTRY_TIMING_CONFIG,
   WHALE_CONFIG,
-  ML_WEIGHTS
+  ML_WEIGHTS,
+  // New exports
+  DEFENSE_CONFIG,
+  checkDefenseMode,
+  getDefenseStatus,
+  resetDefenseState,
+  classifyMarketMode,
+  getTradeTargets,
+  SCALP_TREND_CONFIG,
+  getCurrentSession,
+  checkSessionFilter,
+  SESSION_CONFIG,
+  detectWhaleTrap,
+  getTrapStatus,
+  TRAP_CONFIG
 };

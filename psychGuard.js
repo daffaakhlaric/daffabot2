@@ -574,5 +574,6 @@ module.exports = {
   checkPostWinEuphoria,
   checkOvertrading,
   preEntrySanityCheck,
+  runPsychChecks,
   runAllPsychChecks,
 };

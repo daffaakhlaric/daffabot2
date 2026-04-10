@@ -77,6 +77,56 @@ const PARTIAL_1_PERCENT = 30;
 const PARTIAL_2_PERCENT = 30;
 
 // ═══════════════════════════════════════════════════════════════
+// HTF TREND FILTER CONFIG
+// ═══════════════════════════════════════════════════════════════
+
+const HTF_CONFIG = {
+  TIMEFRAME: "1h",           // Use 1H for HTF trend
+  EMA_PERIOD: 50,            // EMA for HTF trend detection
+  WHALE_REVERSAL_SCORE: 50   // Min whale score for reversal signal
+};
+
+// ═══════════════════════════════════════════════════════════════
+// CONTINUATION ENTRY CONFIG
+// ═══════════════════════════════════════════════════════════════
+
+const CONTINUATION_CONFIG = {
+  BODY_PERCENT_MIN: 0.60,    // Candle body ≥ 60% of range
+  VOLUME_MIN: 1.3,           // Volume ≥ 1.3x avg
+  PULLBACK_MAX: 0.15,        // Max pullback from prev close (not a weak bounce)
+  BREAK_CLOSE_ABOVE: true,   // Break must close above prev high/low
+  MOMENTUM确认: true         // Require momentum confirmation
+};
+
+// ═══════════════════════════════════════════════════════════════
+// EARLY EXIT PROTECTION CONFIG
+// ═══════════════════════════════════════════════════════════════
+
+const EARLY_EXIT_CONFIG = {
+  MAX_LOSS_BPS: 20,          // 0.2% = 20 bps
+  MONITOR_WINDOW_MS: 120000, // 2 minutes
+  TRAILING_RESET: true       // Reset if price moves in favor
+};
+
+let EarlyExitState = {
+  entryPrice: null,
+  entryTime: null,
+  side: null,
+  maxFavorableMove: 0,
+  initialLossDetected: false
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ANTI COUNTER-TREND CONFIG
+// ═══════════════════════════════════════════════════════════════
+
+const ANTI_COUNTER_CONFIG = {
+  ALLOW_COUNTER_IF_WHALE: true,
+  ALLOW_COUNTER_IF_STRUCTURE_BREAK: true,
+  WHALE_SCORE_THRESHOLD: 50
+};
+
+// ═══════════════════════════════════════════════════════════════
 // LAYER 3: ML-LITE WEIGHT CONFIG (Adaptive)
 // ═══════════════════════════════════════════════════════════════
 
@@ -1123,6 +1173,226 @@ function getExpectedMove(trendStrength) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// HTF TREND FILTER - Higher Timeframe Trend Detection
+// ═══════════════════════════════════════════════════════════════
+
+async function getHTFTrend() {
+  try {
+    const htfKlines = await fetchKlines(SYMBOL, HTF_CONFIG.TIMEFRAME, 100);
+    if (!htfKlines || htfKlines.length < HTF_CONFIG.EMA_PERIOD) {
+      return { trend: "UNKNOWN", confidence: 0, reasons: ["Insufficient HTF data"] };
+    }
+    
+    const closes = htfKlines.map(k => k.close);
+    const htfEma = calculateEMA(closes, HTF_CONFIG.EMA_PERIOD);
+    const currentPrice = closes[closes.length - 1];
+    
+    const htfGap = htfEma > 0 ? Math.abs((currentPrice - htfEma) / htfEma * 100) : 0;
+    
+    let htfTrend = "NEUTRAL";
+    let confidence = 0.5;
+    let reasons = [];
+    
+    if (currentPrice > htfEma && htfGap > 0.1) {
+      htfTrend = "BULLISH";
+      confidence = Math.min(0.9, 0.6 + htfGap * 0.5);
+      reasons = [`HTF ${HTF_CONFIG.TIMEFRAME} above EMA${HTF_CONFIG.EMA_PERIOD}`, `Gap: ${htfGap.toFixed(2)}%`];
+    } else if (currentPrice < htfEma && htfGap > 0.1) {
+      htfTrend = "BEARISH";
+      confidence = Math.min(0.9, 0.6 + htfGap * 0.5);
+      reasons = [`HTF ${HTF_CONFIG.TIMEFRAME} below EMA${HTF_CONFIG.EMA_PERIOD}`, `Gap: ${htfGap.toFixed(2)}%`];
+    } else {
+      reasons = ["HTF trend NEUTRAL - EMA flat"];
+    }
+    
+    return {
+      trend: htfTrend,
+      confidence,
+      reasons,
+      ema: htfEma,
+      gap: htfGap,
+      timeframe: HTF_CONFIG.TIMEFRAME
+    };
+  } catch (error) {
+    return { trend: "UNKNOWN", confidence: 0, reasons: [error.message] };
+  }
+}
+
+function checkHTFTrendFilter(htfTrend, tradeDirection, whaleScore) {
+  if (htfTrend.trend === "UNKNOWN" || htfTrend.trend === "NEUTRAL") {
+    return { valid: true, reason: "HTF neutral - proceed normally" };
+  }
+  
+  const counterTrend = (htfTrend.trend === "BEARISH" && tradeDirection === "LONG") ||
+                       (htfTrend.trend === "BULLISH" && tradeDirection === "SHORT");
+  
+  if (!counterTrend) {
+    return { valid: true, reason: `HTF ${htfTrend.trend} aligned with ${tradeDirection}` };
+  }
+  
+  let allowCounter = false;
+  let reason = "";
+  
+  if (ANTI_COUNTER_CONFIG.ALLOW_COUNTER_IF_WHALE && whaleScore >= ANTI_COUNTER_CONFIG.WHALE_SCORE_THRESHOLD) {
+    allowCounter = true;
+    reason = `Whale reversal confirmed (score: ${whaleScore})`;
+  }
+  
+  if (!allowCounter && ANTI_COUNTER_CONFIG.ALLOW_COUNTER_IF_STRUCTURE_BREAK) {
+    allowCounter = true;
+    reason = "Strong structure break detected";
+  }
+  
+  if (!allowCounter) {
+    return {
+      valid: false,
+      reason: `HTF ${htfTrend.trend} - BLOCK counter-trend ${tradeDirection}`,
+      blocked: true
+    };
+  }
+  
+  return { valid: true, reason: `Counter-trend allowed: ${reason}`, warning: true };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CONTINUATION ENTRY VALIDATION
+// ═══════════════════════════════════════════════════════════════
+
+function checkContinuationEntry(klines, trend, volumeRatio, indicators) {
+  const candle = klines[klines.length - 1];
+  const prevCandle = klines[klines.length - 2];
+  
+  const range = candle.high - candle.low;
+  const body = Math.abs(candle.close - candle.open);
+  const bodyPercent = range > 0 ? body / range : 0;
+  
+  const upperWick = candle.high - Math.max(candle.close, candle.open);
+  const lowerWick = Math.min(candle.close, candle.open) - candle.low;
+  
+  const pullback = Math.abs(candle.close - prevCandle.close) / prevCandle.close * 100;
+  
+  const volumeOK = volumeRatio >= CONTINUATION_CONFIG.VOLUME_MIN;
+  const bodyOK = bodyPercent >= CONTINUATION_CONFIG.BODY_PERCENT_MIN;
+  const pullbackOK = pullback <= CONTINUATION_CONFIG.PULLBACK_MAX;
+  
+  const reasons = [];
+  
+  if (trend === "LONG") {
+    const brokeHigh = candle.close > prevCandle.high;
+    const strongClose = candle.close > candle.open && bodyPercent >= CONTINUATION_CONFIG.BODY_PERCENT_MIN;
+    
+    reasons.push(`Break high: ${brokeHigh}`, `Body: ${(bodyPercent * 100).toFixed(1)}% ${bodyOK ? 'OK' : '<' + CONTINUATION_CONFIG.BODY_PERCENT_MIN * 100 + '%'}`, `Pullback: ${pullback.toFixed(3)}% ${pullbackOK ? 'OK' : '>' + CONTINUATION_CONFIG.PULLBACK_MAX + '%'}`, `Volume: ${volumeRatio.toFixed(2)}x ${volumeOK ? 'OK' : '<' + CONTINUATION_CONFIG.VOLUME_MIN}`);
+    
+    const valid = brokeHigh && strongClose && bodyOK && pullbackOK && volumeOK;
+    
+    if (!valid) {
+      if (!brokeHigh) reasons.push("NOT continuation - did not break high");
+      if (!strongClose) reasons.push("Weak close - not strong bullish");
+      if (!bodyOK) reasons.push(`Body ${(bodyPercent * 100).toFixed(1)}% < ${CONTINUATION_CONFIG.BODY_PERCENT_MIN * 100}%`);
+      if (!pullbackOK) reasons.push(`Pullback ${pullback.toFixed(3)}% > ${CONTINUATION_CONFIG.PULLBACK_MAX}%`);
+      if (!volumeOK) reasons.push(`Volume ${volumeRatio.toFixed(2)}x < ${CONTINUATION_CONFIG.VOLUME_MIN}x`);
+    }
+    
+    return { valid, reasons, bodyPercent, pullback, brokeHigh, strongClose };
+  }
+  
+  if (trend === "SHORT") {
+    const brokeLow = candle.close < prevCandle.low;
+    const strongClose = candle.close < candle.open && bodyPercent >= CONTINUATION_CONFIG.BODY_PERCENT_MIN;
+    
+    reasons.push(`Break low: ${brokeLow}`, `Body: ${(bodyPercent * 100).toFixed(1)}% ${bodyOK ? 'OK' : '<' + CONTINUATION_CONFIG.BODY_PERCENT_MIN * 100 + '%'}`, `Pullback: ${pullback.toFixed(3)}% ${pullbackOK ? 'OK' : '>' + CONTINUATION_CONFIG.PULLBACK_MAX + '%'}`, `Volume: ${volumeRatio.toFixed(2)}x ${volumeOK ? 'OK' : '<' + CONTINUATION_CONFIG.VOLUME_MIN}`);
+    
+    const valid = brokeLow && strongClose && bodyOK && pullbackOK && volumeOK;
+    
+    if (!valid) {
+      if (!brokeLow) reasons.push("NOT continuation - did not break low");
+      if (!strongClose) reasons.push("Weak close - not strong bearish");
+      if (!bodyOK) reasons.push(`Body ${(bodyPercent * 100).toFixed(1)}% < ${CONTINUATION_CONFIG.BODY_PERCENT_MIN * 100}%`);
+      if (!pullbackOK) reasons.push(`Pullback ${pullback.toFixed(3)}% > ${CONTINUATION_CONFIG.PULLBACK_MAX}%`);
+      if (!volumeOK) reasons.push(`Volume ${volumeRatio.toFixed(2)}x < ${CONTINUATION_CONFIG.VOLUME_MIN}x`);
+    }
+    
+    return { valid, reasons, bodyPercent, pullback, brokeLow, strongClose };
+  }
+  
+  return { valid: false, reasons: ["Unknown trend"] };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// EARLY EXIT PROTECTION - Quick Loss Cut
+// ═══════════════════════════════════════════════════════════════
+
+function initEarlyExit(entryPrice, side) {
+  EarlyExitState = {
+    entryPrice,
+    entryTime: Date.now(),
+    side,
+    maxFavorableMove: 0,
+    initialLossDetected: false
+  };
+  return EarlyExitState;
+}
+
+function checkEarlyExit(currentPrice) {
+  if (!EarlyExitState.entryPrice || !EarlyExitState.entryTime) {
+    return { shouldExit: false, reason: "No active entry tracking" };
+  }
+  
+  const elapsed = Date.now() - EarlyExitState.entryTime;
+  if (elapsed > EARLY_EXIT_CONFIG.MONITOR_WINDOW_MS) {
+    return { shouldExit: false, reason: "Window passed" };
+  }
+  
+  const pnl = EarlyExitState.side === "LONG"
+    ? ((currentPrice - EarlyExitState.entryPrice) / EarlyExitState.entryPrice * 100)
+    : ((EarlyExitState.entryPrice - currentPrice) / EarlyExitState.entryPrice * 100);
+  
+  const pnlBps = pnl * 100;
+  
+  if (pnlBps < 0) {
+    EarlyExitState.initialLossDetected = true;
+  }
+  
+  if (pnl > EarlyExitState.maxFavorableMove) {
+    EarlyExitState.maxFavorableMove = pnl;
+    if (EARLY_EXIT_CONFIG.TRAILING_RESET && EarlyExitState.initialLossDetected) {
+      EarlyExitState.initialLossDetected = false;
+    }
+  }
+  
+  if (EarlyExitState.initialLossDetected && pnlBps <= -EARLY_EXIT_CONFIG.MAX_LOSS_BPS) {
+    return {
+      shouldExit: true,
+      reason: `Early exit: ${pnl.toFixed(3)}% loss within ${(elapsed / 1000).toFixed(0)}s`,
+      pnl,
+      elapsedMs: elapsed
+    };
+  }
+  
+  return {
+    shouldExit: false,
+    reason: `Monitoring: ${pnl.toFixed(3)}% at ${(elapsed / 1000).toFixed(0)}s`,
+    pnl,
+    elapsedMs: elapsed,
+    maxFavorable: EarlyExitState.maxFavorableMove
+  };
+}
+
+function getEarlyExitStatus() {
+  return { ...EarlyExitState };
+}
+
+function resetEarlyExit() {
+  EarlyExitState = {
+    entryPrice: null,
+    entryTime: null,
+    side: null,
+    maxFavorableMove: 0,
+    initialLossDetected: false
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
 // 🎯 ENTRY TIMING ENGINE (CRITICAL)
 // ═══════════════════════════════════════════════════════════════
 
@@ -1483,6 +1753,24 @@ async function analyzeBTC(lastTrade = null, defenseMode = false, prefetchedKline
     // ─── 🐋 WHALE TRACKING ENGINE ─────────────────────────────
     const whale = detectWhaleActivity(klines, currentPrice);
     
+    // ─── 📈 HTF TREND FILTER ─────────────────────────────────
+    let htfTrend = { trend: "UNKNOWN", confidence: 0.5, reasons: ["HTF check deferred for performance"] };
+    if (!prefetchedKlines || !prefetchedKlines.htf) {
+      htfTrend = await getHTFTrend();
+    } else {
+      const htfCloses = prefetchedKlines.htf.map(k => k.close);
+      const htfEma = calculateEMA(htfCloses, HTF_CONFIG.EMA_PERIOD);
+      const htfPrice = htfCloses[htfCloses.length - 1];
+      const htfGap = htfEma > 0 ? Math.abs((htfPrice - htfEma) / htfEma * 100) : 0;
+      htfTrend = {
+        trend: htfPrice > htfEma && htfGap > 0.1 ? "BULLISH" : (htfPrice < htfEma && htfGap > 0.1 ? "BEARISH" : "NEUTRAL"),
+        confidence: Math.min(0.9, 0.6 + htfGap * 0.5),
+        reasons: [`HTF ${HTF_CONFIG.TIMEFRAME} ${htfGap > 0.1 ? (htfPrice > htfEma ? "above" : "below") : "near"} EMA${HTF_CONFIG.EMA_PERIOD}`],
+        ema: htfEma,
+        gap: htfGap
+      };
+    }
+    
     // ─── 🛡️ DEFENSE MODE CHECK (First Priority) ───────────────
     const defenseCheck = checkDefenseMode();
 
@@ -1639,6 +1927,50 @@ async function analyzeBTC(lastTrade = null, defenseMode = false, prefetchedKline
       };
     }
     
+    // ─── 📈 HTF TREND FILTER ─────────────────────────────────────
+    const htfFilterLong = checkHTFTrendFilter(htfTrend, "LONG", whale.score);
+    const htfFilterShort = checkHTFTrendFilter(htfTrend, "SHORT", whale.score);
+    
+    const htfBlockingLong = !htfFilterLong.valid && trend === "BULLISH";
+    const htfBlockingShort = !htfFilterShort.valid && trend === "BEARISH";
+    
+    if (htfBlockingLong || htfBlockingShort) {
+      const blockedDir = htfBlockingLong ? "LONG" : "SHORT";
+      const filterResult = htfBlockingLong ? htfFilterLong : htfFilterShort;
+      return {
+        symbol: SYMBOL,
+        action: "HOLD",
+        confidence: 0,
+        trend,
+        trend_strength: trendStrength,
+        reason: `HTF FILTER: ${filterResult.reason}`,
+        indicators: { rsi, atrPct: atrPct?.toFixed(3), volumeRatio: volumeRatio?.toFixed(2) },
+        signal: "HTF_BLOCKED",
+        market_phase: marketPhase,
+        mode: marketMode.mode,
+        session: sessionCheck.session,
+        defense: {
+          defense_mode: defenseCheck.defense_mode_active,
+          mode: defenseCheck.mode,
+          cooldown_active: false,
+          loss_streak: ExpectancyState.consecutiveLosses
+        },
+        whale: { score: whale.score, signals: whale.signals },
+        trap: trapDetection,
+        htfTrend,
+        filters: {
+          timing_valid: false,
+          session_valid: sessionCheck.valid,
+          trap_detected: trapDetection.blockTrade,
+          htf_valid: false
+        },
+        expectancy: getExpectancyForDecision(),
+        mlWeights: getMLWeights(),
+        selfLearn: getSelfLearnStatus(),
+        timestamp: Date.now()
+      };
+    }
+    
     // Apply defense mode score requirements
     let effectiveDefenseMode = defenseCheck.defense_mode_active;
     if (effectiveDefenseMode && defenseCheck.mode === "DEFENSE") {
@@ -1712,6 +2044,9 @@ async function analyzeBTC(lastTrade = null, defenseMode = false, prefetchedKline
     // Apply ENTRY TIMING ENGINE first - even P1 must pass timing
     const timingCheck = applyEntryTimingEngine(klines, trend, whale, lastTrade);
     
+    // ─── CONTINUATION ENTRY VALIDATION ─────────────────────────
+    const continuationCheck = checkContinuationEntry(klines, trend, volumeRatio, { rsi, atrPct });
+    
     // SCALP mode: require volume >= 1.3x
     const scalpVolumeOK = marketMode.mode !== "SCALP" || volumeRatio >= SCALP_TREND_CONFIG.VOLUME_SCALP_MIN;
     
@@ -1721,7 +2056,8 @@ async function analyzeBTC(lastTrade = null, defenseMode = false, prefetchedKline
       breakout.valid && 
       volumeRatio >= VOLUME_FAST_ENTRY && 
       breakout.bodyPercent >= CANDLE_BODY_FAST_ENTRY &&
-      scalpVolumeOK;
+      scalpVolumeOK &&
+      continuationCheck.valid;
     
     let entryReady = false;
     
@@ -1729,6 +2065,12 @@ async function analyzeBTC(lastTrade = null, defenseMode = false, prefetchedKline
     if (marketMode.mode === "SCALP" && !scalpVolumeOK) {
       reason = `SCALP: Volume ${volumeRatio.toFixed(2)}x < ${SCALP_TREND_CONFIG.VOLUME_SCALP_MIN}x required`;
       signals.push(`SCALP BLOCKED: Low volume ${volumeRatio.toFixed(2)}x`);
+    }
+    
+    // If not continuation entry, DO NOT TRADE (except P1 fast entry)
+    if (!continuationCheck.valid && !fastEntryAllowed) {
+      reason = `CONTINUATION FAILED: ${continuationCheck.reasons.join(", ")}`;
+      signals.push(`CONTINUATION: ${continuationCheck.reasons.slice(0, 2).join(", ")}`);
     }
     
     if (trend === "BULLISH" && finalScore >= scoreRequired) {
@@ -1841,7 +2183,9 @@ async function analyzeBTC(lastTrade = null, defenseMode = false, prefetchedKline
       filters: {
         timing_valid: timingCheck.timing_valid,
         session_valid: sessionCheck.valid,
-        trap_detected: trapDetection.blockTrade
+        trap_detected: trapDetection.blockTrade,
+        htf_valid: htfFilterLong.valid && htfFilterShort.valid,
+        continuation_valid: continuationCheck.valid
       },
       indicators: {
         ema20: ema20?.toFixed(2),
@@ -1924,6 +2268,19 @@ async function analyzeBTC(lastTrade = null, defenseMode = false, prefetchedKline
         status: defenseCheck,
         config: DEFENSE_CONFIG
       },
+      htfTrend: htfTrend,
+      htfFilter: {
+        longAllowed: htfFilterLong.valid,
+        shortAllowed: htfFilterShort.valid,
+        reason: htfFilterLong.valid ? htfFilterLong.reason : htfFilterShort.reason
+      },
+      continuation: {
+        valid: continuationCheck.valid,
+        reasons: continuationCheck.reasons,
+        bodyPercent: continuationCheck.bodyPercent,
+        pullback: continuationCheck.pullback
+      },
+      earlyExit: getEarlyExitStatus(),
       marketMode: marketMode,
       sessionFilter: sessionCheck,
       signals: signals.slice(0, 6),
@@ -2088,5 +2445,17 @@ module.exports = {
   SESSION_CONFIG,
   detectWhaleTrap,
   getTrapStatus,
-  TRAP_CONFIG
+  TRAP_CONFIG,
+  // HTF + Continuation + Early Exit
+  getHTFTrend,
+  checkHTFTrendFilter,
+  HTF_CONFIG,
+  checkContinuationEntry,
+  CONTINUATION_CONFIG,
+  initEarlyExit,
+  checkEarlyExit,
+  getEarlyExitStatus,
+  resetEarlyExit,
+  EARLY_EXIT_CONFIG,
+  ANTI_COUNTER_CONFIG
 };

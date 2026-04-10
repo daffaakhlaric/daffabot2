@@ -239,11 +239,12 @@ async function openPosition(side, price, entryConfig, setup = "TREND") {
     side,
     entry: price,
     setup,
-    sl:            entryConfig.sl,
-    trailActivate: entryConfig.trailActivate,
-    trailDrop:     entryConfig.trailDrop,
-    pyr1:          entryConfig.pyr1,
-    pyr2:          entryConfig.pyr2,
+    openedAt:      Date.now(),
+    sl:            entryConfig.sl ?? 0.7,
+    trailActivate: entryConfig.trailActivate ?? 1.5,
+    trailDrop:     entryConfig.trailDrop ?? 0.3,
+    pyr1:          entryConfig.pyr1 ?? 1.5,
+    pyr2:          entryConfig.pyr2 ?? 3.0,
     peak:          0,
     pyr1Done:      false,
     pyr2Done:      false,
@@ -341,7 +342,7 @@ async function run() {
 
       const price = klines[klines.length - 1].close;
 
-      const liveEquity = global.liveData?.equity || CONFIG.POSITION_SIZE_USDT * 10;
+      const liveEquity = global.botState?.equity || parseFloat(process.env.INITIAL_EQUITY || "1000");
 
       // Bug 1: compute equityCurve once per tick (not [])
       const equityCurve = analytics.calcEquityCurve(

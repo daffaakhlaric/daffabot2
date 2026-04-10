@@ -4,7 +4,9 @@ require("dotenv").config();
 const https = require("https");
 const crypto = require("crypto");
 
-const btcStrategy = require("./btcStrategy");
+const btcStrategy  = require("./btcStrategy");
+const orchestrator = require("./botOrchestrator");
+const riskGuard    = require("./riskGuard");
 
 // ================= CONFIG =================
 const CONFIG = {
@@ -21,7 +23,9 @@ const CONFIG = {
   TRADE_COOLDOWN_MS: 5 * 60 * 1000,
   CHECK_INTERVAL: 20000,
 
-  DRY_RUN: process.env.DRY_RUN !== "false",
+  DRY_RUN:      process.env.DRY_RUN      !== "false",
+  AI_ENABLED:   process.env.AI_ENABLED   !== "false",
+  SNIPER_MODE:  process.env.SNIPER_MODE  !== "false",
 };
 
 // ================= STATE =================
@@ -42,6 +46,8 @@ global.botState = {
   marketState:    "UNKNOWN",
   botStatus:      "RUNNING",
   logs:           [],
+  features:       {},
+  aiLogs:         [],
 };
 
 // ================= UTIL =================
@@ -126,6 +132,17 @@ async function getKlines() {
     low: +c[3],
     close: +c[4],
     volume: +c[5],
+  })).reverse();
+}
+
+async function getKlinesHTF(granularity, limit) {
+  const res = await request(
+    "GET",
+    `/api/v2/mix/market/candles?symbol=${CONFIG.SYMBOL}&productType=${CONFIG.PRODUCT_TYPE}&granularity=${granularity}&limit=${limit}`
+  );
+  if (!Array.isArray(res.data)) return [];
+  return res.data.map(c => ({
+    open: +c[1], high: +c[2], low: +c[3], close: +c[4], volume: +c[5],
   })).reverse();
 }
 
@@ -305,12 +322,43 @@ async function run() {
 
       const price = klines[klines.length - 1].close;
 
-      const decision = btcStrategy.analyze({
-        klines,
-        position: state.activePosition,
-      });
+      const liveEquity = global.liveData?.equity || CONFIG.POSITION_SIZE_USDT * 10;
 
-      log(`🧠 ${decision.action}`);
+      // Fetch HTF klines setiap 3 tick (hemat API quota)
+      if (tickCount % 3 === 0 || !klines_4h.length) {
+        [klines_4h, klines_1h, klines_15m] = await Promise.all([
+          getKlinesHTF("4H", 20),
+          getKlinesHTF("1H", 30),
+          getKlinesHTF("15m", 40),
+        ]);
+      }
+      tickCount++;
+
+      // Hanya SATU otak yang aktif — tidak ada voting/gabungan
+      // Kondisi 1: AI_ENABLED=true DAN ANTHROPIC_API_KEY ada → orchestrator saja
+      // Kondisi 2: salah satu tidak ada → btcStrategy saja
+      const aiEnabled = process.env.AI_ENABLED !== "false"
+                     && !!process.env.ANTHROPIC_API_KEY;
+
+      let decision;
+      if (aiEnabled) {
+        decision = await orchestrator.orchestrate({
+          klines_1m:      klines,
+          klines_15m:     klines_15m.length ? klines_15m : klines,
+          klines_1h:      klines_1h.length  ? klines_1h  : klines,
+          klines_4h:      klines_4h.length  ? klines_4h  : klines,
+          price,
+          activePosition: state.activePosition,
+          tradeHistory:   global.botState.tradeHistory,
+          equityCurve:    [],
+          equity:         liveEquity,
+        });
+      } else {
+        decision = btcStrategy.analyze({ klines, position: state.activePosition });
+        decision.source = "BTCSTRATEGY_ONLY_MODE";
+      }
+
+      log(`🧠 ${decision.action} [${decision.source || "UNKNOWN"}]${decision.reason ? " — " + decision.reason : ""}`);
 
       // Sync live state to global.botState for dashboard
       global.botState.price        = price;
@@ -349,6 +397,36 @@ async function run() {
         if (state.activePosition) {
           log(`📉 ${decision.reason}`);
           await closePosition(price, decision.reason || "SIGNAL");
+
+          // Non-blocking AI post-trade review
+          if (CONFIG.AI_ENABLED) {
+            const lastTrade = global.botState.tradeHistory[global.botState.tradeHistory.length - 1];
+            if (lastTrade) {
+              try {
+                const fe = require("./featureEngine");
+                fe.reviewTrade(lastTrade).then(review => {
+                  if (review) {
+                    lastTrade.aiReview = review;
+                    log(`🔍 AI [${review.quality_score}] ${review.lesson}`);
+                  }
+                }).catch(() => {});
+              } catch {}
+            }
+          }
+        }
+      }
+
+      else if (decision.action === "PARTIAL_CLOSE") {
+        if (state.activePosition) {
+          log(`📉 PARTIAL CLOSE ${decision.percentage || 50}% — ${decision.reason || ""}`);
+          await closePosition(price, `PARTIAL ${decision.percentage || 50}%`);
+        }
+      }
+
+      else if (decision.action === "UPDATE_SL") {
+        if (state.activePosition && decision.new_sl) {
+          log(`🔧 UPDATE SL → ${decision.new_sl} — ${decision.reason || ""}`);
+          state.activePosition.sl = decision.new_sl;
         }
       }
 
@@ -365,6 +443,10 @@ async function run() {
     await sleep(CONFIG.CHECK_INTERVAL);
   }
 }
+
+// ── HTF KLINES STATE (diisi setiap 3 tick) ───────────────
+let tickCount = 0;
+let klines_4h = [], klines_1h = [], klines_15m = [];
 
 // ── START DASHBOARD ──────────────────────────────────────
 try {

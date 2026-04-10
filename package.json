@@ -5,15 +5,11 @@
   "main": "pepe-futures-bot.js",
   "scripts": {
     "start": "node pepe-futures-bot.js",
+    "dry":   "cross-env DRY_RUN=true node pepe-futures-bot.js",
+    "dash":  "node dashboard-server.js",
     "dashboard": "node dashboard-server.js",
-    "dry": "node pepe-futures-bot.js",
-    "live": "node -e \"process.env.FORCE_LIVE=1\" pepe-futures-bot.js",
-    "migrate": "node migrate.js",
-    "migrate:dry": "node migrate.js --dry",
-    "migrate:clean": "node migrate.js --clean",
-    "migrate:trades": "node migrate.js --trades",
-    "migrate:stats": "node migrate.js --stats",
-    "migrate:equity": "node migrate.js --equity"
+    "live": "cross-env DRY_RUN=false AI_ENABLED=true node pepe-futures-bot.js",
+    "test":  "node --test test/daffabot.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.44.0",

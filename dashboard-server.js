@@ -113,6 +113,8 @@ let liveData = {
   botStatus:     "CONNECTING",
   lastUpdate:    null,
   apiConnected:  false,
+  logs:          [],
+  scoreBoard:    {},
 };
 
 async function fetchLiveData() {
@@ -125,6 +127,7 @@ async function fetchLiveData() {
     if (s.lastDecision)             liveData.lastDecision   = s.lastDecision;
     if (s.botStatus)                liveData.botStatus      = s.botStatus;
     if (s.tradeHistory?.length)     tradeHistory            = s.tradeHistory.slice(); // copy, bukan alias
+    if (s.logs?.length)             liveData.logs           = s.logs.slice(-200);    // last 200 logs
 
     // Posisi dari bot selalu prioritas — termasuk saat DRY_RUN
     // (Bitget tidak punya posisi jika DRY_RUN, jadi jangan overwrite dengan null)

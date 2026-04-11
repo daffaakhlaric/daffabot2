@@ -1037,7 +1037,21 @@ function renderLogs() {
 function updateOverviewLogs(live) {
   const box=$('ov-log-terminal'); if(!box) return;
   const logs = live?.logs || [];
-  const filtered = logs.filter(l => matchLogFilter(l.msg));
+
+  if (!Array.isArray(logs) || logs.length === 0) {
+    box.innerHTML = '<div class="log-line"><span class="log-default">Waiting for logs...</span></div>';
+    return;
+  }
+
+  const filtered = logs.filter(l => {
+    if (!l || !l.msg) return false;
+    return matchLogFilter(l.msg);
+  });
+
+  if (filtered.length === 0) {
+    box.innerHTML = '<div class="log-line"><span class="log-default">No logs matching filter</span></div>';
+    return;
+  }
 
   box.innerHTML = filtered.slice(-50).map(l => {
     const cls = classifyLog(l.msg);
@@ -1124,7 +1138,18 @@ async function pollTrades() {
   try{const r=await fetch('/api/trades');if(r.ok){state.trades=await r.json();renderTrades();}}catch{}
 }
 async function pollLogs() {
-  try{const r=await fetch('/api/logs');if(r.ok){const fresh=await r.json();allLogs=Array.isArray(fresh)?fresh.slice(-300):allLogs;renderLogs();}}catch{}
+  try{
+    const r=await fetch('/api/logs');
+    if(r.ok){
+      const fresh=await r.json();
+      if(Array.isArray(fresh)){
+        allLogs=fresh.slice(-300);
+        state.live.logs=fresh.slice(-200);
+        renderLogs();
+        updateOverviewLogs(state.live);
+      }
+    }
+  }catch{}
 }
 
 // ══ NAVIGATION ══════════════════════════════════════════
@@ -1138,7 +1163,6 @@ function navigate(sec) {
   if(sec==='performance') updatePerformance(state.analytics);
   if(sec==='trades') renderTrades();
   if(sec==='risk') updateRisk(state.live,state.analytics);
-  if(sec==='logs') renderLogs();
 }
 
 // ══ EVENTS ══════════════════════════════════════════════

@@ -5,6 +5,7 @@
  * Replaces direct btcStrategy calls in the run loop.
  */
 
+const https         = require("https");
 const btcStrategy   = require("./btcStrategy");
 const featureEngine = require("./featureEngine");
 const riskGuard     = require("./riskGuard");
@@ -13,6 +14,77 @@ const tradeMemory   = require("./tradeMemory");
 // ── HELPERS ───────────────────────────────────────────────
 function liveData() {
   return global.liveData || {};
+}
+
+/**
+ * UPGRADE 7 — Orderbook Imbalance.
+ * Pure math — given bids/asks arrays [[price, size], ...] returns BULLISH/BEARISH/NEUTRAL.
+ */
+function orderbookImbalance(bids, asks) {
+  try {
+    const bidVol = bids.reduce((s, b) => s + parseFloat(b[1] || 0), 0);
+    const askVol = asks.reduce((s, a) => s + parseFloat(a[1] || 0), 0);
+    if (bidVol > askVol * 1.5) return "BULLISH";
+    if (askVol > bidVol * 1.5) return "BEARISH";
+    return "NEUTRAL";
+  } catch { return "NEUTRAL"; }
+}
+
+/**
+ * Fetch top-5 orderbook from Bitget (public endpoint, no auth required).
+ * Returns { bids, asks } or null on failure.
+ */
+function fetchOrderbook(symbol = process.env.BTC_SYMBOL || "BTCUSDT") {
+  return new Promise(resolve => {
+    const path = `/api/v2/mix/market/merge-depth?symbol=${symbol}&productType=usdt-futures&limit=5`;
+    const req = https.request({ hostname: "api.bitget.com", path, method: "GET" }, res => {
+      let data = "";
+      res.on("data", d => (data += d));
+      res.on("end", () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed?.code === "00000" && parsed.data) {
+            resolve({ bids: parsed.data.bids || [], asks: parsed.data.asks || [] });
+          } else {
+            resolve(null);
+          }
+        } catch { resolve(null); }
+      });
+    });
+    req.on("error", () => resolve(null));
+    req.setTimeout(4000, () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
+/**
+ * UPGRADE 8 — Sniper Lock System.
+ * Returns { locked, reason } — lock entry if sniper trade taken today OR big win achieved.
+ */
+function isSniperLocked(tradeHistory, equity) {
+  try {
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+    const today = tradeHistory.filter(t =>
+      (t.exitTime || t.timestamp || 0) >= todayStart.getTime()
+    );
+
+    // Lock if any sniper trade was already taken today (protect the setup)
+    const sniperTaken = today.some(t =>
+      t.setup === "SNIPER_KILLER" || t.setup === "SNIPER_ELITE"
+    );
+    if (sniperTaken) {
+      return { locked: true, reason: "Sniper trade already taken today — protecting the day" };
+    }
+
+    // Lock if today's cumulative PnL >= 3% of equity or $30 (big win — stop trading)
+    const todayPnL = today.reduce((sum, t) => sum + (t.pnlUSDT || 0), 0);
+    const bigWinThreshold = Math.max(30, (equity || 1000) * 0.03);
+    if (todayPnL >= bigWinThreshold) {
+      return { locked: true, reason: `Big win locked — today's PnL $${todayPnL.toFixed(2)} >= threshold $${bigWinThreshold.toFixed(2)}` };
+    }
+
+    return { locked: false };
+  } catch { return { locked: false }; }
 }
 
 /**
@@ -396,16 +468,21 @@ async function orchestrate({
     }
   }
 
-  // STEP 4: Run signal features in parallel
-  let htf = null, regime = null, judas = null, momentum = null;
+  // STEP 4: Run signal features + orderbook in parallel
+  let htf = null, regime = null, judas = null, momentum = null, obRaw = null;
   try {
-    [htf, regime, judas, momentum] = await Promise.all([
+    [htf, regime, judas, momentum, obRaw] = await Promise.all([
       featureEngine.callF1({ klines_4h: klines_4h || klines_1h, klines_1h: klines_1h || klines_15m, price }),
       featureEngine.volatilityRegime({ klines_1h: klines_1h || klines_15m, price }),
       featureEngine.judasSweepDetector({ klines_15m, klines_5m: klines_1m, klines_1m, price }),
       featureEngine.momentumIgnition({ klines_5m: klines_1m, klines_1m, price }),
+      fetchOrderbook(),
     ]);
   } catch {}
+
+  // Compute orderbook bias (NEUTRAL if fetch failed)
+  const obBias = obRaw ? orderbookImbalance(obRaw.bids, obRaw.asks) : "NEUTRAL";
+  if (global.botState) global.botState.obBias = obBias;
 
   // UPGRADE B — Liquidity Trap (pure math, no latency)
   let liquidity = null;
@@ -428,6 +505,12 @@ async function orchestrate({
 
   if (marketState === "VOLATILE") {
     return { action: "HOLD", reason: "Volatile market — no new entries", source: "MARKET_STATE_GATE" };
+  }
+
+  // UPGRADE 8 — Sniper Lock System
+  const sniperLock = isSniperLocked(tradeHistory, equity);
+  if (sniperLock.locked) {
+    return { action: "HOLD", reason: sniperLock.reason, source: "SNIPER_LOCK" };
   }
 
   // STEP 5.5 — SNIPER ELITE (UPGRADE 5): priority di atas SMC flow biasa
@@ -504,8 +587,12 @@ async function orchestrate({
       }
     }
 
-    if (decisionScore < 60) {
-      return { action: "HOLD", reason: `Decision score ${decisionScore} < 60`, source: "LOW_SCORE" };
+    // Final decision filter (UPGRADE 7+8): score >= 75 required; orderbook must not oppose
+    if (decisionScore < 75) {
+      return { action: "HOLD", reason: `Score ${decisionScore} < 75 (min threshold)`, source: "LOW_SCORE" };
+    }
+    if (obBias !== "NEUTRAL" && obBias !== judas.signal.replace("LONG", "BULLISH").replace("SHORT", "BEARISH")) {
+      return { action: "HOLD", reason: `Orderbook ${obBias} opposes ${judas.signal} entry`, source: "OB_FILTER" };
     }
 
     if (global.botState) global.botState.decisionScore = decisionScore;
@@ -524,7 +611,7 @@ async function orchestrate({
 
     return {
       action:     judas.signal,
-      setup:      "JUDAS_SWING",
+      setup:      decisionScore >= 90 ? "JUDAS_SWING_SNIPER" : "JUDAS_SWING",
       entry:      judas.entry_price,
       sl:         judas.sl_price,
       tp1:        judas.target_1,
@@ -556,8 +643,12 @@ async function orchestrate({
       }
     }
 
-    if (decisionScore < 60) {
-      return { action: "HOLD", reason: `Decision score ${decisionScore} < 60`, source: "LOW_SCORE" };
+    // Final decision filter
+    if (decisionScore < 75) {
+      return { action: "HOLD", reason: `Score ${decisionScore} < 75 (min threshold)`, source: "LOW_SCORE" };
+    }
+    if (obBias !== "NEUTRAL" && obBias !== momentum.direction.replace("LONG", "BULLISH").replace("SHORT", "BEARISH")) {
+      return { action: "HOLD", reason: `Orderbook ${obBias} opposes ${momentum.direction} entry`, source: "OB_FILTER" };
     }
 
     if (global.botState) global.botState.decisionScore = decisionScore;
@@ -618,8 +709,12 @@ async function orchestrate({
         }
       }
 
-      if (decisionScore < 60) {
-        return { action: "HOLD", reason: `Decision score ${decisionScore} < 60`, source: "LOW_SCORE" };
+      // Final decision filter (UPGRADE 7+8)
+      if (decisionScore < 75) {
+        return { action: "HOLD", reason: `Score ${decisionScore} < 75 (min threshold)`, source: "LOW_SCORE" };
+      }
+      if (obBias !== "NEUTRAL" && obBias !== smc.signal.replace("LONG", "BULLISH").replace("SHORT", "BEARISH")) {
+        return { action: "HOLD", reason: `Orderbook ${obBias} opposes ${smc.signal} entry`, source: "OB_FILTER" };
       }
 
       if (global.botState) global.botState.decisionScore = decisionScore;

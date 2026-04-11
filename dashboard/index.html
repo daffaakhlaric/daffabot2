@@ -47,10 +47,6 @@
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1 L15 5 V9 C15 12.5 11.5 15 8 15 C4.5 15 1 12.5 1 9 V5 Z"/></svg>
       Risk Monitor
     </div>
-    <div class="nav-item" data-sec="logs">
-      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="14" height="14" rx="2"/><line x1="4" y1="5" x2="12" y2="5"/><line x1="4" y1="8" x2="9" y2="8"/><line x1="4" y1="11" x2="7" y2="11"/></svg>
-      Logs
-    </div>
   </div>
   <div class="sb-bottom">
     <div id="sb-price" class="sb-price mono">$—</div>
@@ -159,6 +155,21 @@
             <div style="font-size:8px;color:var(--text-muted)">Market State</div>
           </div>
         </div>
+      </div>
+
+      <!-- Live Logs -->
+      <div style="margin-top:20px;padding:12px;background:var(--bg-secondary);border-radius:6px;border-left:4px solid var(--amber)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <div style="font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted)">Live Bot Logs</div>
+          <div style="display:flex;gap:6px">
+            <button id="log-filter-all" class="fchip active" data-logfilt="all" style="font-size:10px;padding:4px 8px">All</button>
+            <button id="log-filter-ai" class="fchip" data-logfilt="ai" style="font-size:10px;padding:4px 8px">AI</button>
+            <button id="log-filter-trade" class="fchip" data-logfilt="trade" style="font-size:10px;padding:4px 8px">Trades</button>
+            <button id="log-filter-error" class="fchip" data-logfilt="error" style="font-size:10px;padding:4px 8px">Errors</button>
+            <button id="log-clear-ov" class="fchip" style="font-size:10px;padding:4px 8px">Clear</button>
+          </div>
+        </div>
+        <div id="ov-log-terminal" style="max-height:300px;overflow-y:auto;background:var(--bg-primary);border:1px solid var(--border);border-radius:4px;padding:10px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.4"></div>
       </div>
 
       <!-- Chart + Position -->
@@ -367,27 +378,6 @@
       </div>
     </div>
 
-    <!-- ══ SECTION: LOGS ══ -->
-    <div id="sec-logs" class="section" style="height:calc(100vh - 80px);flex:1">
-      <div class="card" style="display:flex;flex-direction:column;flex:1;min-height:0">
-        <div class="card-title">
-          <span>Bot Logs</span>
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <button class="fchip active" data-logfilt="all">All</button>
-            <button class="fchip" data-logfilt="ai">AI</button>
-            <button class="fchip" data-logfilt="trade">Trades</button>
-            <button class="fchip" data-logfilt="error">Errors</button>
-            <button id="log-pause" class="fchip">&#9646;&#9646; Pause</button>
-            <button id="log-clear" class="fchip">Clear</button>
-          </div>
-        </div>
-        <div style="position:relative;flex:1;min-height:0;display:flex;flex-direction:column">
-          <div id="log-terminal"></div>
-          <div id="new-log-notice">&#9660; New logs</div>
-        </div>
-      </div>
-    </div>
-
   </div><!-- /content -->
 </div><!-- /main -->
 </div><!-- /app -->
@@ -399,7 +389,6 @@
     <div class="bnav-item" data-sec="performance"><div class="bnav-icon">&#9650;</div>Performance</div>
     <div class="bnav-item" data-sec="trades"><div class="bnav-icon">&#9776;</div>Trades</div>
     <div class="bnav-item" data-sec="risk"><div class="bnav-icon">&#9670;</div>Risk</div>
-    <div class="bnav-item" data-sec="logs"><div class="bnav-icon">&#9632;</div>Logs</div>
   </div>
 </div>
 
@@ -1045,6 +1034,20 @@ function renderLogs() {
   else{$('new-log-notice').style.display='block';}
 }
 
+function updateOverviewLogs(live) {
+  const box=$('ov-log-terminal'); if(!box) return;
+  const logs = live?.logs || [];
+  const filtered = logs.filter(l => matchLogFilter(l.msg));
+
+  box.innerHTML = filtered.slice(-50).map(l => {
+    const cls = classifyLog(l.msg);
+    const ts = fmtTime(l.ts);
+    return `<div class="log-line"><span class="log-ts">${ts}</span><span class="${cls}">${l.msg.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span></div>`;
+  }).join('');
+
+  box.scrollTop = box.scrollHeight;
+}
+
 // ══ MAIN UPDATE ══════════════════════════════════════════
 let renderQueued=false, lastRender=0;
 function scheduleRender(data) {
@@ -1068,6 +1071,7 @@ function doRender() {
   try { updateStatusChips(L); } catch(e){}
   try { updateMetrics(L,A); } catch(e){}
   try { updateOverviewScores(L); } catch(e){}
+  try { updateOverviewLogs(L); } catch(e){}
   try { updatePosition(L); } catch(e){}
   try { updateAIPanel(L); } catch(e){}
   try { updateEquityChart(A); } catch(e){}
@@ -1184,6 +1188,7 @@ document.querySelectorAll('[data-logfilt]').forEach(btn=>{
     btn.classList.add('active');
     logFilter=btn.dataset.logfilt;
     renderLogs();
+    updateOverviewLogs(state.live);
   });
 });
 
@@ -1208,6 +1213,11 @@ $('log-pause')?.addEventListener('click',function(){
 $('log-clear')?.addEventListener('click',()=>{
   allLogs=[];
   const box=$('log-terminal'); if(box) box.innerHTML='<div class="log-line"><span class="log-default">Cleared.</span></div>';
+});
+
+$('log-clear-ov')?.addEventListener('click',()=>{
+  allLogs=[];
+  const box=$('ov-log-terminal'); if(box) box.innerHTML='<div class="log-line"><span class="log-default">Cleared.</span></div>';
 });
 
 $('new-log-notice')?.addEventListener('click',()=>{

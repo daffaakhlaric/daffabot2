@@ -10,18 +10,20 @@
 
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 8px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
 }
 
 .mc {
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: $radius-md;
-  padding: 14px 16px;
+  padding: 20px 22px;
   cursor: default;
   position: relative;
   min-width: 0;
+  box-shadow: var(--shadow-sm);
+  transition: all 250ms ease;
 
   & > * {
     min-width: 0;
@@ -30,23 +32,24 @@
   }
 
   &:hover {
-    border-color: var(--border-focus);
+    border-color: rgba($blue-accent, 0.4);
+    box-shadow: 0 0 0 1px rgba($blue-accent, 0.15), var(--shadow-md);
   }
 }
 
 .mc-label {
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.9px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
   text-transform: uppercase;
   color: var(--text-muted);
-  margin-bottom: 6px;
+  margin-bottom: 10px;
 }
 
 .mc-val {
   @include mono;
-  font-size: 22px;
-  font-weight: 700;
+  font-size: 28px;
+  font-weight: 800;
   color: var(--text-primary);
   line-height: 1;
   overflow: hidden;
@@ -62,13 +65,13 @@
   }
 
   &.warn {
-    color: var(--amber);
+    color: var(--accent);
   }
 }
 
 .mc-sub {
-  font-size: 11px;
-  margin-top: 4px;
+  font-size: 12px;
+  margin-top: 6px;
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;

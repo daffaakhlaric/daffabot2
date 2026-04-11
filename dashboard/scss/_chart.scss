@@ -11,7 +11,7 @@
 .chart-row {
   display: grid;
   grid-template-columns: 65fr 35fr;
-  gap: 10px;
+  gap: 16px;
   overflow-x: hidden;
 }
 
@@ -19,16 +19,17 @@
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: $radius-md;
-  padding: 16px;
+  padding: 18px;
   overflow: hidden;
+  box-shadow: var(--shadow-sm);
 }
 
 .chart-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 12px;
-  gap: 8px;
+  margin-bottom: 16px;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
@@ -49,22 +50,23 @@
   background: transparent;
   border: 1px solid var(--border);
   color: var(--text-muted);
-  padding: 2px 8px;
+  padding: 4px 12px;
   border-radius: $radius-sm;
   font-size: 10px;
+  font-weight: 600;
   @include mono;
   cursor: pointer;
   transition: all 150ms;
 
   &:hover {
-    border-color: var(--border-focus);
+    border-color: rgba($blue-accent, 0.3);
     color: var(--text-secondary);
   }
 
   &.active {
-    background: var(--bg-elevated);
-    border-color: var(--amber);
-    color: var(--amber);
+    background: rgba($blue-accent, 0.1);
+    border-color: var(--accent);
+    color: var(--accent);
   }
 }
 

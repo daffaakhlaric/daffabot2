@@ -5,30 +5,43 @@
 // ── SASS Variables (compile-time)
 // Used for SASS functions like rgba(), lighten(), darken()
 
-$bg-base:      #080b10;
-$bg-surface:   #0e1318;
-$bg-elevated:  #141a22;
-$bg-overlay:   #1a2230;
-$border:       #1e2a38;
-$border-soft:  #162030;
-$border-focus: #2a3f55;
+// Backgrounds (slightly lighter for "clean minimal" feel)
+$bg-base:      #0a0e14;
+$bg-surface:   #101620;
+$bg-elevated:  #172238;
+$bg-overlay:   #1e2d3d;
+$border:       #2a3a50;
+$border-soft:  #1a2a3a;
+$border-focus: #3a4a60;
 
 $text-primary:   #e2e8f0;
 $text-secondary: #8899aa;
-$text-muted:     #4a5a6a;
-$text-inverse:   #080b10;
+$text-muted:     #5a6a7a;
+$text-inverse:   #0a0e14;
 
+// Semantic colors (unchanged)
 $green:  #00d68f;
 $red:    #ff4d6a;
-$amber:  #f5a623;
-$blue:   #4d9fff;
 $teal:   #00c9c9;
 
+// Primary brand: Electric Blue
+$blue-accent: #3b82f6;
+$blue:        #60a5fa;
+$blue-light:  #60a5fa;
+$blue-dark:   #1e40af;
+
+// Sizing & Spacing
 $sidebar-w:   220px;
 $topbar-h:    48px;
-$radius-sm:   4px;
-$radius-md:   8px;
+$radius-sm:   6px;
+$radius-md:   12px;
+$radius-lg:   16px;
 $radius-pill: 9999px;
+
+// Shadows (new)
+$shadow-sm:   0 1px 2px rgba(0, 0, 0, 0.3);
+$shadow-md:   0 4px 8px rgba(0, 0, 0, 0.4);
+$shadow-lg:   0 8px 16px rgba(0, 0, 0, 0.5);
 
 // ── CSS Custom Properties (runtime)
 // Accessible from JavaScript & scoped to :root
@@ -53,13 +66,26 @@ $radius-pill: 9999px;
   --red:        #{$red};
   --red-dim:    #{rgba($red, 0.10)};
   --red-glow:   #{rgba($red, 0.20)};
-  --amber:      #{$amber};
-  --amber-dim:  #{rgba($amber, 0.10)};
-  --blue:       #{$blue};
-  --blue-dim:   #{rgba($blue, 0.10)};
+
+  // Primary accent: Electric Blue (replacing amber)
+  --accent:      #{$blue-accent};
+  --accent-dim:  #{rgba($blue-accent, 0.10)};
+  --accent-glow: #{rgba($blue-accent, 0.25)};
+
+  // Keep amber for backward compatibility with JS that references it
+  --amber:       #{$blue-accent};
+  --amber-dim:   #{rgba($blue-accent, 0.10)};
+
+  --blue:       #{$blue-light};
+  --blue-dim:   #{rgba($blue-light, 0.10)};
   --teal:       #{$teal};
   --teal-dim:   #{rgba($teal, 0.10)};
 
   --sidebar-w: #{$sidebar-w};
   --topbar-h:  #{$topbar-h};
+
+  // Shadows
+  --shadow-sm: #{$shadow-sm};
+  --shadow-md: #{$shadow-md};
+  --shadow-lg: #{$shadow-lg};
 }

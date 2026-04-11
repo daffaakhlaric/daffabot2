@@ -18,8 +18,12 @@
   @include mono;
   font-weight: 700;
   font-size: 15px;
-  color: var(--amber);
+  color: var(--accent);
   letter-spacing: 0.06em;
+  background: linear-gradient(135deg, var(--accent), rgba($blue-light, 0.7));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .sb-sub {
@@ -56,8 +60,10 @@
 
   &.active {
     color: var(--text-primary);
-    background: var(--bg-elevated);
-    border-left-color: var(--amber);
+    background: rgba($blue-accent, 0.08);
+    border-left-color: var(--accent);
+    border-left-width: 3px;
+    padding-left: 15px;
   }
 }
 

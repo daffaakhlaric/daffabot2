@@ -5,12 +5,12 @@
 @use 'variables' as *;
 
 @mixin card-title {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.9px;
   text-transform: uppercase;
   color: var(--text-muted);
-  margin-bottom: 14px;
+  margin-bottom: 18px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -22,8 +22,15 @@
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: $radius-md;
-  padding: 16px;
+  padding: 18px;
   overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  transition: all 250ms ease;
+
+  &:hover {
+    border-color: rgba($blue-accent, 0.4);
+    box-shadow: 0 0 0 1px rgba($blue-accent, 0.2), var(--shadow-md);
+  }
 }
 
 .card-title {

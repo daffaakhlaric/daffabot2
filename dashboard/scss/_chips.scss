@@ -20,15 +20,20 @@
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.5px;
-  padding: 3px 8px;
+  padding: 4px 10px;
   border-radius: $radius-sm;
   background: var(--bg-overlay);
-  border: 1px solid var(--border);
+  border: 1px solid rgba($blue-accent, 0.1);
   white-space: nowrap;
+  transition: all 150ms;
+
+  &:hover {
+    border-color: rgba($blue-accent, 0.2);
+  }
 }
 
 .chip-label {

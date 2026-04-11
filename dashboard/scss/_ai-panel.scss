@@ -11,9 +11,10 @@
 #ai-panel {
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-top: 2px solid var(--amber);
+  border-top: 3px solid var(--accent);
   border-radius: $radius-md;
-  padding: 16px;
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
 }
 
 .ai-grid {
@@ -96,15 +97,15 @@
 }
 
 .just-box {
-  background: var(--bg-overlay);
-  border: 1px solid var(--border);
+  background: rgba($blue-accent, 0.05);
+  border: 1px solid rgba($blue-accent, 0.2);
   border-radius: $radius-sm;
-  padding: 8px;
+  padding: 12px;
   @include mono;
   font-size: 11px;
-  color: var(--amber);
+  color: var(--accent);
   font-style: italic;
-  margin-top: 8px;
+  margin-top: 10px;
   line-height: 1.6;
   min-height: 48px;
 }
@@ -119,9 +120,9 @@
   margin-top: 8px;
 
   &.judas {
-    background: rgba($amber, 0.10);
-    border: 1px solid rgba($amber, 0.25);
-    color: $amber;
+    background: rgba($blue-accent, 0.10);
+    border: 1px solid rgba($blue-accent, 0.25);
+    color: $blue-accent;
   }
 
   &.momentum {

@@ -794,11 +794,53 @@ async function reviewTrade(trade) {
   return result;
 }
 
+/**
+ * UPGRADE B — Liquidity Trap Detector.
+ * Detects BSL/SSL sweeps from the last 20 candles (no AI call, pure math).
+ * Returns { detected, type, bias, swept_level, reason } or null.
+ */
+function detectLiquidityTrap({ klines }) {
+  try {
+    if (!Array.isArray(klines) || klines.length < 5) return null;
+    const candles = klines.slice(-20);
+    const last    = candles[candles.length - 1];
+    if (!last) return null;
+
+    // Build range from all-but-last candle
+    const prior   = candles.slice(0, -1);
+    const maxHigh = Math.max(...prior.map(k => k.high));
+    const minLow  = Math.min(...prior.map(k => k.low));
+
+    const bslSweep = last.high > maxHigh * 0.999 && last.close < maxHigh;
+    const sslSweep = last.low  < minLow  * 1.001 && last.close > minLow;
+
+    if (bslSweep) {
+      return {
+        detected:     true,
+        type:         "BSL_SWEEP",
+        bias:         "SHORT",
+        swept_level:  maxHigh,
+        reason:       `Candle swept BSL at ${maxHigh.toFixed(2)} but closed below`,
+      };
+    }
+    if (sslSweep) {
+      return {
+        detected:     true,
+        type:         "SSL_SWEEP",
+        bias:         "LONG",
+        swept_level:  minLow,
+        reason:       `Candle swept SSL at ${minLow.toFixed(2)} but closed above`,
+      };
+    }
+    return null;
+  } catch { return null; }
+}
+
 module.exports = {
   callF1, callF2, sniperMode, judasSweepDetector, liquiditySweepEngine,
   volatilityRegime, killZoneTimer, smartCompounder, momentumIgnition,
   obFreshnessScorer, macroCorrelation, exitOptimizer, masterOrchestrator,
-  reviewTrade, runAll,
+  reviewTrade, runAll, detectLiquidityTrap,
   // helpers exported for testing
   calcATR, calcEMA, extractSwings, formatKlines,
 };

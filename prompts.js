@@ -604,10 +604,41 @@ Sentence 2: what DaffaBot is watching for.
 Respond with plain text only, no JSON, no markdown.`,
 };
 
+// ── SNIPER KILLER ──────────────────────────────────────────
+const SNIPER_KILLER = {
+  system: MASTER + `\nTask: SNIPER KILLER ENTRY ANALYSIS.
+You are looking for the highest-conviction setup possible — all 5 confluence factors must align.
+Conditions required: HTF bias strong (>=85%), SMC structure confirmed (score>=80), Judas sweep detected,
+Liquidity trap confirmed (BSL or SSL sweep), Active London or NY session.
+Entry must be LIMIT at exact OB midpoint or FVG 50% CE. SL ≤ 0.4%. Min RR 1:3.
+Max 2 SNIPER_KILLER trades per day. Post-loss cooldown 45 min.
+If ANY condition is missing, respond with signal: "HOLD".`,
+  user: `SNIPER KILLER ANALYSIS REQUEST
+Price: \${price}
+HTF Bias: \${htf_bias} (confidence: \${htf_confidence}%)
+SMC Signal: \${smc_signal} (score: \${smc_score})
+Liquidity: \${liquidity_type} at \${liquidity_level}
+Judas: detected=\${judas_detected}, phase=\${judas_phase}, confidence=\${judas_confidence}%
+Session: \${session}
+
+Respond with JSON only:
+{
+  "signal": "LONG|SHORT|HOLD",
+  "confidence": 0-100,
+  "entry": price_or_null,
+  "sl": price_or_null,
+  "tp1": price_or_null,
+  "tp2": price_or_null,
+  "tp3": price_or_null,
+  "reason": "string"
+}`,
+};
+
 module.exports = {
   MASTER,
   F1, F2, F3, F4, F5, F7, F8, F10, F12,
   SNIPER, JUDAS, SWEEP, REGIME, KILLZONE, COMPOUNDER,
   MOMENTUM, OB_SCORER, MACRO, EXIT_OPTIMIZER, ORCHESTRATOR, COMMENTARY,
+  SNIPER_KILLER,
   fillTemplate,
 };

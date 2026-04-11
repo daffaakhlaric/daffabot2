@@ -31,11 +31,11 @@ const CONFIG = {
   SNIPER_ENABLED: process.env.SNIPER_ENABLED !== "false",
   MODE:           process.env.BOT_MODE       || "SAFE",   // SAFE | FAST
   SNIPER_CONFIG: {
-    risk:               0.02,
+    risk:               0.03,
     leverage:           10,
-    tp_r:               [2, 5, 10],
-    max_daily_trades:   3,
-    post_loss_cooldown_ms: 30 * 60 * 1000,
+    tp_r:               [3, 8, 15],
+    max_daily_trades:   2,
+    post_loss_cooldown_ms: 45 * 60 * 1000,
   },
 };
 

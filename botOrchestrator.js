@@ -32,11 +32,22 @@ function isCounterTrend(signal, htf, regime) {
 }
 
 /**
- * UPGRADE 1 — Weighted Decision Score.
- * Combines HTF (40%), SMC (30%), Momentum (20%), Judas (10%) minus regime penalty.
+ * UPGRADE 1 — Adaptive Decision Score.
+ * Dynamic weights per regime — no penalty, just smarter weighting.
  */
-function buildDecisionScore({ htf, smc, momentum, judas, regime }) {
-  const weights = { htf: 0.40, smc: 0.30, momentum: 0.20, judas: 0.10 };
+function buildAdaptiveScore({ htf, smc, momentum, judas, regime }) {
+  const r = regime?.regime || "";
+
+  let weights;
+  if (r === "TRENDING_BULL" || r === "TRENDING_BEAR") {
+    weights = { htf: 0.35, smc: 0.25, momentum: 0.30, judas: 0.10 };
+  } else if (r === "RANGING") {
+    weights = { htf: 0.20, smc: 0.40, momentum: 0.20, judas: 0.20 };
+  } else if (r === "VOLATILE_SPIKE") {
+    weights = { htf: 0.30, smc: 0.20, momentum: 0.20, judas: 0.30 };
+  } else {
+    weights = { htf: 0.40, smc: 0.30, momentum: 0.20, judas: 0.10 };
+  }
 
   const htfScore   = htf?.confidence          || 50;
   const smcScore   = smc?.confluence_score     || 50;
@@ -50,11 +61,9 @@ function buildDecisionScore({ htf, smc, momentum, judas, regime }) {
     judasScore * weights.judas
   );
 
-  const penalty = regime?.regime === "VOLATILE_SPIKE" ? 15
-                : regime?.regime === "RANGING"         ?  5 : 0;
-
-  return Math.max(0, Math.min(100, weighted - penalty));
+  return Math.max(0, Math.min(100, weighted));
 }
+
 
 /**
  * UPGRADE 2 — Market State Engine.
@@ -139,6 +148,111 @@ function checkPriceMoved(price, entryZone, maxMovePct = 0.012) {
   } catch { return false; }
 }
 
+/**
+ * UPGRADE C — Smart Entry Engine.
+ * Confluence check before committing to an entry.
+ * Returns entry object (setup=AI_CONFLUENCE) or null.
+ */
+function buildSmartEntry({ htf, smc, liquidity, score }) {
+  try {
+    if (!score || score < 70) return null;
+    if (!smc?.signal || smc.signal === "HOLD") return null;
+    if (liquidity?.bias && liquidity.bias !== smc.signal) return null;
+
+    const entry = Array.isArray(smc.entry_zone)
+      ? (smc.entry_zone[0] + smc.entry_zone[1]) / 2
+      : smc.entry_zone || null;
+
+    return {
+      action:    smc.signal,
+      setup:     "AI_CONFLUENCE",
+      entry,
+      sl:        smc.stop_loss,
+      tp1:       smc.tp1,
+      tp2:       smc.tp2,
+      tp3:       smc.tp3,
+      confidence: score,
+      reason:    `AI confluence: HTF ${htf?.confidence || 0}% + SMC ${smc.confluence_score || 0} + liquidity ${liquidity?.type || "N/A"}`,
+      source:    "SMART_ENTRY",
+    };
+  } catch { return null; }
+}
+
+/**
+ * UPGRADE D — Sniper Killer Mode.
+ * All 5 conditions must pass. Returns SNIPER_KILLER entry or null.
+ */
+function sniperKiller({ htf, smc, judas, liquidity, kz }) {
+  try {
+    const htfOk      = (htf?.confidence || 0) >= 85;
+    const smcOk      = (smc?.confluence_score || 0) >= 80;
+    const judasOk    = judas?.judas_detected === true;
+    const liqOk      = liquidity !== null && liquidity?.detected === true;
+    const sessionOk  = ["LONDON_OPEN", "NY_OPEN", "London", "New York"].some(s =>
+                         (kz?.current_kill_zone || "").includes(s.replace(" ", "_")) ||
+                         (kz?.current_kill_zone || "").includes(s));
+
+    if (!htfOk || !smcOk || !judasOk || !liqOk || !sessionOk) return null;
+
+    // Signal must agree: judas + SMC must point same direction
+    const signal = judas.signal || smc.signal;
+    if (!signal || signal === "HOLD") return null;
+    if (judas.signal && smc.signal && judas.signal !== smc.signal) return null;
+
+    const entry = judas.entry_price || smc.entry_zone?.[0] || null;
+    const sl    = judas.sl_price    || smc.stop_loss       || null;
+    const r     = entry && sl ? Math.abs(entry - sl) : 0;
+
+    return {
+      action:          signal,
+      setup:           "SNIPER_KILLER",
+      entry,
+      sl,
+      tp1:             r > 0 ? (signal === "LONG" ? entry + r * 3  : entry - r * 3)  : null,
+      tp2:             r > 0 ? (signal === "LONG" ? entry + r * 8  : entry - r * 8)  : null,
+      tp3:             r > 0 ? (signal === "LONG" ? entry + r * 15 : entry - r * 15) : null,
+      leverage:        10,
+      rr_target:       [3, 8, 15],
+      max_daily_trades: 2,
+      confidence:      Math.round(((htf.confidence || 0) + (smc.confluence_score || 0)) / 2),
+      reason:          `SNIPER_KILLER: HTF ${htf.confidence}% + SMC ${smc.confluence_score} + Judas + Liquidity ${liquidity.type}`,
+      source:          "SNIPER_KILLER",
+    };
+  } catch { return null; }
+}
+
+/**
+ * UPGRADE E — Dynamic Exit Manager.
+ * pnl>1.5% → move SL to BE, pnl>3% → partial close 50%, pnl>5% → trail at ATR*1.2.
+ * Returns exit action or null (no action needed).
+ */
+function dynamicExit(pos, price, atrPct) {
+  try {
+    if (!pos || !price) return null;
+    const pnlPct = pos.pnlPct || 0;
+    const entry  = pos.entry  || price;
+
+    if (pnlPct > 5) {
+      const atr       = atrPct || 1.0;
+      const trailDist = entry * (atr * 1.2 / 100);
+      const new_sl    = pos.side === "LONG" ? price - trailDist : price + trailDist;
+      if (!pos.sl || (pos.side === "LONG" ? new_sl > pos.sl : new_sl < pos.sl)) {
+        return { action: "UPDATE_SL", new_sl: +new_sl.toFixed(2), reason: "Dynamic trail: pnl>5%, SL at ATR*1.2", source: "DYNAMIC_EXIT" };
+      }
+    }
+
+    if (pnlPct > 3) {
+      return { action: "PARTIAL_CLOSE", percentage: 50, reason: "Dynamic exit: pnl>3%, close 50%", source: "DYNAMIC_EXIT" };
+    }
+
+    if (pnlPct > 1.5 && pos.sl !== entry) {
+      return { action: "UPDATE_SL", new_sl: entry, reason: "Dynamic exit: pnl>1.5%, move SL to BE", source: "DYNAMIC_EXIT" };
+    }
+
+    return null;
+  } catch { return null; }
+}
+
 // ── MAIN ORCHESTRATE FUNCTION ─────────────────────────────
 async function orchestrate({
   klines_1m, klines_15m, klines_1h, klines_4h,
@@ -147,6 +261,7 @@ async function orchestrate({
 }) {
 
   // STEP 1: Risk checks
+
   const lastTrade     = tradeHistory[tradeHistory.length - 1];
   const lastTradeTime = lastTrade ? (lastTrade.exitTime || lastTrade.timestamp || 0) : 0;
 
@@ -178,6 +293,14 @@ async function orchestrate({
 
   // STEP 3: Active position → exit management first
   if (activePosition) {
+    // UPGRADE E — Dynamic Exit (runs before AI exit check)
+    const dynExit = dynamicExit(
+      activePosition,
+      price,
+      featureEngine.calcATR(klines_1m || klines_15m || [], 14)
+    );
+    if (dynExit) return dynExit;
+
     // Sniper Elite exit rules (UPGRADE 5)
     if (activePosition.setup === "SNIPER_ELITE") {
       const pnlPct  = activePosition.pnlPct || 0;
@@ -197,25 +320,31 @@ async function orchestrate({
       }
     }
 
+    // Minimum hold time: don't let AI exit optimizer fire on a position that just opened.
+    // AI sees duration_minutes=0 → "entry failed" → immediate close. Give it 2 minutes to breathe.
+    const posAgeMs      = activePosition.openedAt ? Date.now() - activePosition.openedAt : 999999;
+    const posAgeMinutes = Math.round(posAgeMs / 60000);
+    const MIN_HOLD_MS   = 2 * 60 * 1000; // 2 minutes
+
     let exit = null;
-    try {
-      exit = await featureEngine.exitOptimizer({
-        side:             activePosition.side,
-        entry:            activePosition.entry,
-        current_price:    price,
-        pnl_pct:          activePosition.pnlPct || 0,
-        peak_pnl_pct:     activePosition.peak   || 0,
-        current_sl:       activePosition.sl     || 0,
-        tp1:              activePosition.tp1    || 0,
-        tp2:              activePosition.tp2    || 0,
-        klines_15m:       klines_15m || klines_1m,
-        klines_5m:        klines_1m,
-        duration_minutes: activePosition.openedAt
-          ? Math.round((Date.now() - activePosition.openedAt) / 60000)
-          : 0,
-        setup_type: activePosition.setup || "TREND",
-      });
-    } catch {}
+    if (posAgeMs >= MIN_HOLD_MS) {
+      try {
+        exit = await featureEngine.exitOptimizer({
+          side:             activePosition.side,
+          entry:            activePosition.entry,
+          current_price:    price,
+          pnl_pct:          activePosition.pnlPct || 0,
+          peak_pnl_pct:     activePosition.peak   || 0,
+          current_sl:       activePosition.sl     || 0,
+          tp1:              activePosition.tp1    || 0,
+          tp2:              activePosition.tp2    || 0,
+          klines_15m:       klines_15m || klines_1m,
+          klines_5m:        klines_1m,
+          duration_minutes: posAgeMinutes,
+          setup_type:       activePosition.setup || "TREND",
+        });
+      } catch {}
+    }
 
     if (exit?.exit_mode === "IMMEDIATE_EXIT") {
       return { action: "CLOSE", reason: exit.reasoning || "AI exit signal", urgency: exit.urgency, source: "AI_EXIT" };
@@ -278,6 +407,12 @@ async function orchestrate({
     ]);
   } catch {}
 
+  // UPGRADE B — Liquidity Trap (pure math, no latency)
+  let liquidity = null;
+  try {
+    liquidity = featureEngine.detectLiquidityTrap({ klines: klines_15m || klines_1m });
+  } catch {}
+
   // STEP 5: Regime check
   if (regime?.regime === "VOLATILE_SPIKE") {
     return { action: "HOLD", reason: "Volatile spike regime — pausing entries", setup: "REGIME_PAUSE", source: "REGIME_GUARD" };
@@ -319,6 +454,33 @@ async function orchestrate({
     }
   }
 
+  // STEP 5.6 — SNIPER KILLER (UPGRADE D): higher priority than Judas
+  if (process.env.SNIPER_ENABLED !== "false") {
+    let smcForKiller = null;
+    try {
+      smcForKiller = await featureEngine.callF2({
+        klines_4h:  klines_4h || klines_1h,
+        klines_1h:  klines_1h || klines_15m,
+        klines_15m,
+        klines_5m:  klines_1m,
+        price,
+        htfBias:    htf,
+      });
+    } catch {}
+
+    const killer = sniperKiller({ htf, smc: smcForKiller, judas, liquidity, kz });
+    if (killer) {
+      // Daily trade cap for SNIPER_KILLER (max 2)
+      const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+      const dailyKiller = tradeHistory.filter(t =>
+        t.setup === "SNIPER_KILLER" && (t.exitTime || t.timestamp || 0) >= todayStart.getTime()
+      ).length;
+      if (dailyKiller < 2) {
+        return killer;
+      }
+    }
+  }
+
   // STEP 6: Judas override (high-priority fake-move signal)
   if (judas?.judas_detected && (judas.confidence || 0) >= 80 && judas.signal && judas.signal !== "HOLD" && (htf?.confidence || 0) >= 65) {
     // Anti-FOMO (UPGRADE 6)
@@ -331,7 +493,7 @@ async function orchestrate({
       return { action: "HOLD", reason: `Judas in Asian session requires conf>=85, got ${judas.confidence}`, source: "ASIAN_KZ_JUDAS_FILTER" };
     }
 
-    const decisionScore = buildDecisionScore({ htf, smc: null, momentum, judas, regime });
+    const decisionScore = buildAdaptiveScore({ htf, smc: null, momentum, judas, regime });
     const ct = isCounterTrend(judas.signal, htf, regime);
     if (ct.isCounter) {
       if (ct.againstRegime) {
@@ -383,7 +545,7 @@ async function orchestrate({
       return { action: "HOLD", reason: "Anti-FOMO: Momentum entry zone passed", source: "ANTI_FOMO" };
     }
 
-    const decisionScore = buildDecisionScore({ htf, smc: null, momentum, judas: null, regime });
+    const decisionScore = buildAdaptiveScore({ htf, smc: null, momentum, judas: null, regime });
     const ct = isCounterTrend(momentum.direction, htf, regime);
     if (ct.isCounter) {
       if (ct.againstRegime) {
@@ -445,7 +607,7 @@ async function orchestrate({
         return { action: "HOLD", reason: "Trend entry disabled in ranging market", source: "MARKET_STATE_GATE" };
       }
 
-      const decisionScore = buildDecisionScore({ htf, smc, momentum, judas, regime });
+      const decisionScore = buildAdaptiveScore({ htf, smc, momentum, judas, regime });
       const ct = isCounterTrend(smc.signal, htf, regime);
       if (ct.isCounter) {
         if (ct.againstRegime) {
@@ -518,6 +680,12 @@ async function orchestrate({
           source:    "SNIPER_SMC",
           counter_trend_warning: ct.isCounter || undefined,
         };
+      }
+
+      // UPGRADE C — Smart Entry confluence check
+      const smartEntry = buildSmartEntry({ htf, smc, liquidity, score: decisionScore });
+      if (smartEntry) {
+        return { ...smartEntry, leverage: finalRisk.approved_leverage, size: 15 };
       }
 
       // Regular SMC entry

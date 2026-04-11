@@ -12,18 +12,18 @@ const PROMPTS = require("./prompts");
 // ── CACHE SYSTEM ──────────────────────────────────────────
 const CACHE = {};
 const COOLDOWNS = {
-  f1_htf:       15 * 60 * 1000,
-  f2_smc:        3 * 60 * 1000,
-  sniper:        1 * 60 * 1000,
-  judas:            30 * 1000,
-  sweep:         2 * 60 * 1000,
-  regime:       15 * 60 * 1000,
-  compounder:    5 * 60 * 1000,
-  momentum:         30 * 1000,
-  ob_scorer:    10 * 60 * 1000,
-  macro:        60 * 60 * 1000,
-  exit:             20 * 1000,
-  orchestrator:  1 * 60 * 1000,
+  f1_htf:       30 * 60 * 1000,    // 30 min — HTF rarely changes
+  f2_smc:       10 * 60 * 1000,    // 10 min — SMC is stable signal
+  sniper:        5 * 60 * 1000,    // 5 min — not needed every 10s
+  judas:         5 * 60 * 1000,    // 5 min — sweep patterns don't change fast
+  sweep:        10 * 60 * 1000,    // 10 min — rare event
+  regime:       30 * 60 * 1000,    // 30 min — regime is persistent
+  compounder:   10 * 60 * 1000,    // 10 min — equity updates slowly
+  momentum:      5 * 60 * 1000,    // 5 min — not a primary signal
+  ob_scorer:    30 * 60 * 1000,    // 30 min — orderbook slow-moving
+  macro:        60 * 60 * 1000,    // skip anyway
+  exit:          2 * 60 * 1000,    // 2 min — only on active trades
+  orchestrator:  5 * 60 * 1000,    // 5 min — meta analysis
 };
 
 function getCached(key) {
@@ -195,8 +195,8 @@ async function callF1({ klines_4h, klines_1h, price }) {
   const t0 = Date.now();
   const vars = {
     price: price.toFixed(2),
-    klines_4h: formatKlines(klines_4h, 20),
-    klines_1h: formatKlines(klines_1h, 30),
+    klines_4h: formatKlines(klines_4h, 10),
+    klines_1h: formatKlines(klines_1h, 12),
   };
   const userPrompt = PROMPTS.fillTemplate(PROMPTS.F1.user, vars);
   const result = await claudeCall(PROMPTS.F1.system, userPrompt, 400);
@@ -225,10 +225,10 @@ async function callF2({ klines_4h, klines_1h, klines_15m, klines_5m, price, htfB
     htf_confidence:  htfBias?.confidence || 50,
     funding_rate:    fundingRate.toFixed(4),
     oi_change:       oiChange.toFixed(2),
-    klines_4h:       formatKlines(klines_4h, 15),
-    klines_1h:       formatKlines(klines_1h, 20),
-    klines_15m:      formatKlines(klines_15m, 25),
-    klines_5m:       formatKlines(klines_5m || klines_15m, 15),
+    klines_4h:       formatKlines(klines_4h, 10),
+    klines_1h:       formatKlines(klines_1h, 12),
+    klines_15m:      formatKlines(klines_15m, 12),
+    klines_5m:       formatKlines(klines_5m || klines_15m, 10),
     bsl_levels:      JSON.stringify(swings.highs),
     ssl_levels:      JSON.stringify(swings.lows),
     current_session: session,
@@ -260,8 +260,8 @@ async function sniperMode({ klines_15m, klines_5m, price, htf_bias, htf_score })
     bearish_obs: "N/A",
     fvgs:        "N/A",
     last_sweep:  "N/A",
-    klines_15m:  formatKlines(klines_15m, 30),
-    klines_5m:   formatKlines(klines_5m || klines_15m, 30),
+    klines_15m:  formatKlines(klines_15m, 12),
+    klines_5m:   formatKlines(klines_5m || klines_15m, 10),
   };
   const userPrompt = PROMPTS.fillTemplate(PROMPTS.SNIPER.user, vars);
   const result = await claudeCall(PROMPTS.SNIPER.system, userPrompt, 500);
@@ -296,9 +296,9 @@ async function judasSweepDetector({ klines_15m, klines_5m, klines_1m, price }) {
     swing_lows:  JSON.stringify(swings.lows),
     equal_highs: JSON.stringify(swings.highs.filter((v, i, a) => a.filter(x => Math.abs(x - v) < price * 0.001).length > 1).slice(-3)),
     equal_lows:  JSON.stringify(swings.lows.filter((v, i, a) => a.filter(x => Math.abs(x - v) < price * 0.001).length > 1).slice(-3)),
-    klines_15m:  formatKlines(kl15, 30),
-    klines_5m:   formatKlines(kl5, 25),
-    klines_1m:   formatKlines(kl1, 20),
+    klines_15m:  formatKlines(kl15, 12),
+    klines_5m:   formatKlines(kl5, 10),
+    klines_1m:   formatKlines(kl1, 8),
     h1_o:  lastH1.open?.toFixed(1),
     h1_h:  lastH1.high?.toFixed(1),
     h1_l:  lastH1.low?.toFixed(1),
@@ -341,8 +341,8 @@ async function liquiditySweepEngine({ klines_15m, klines_5m, price, htf_bias }) 
     current_volume: lastK.volume.toFixed(0),
     avg_volume:     avgVol.toFixed(0),
     volume_ratio:   volRatio.toFixed(2),
-    klines_15m:     formatKlines(kl, 20),
-    klines_5m:      formatKlines(klines_5m || kl, 30),
+    klines_15m:     formatKlines(kl, 12),
+    klines_5m:      formatKlines(klines_5m || kl, 10),
   };
   const userPrompt = PROMPTS.fillTemplate(PROMPTS.SWEEP.user, vars);
   const result = await claudeCall(PROMPTS.SWEEP.system, userPrompt, 500);
@@ -389,7 +389,7 @@ async function volatilityRegime({ klines_1h, price }) {
 
   const vars = {
     price:      price.toFixed(2),
-    klines_1h:  formatKlines(klines_1h, 50),
+    klines_1h:  formatKlines(klines_1h, 12),
     ema20:      ema20.toFixed(2),
     ema50:      ema50.toFixed(2),
     atr14:      atr14.toFixed(4),
@@ -536,6 +536,10 @@ async function momentumIgnition({ klines_5m, klines_1m, price, current_candle, a
   const cached = getCached("momentum");
   if (cached) return cached;
 
+  // DISABLED — secondary signal, too many tokens per call
+  aiLog("MOMENTUM_DISABLED", 0, "Skipped — non-essential");
+  return null;
+
   const t0 = Date.now();
   const kl5 = klines_5m || klines_1m;
   const kl1 = klines_1m || klines_5m;
@@ -556,8 +560,8 @@ async function momentumIgnition({ klines_5m, klines_1m, price, current_candle, a
     c_volume: lastK.volume?.toFixed(0),
     avg_volume: avgVol.toFixed(0),
     volume_ratio: volRatio.toFixed(2),
-    klines_5m:  formatKlines(kl5, 20),
-    klines_1m:  formatKlines(kl1, 15),
+    klines_5m:  formatKlines(kl5, 10),
+    klines_1m:  formatKlines(kl1, 8),
     resistance_levels: JSON.stringify(swings.highs),
     support_levels:    JSON.stringify(swings.lows),
     nearest_ob:  "N/A", nearest_fvg: "N/A",
@@ -581,6 +585,10 @@ async function momentumIgnition({ klines_5m, klines_1m, price, current_candle, a
 async function obFreshnessScorer({ klines_1h, klines_15m, price }) {
   const cached = getCached("ob_scorer");
   if (cached) return cached;
+
+  // DISABLED — unused function, pure token waste
+  aiLog("OB_SCORER_DISABLED", 0, "Skipped — not called by orchestrator");
+  return null;
 
   const t0 = Date.now();
   const kl = klines_1h || klines_15m;
@@ -608,8 +616,8 @@ async function obFreshnessScorer({ klines_1h, klines_15m, price }) {
     premium_level:   premium.toFixed(2),
     discount_level:  discount.toFixed(2),
     order_blocks_list: JSON.stringify(recent_obs),
-    klines_1h:  formatKlines(kl, 30),
-    klines_15m: formatKlines(klines_15m || kl, 30),
+    klines_1h:  formatKlines(kl, 12),
+    klines_15m: formatKlines(klines_15m || kl, 12),
   };
   const userPrompt = PROMPTS.fillTemplate(PROMPTS.OB_SCORER.user, vars);
   const result = await claudeCall(PROMPTS.OB_SCORER.system, userPrompt, 600);
@@ -658,7 +666,7 @@ async function exitOptimizer({ side, entry, current_price, pnl_pct, peak_pnl_pct
     tp1_status: "PENDING", tp2_status: "PENDING",
     duration_minutes: duration_minutes || 0,
     setup_type: setup_type || "TREND",
-    klines_15m: formatKlines(kl15, 15),
+    klines_15m: formatKlines(kl15, 12),
     klines_5m:  formatKlines(kl5, 15),
     volume_trend: "NEUTRAL", momentum_direction: "NEUTRAL", momentum_strength: "MEDIUM",
     next_resistance: nextRes.toFixed(2),

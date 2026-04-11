@@ -22,7 +22,8 @@
       "Bash(node --check prompts.js)",
       "Bash(npm --version)",
       "Bash(npm run:*)",
-      "Bash(curl -s http://localhost:3000)"
+      "Bash(curl -s http://localhost:3000)",
+      "Bash(ls -la c:/Users/HP/Documents/Daffabot2/*.js)"
     ],
     "additionalDirectories": [
       "C:\\Users\\HP\\.claude\\plans"

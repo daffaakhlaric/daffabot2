@@ -49,48 +49,72 @@ function aiLog(feature, latency_ms, result_summary) {
 }
 
 // ── CLAUDE API CALL ────────────────────────────────────────
-function claudeCall(systemPrompt, userPrompt) {
+function claudeCall(systemPrompt, userPrompt, maxTokens = 600) {
   return new Promise(resolve => {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) { resolve(null); return; }
 
-    const body = JSON.stringify({
-      model:      "claude-haiku-4-5-20251001",
-      max_tokens: 1200,
-      system:     systemPrompt,
-      messages:   [{ role: "user", content: userPrompt }],
-    });
+    const attempt = (retryLeft) => {
+      const body = JSON.stringify({
+        model:      "claude-haiku-4-5-20251001",
+        max_tokens: maxTokens,
+        system:     systemPrompt,
+        messages:   [{ role: "user", content: userPrompt }],
+      });
 
-    const options = {
-      hostname: "api.anthropic.com",
-      path:     "/v1/messages",
-      method:   "POST",
-      headers: {
-        "Content-Type":      "application/json",
-        "x-api-key":         apiKey,
-        "anthropic-version": "2023-06-01",
-        "Content-Length":    Buffer.byteLength(body),
-      },
+      const options = {
+        hostname: "api.anthropic.com",
+        path:     "/v1/messages",
+        method:   "POST",
+        headers: {
+          "Content-Type":      "application/json",
+          "x-api-key":         apiKey,
+          "anthropic-version": "2023-06-01",
+          "Content-Length":    Buffer.byteLength(body),
+        },
+      };
+
+      const req = https.request(options, res => {
+        let data = "";
+        res.on("data", d => (data += d));
+        res.on("end", () => {
+          try {
+            const parsed = JSON.parse(data);
+            const text = parsed.content?.[0]?.text || "";
+            const match = text.match(/\{[\s\S]*\}/);
+            if (match) { resolve(JSON.parse(match[0])); return; }
+          } catch {}
+          // Empty or invalid response
+          if (retryLeft > 0) {
+            setTimeout(() => attempt(retryLeft - 1), 2000);
+          } else {
+            aiLog("API_EMPTY", 0, "Empty/invalid response after retry");
+            resolve(null);
+          }
+        });
+      });
+
+      req.on("error", () => {
+        if (retryLeft > 0) {
+          setTimeout(() => attempt(retryLeft - 1), 2000);
+        } else {
+          aiLog("API_ERROR", 0, "Network error after retry");
+          resolve(null);
+        }
+      });
+
+      req.setTimeout(12000, () => {
+        req.destroy();
+        // Don't retry on timeout — already waited 12s
+        aiLog("API_TIMEOUT", 0, "Request timed out");
+        resolve(null);
+      });
+
+      req.write(body);
+      req.end();
     };
 
-    const req = https.request(options, res => {
-      let data = "";
-      res.on("data", d => (data += d));
-      res.on("end", () => {
-        try {
-          const parsed = JSON.parse(data);
-          const text = parsed.content?.[0]?.text || "";
-          const match = text.match(/\{[\s\S]*\}/);
-          if (match) resolve(JSON.parse(match[0]));
-          else resolve(null);
-        } catch { resolve(null); }
-      });
-    });
-
-    req.on("error", () => resolve(null));
-    req.setTimeout(15000, () => { req.destroy(); resolve(null); });
-    req.write(body);
-    req.end();
+    attempt(1); // 1 retry allowed
   });
 }
 
@@ -175,7 +199,7 @@ async function callF1({ klines_4h, klines_1h, price }) {
     klines_1h: formatKlines(klines_1h, 30),
   };
   const userPrompt = PROMPTS.fillTemplate(PROMPTS.F1.user, vars);
-  const result = await claudeCall(PROMPTS.F1.system, userPrompt);
+  const result = await claudeCall(PROMPTS.F1.system, userPrompt, 400);
   const lat = Date.now() - t0;
 
   if (result) {
@@ -203,15 +227,15 @@ async function callF2({ klines_4h, klines_1h, klines_15m, klines_5m, price, htfB
     oi_change:       oiChange.toFixed(2),
     klines_4h:       formatKlines(klines_4h, 15),
     klines_1h:       formatKlines(klines_1h, 20),
-    klines_15m:      formatKlines(klines_15m, 40),
-    klines_5m:       formatKlines(klines_5m || klines_15m, 20),
+    klines_15m:      formatKlines(klines_15m, 25),
+    klines_5m:       formatKlines(klines_5m || klines_15m, 15),
     bsl_levels:      JSON.stringify(swings.highs),
     ssl_levels:      JSON.stringify(swings.lows),
     current_session: session,
     session_wib:     getWIBTime(),
   };
   const userPrompt = PROMPTS.fillTemplate(PROMPTS.F2.user, vars);
-  const result = await claudeCall(PROMPTS.F2.system, userPrompt);
+  const result = await claudeCall(PROMPTS.F2.system, userPrompt, 700);
   const lat = Date.now() - t0;
 
   if (result) {
@@ -236,11 +260,11 @@ async function sniperMode({ klines_15m, klines_5m, price, htf_bias, htf_score })
     bearish_obs: "N/A",
     fvgs:        "N/A",
     last_sweep:  "N/A",
-    klines_15m:  formatKlines(klines_15m, 50),
+    klines_15m:  formatKlines(klines_15m, 30),
     klines_5m:   formatKlines(klines_5m || klines_15m, 30),
   };
   const userPrompt = PROMPTS.fillTemplate(PROMPTS.SNIPER.user, vars);
-  const result = await claudeCall(PROMPTS.SNIPER.system, userPrompt);
+  const result = await claudeCall(PROMPTS.SNIPER.system, userPrompt, 500);
   const lat = Date.now() - t0;
 
   if (result) {
@@ -273,7 +297,7 @@ async function judasSweepDetector({ klines_15m, klines_5m, klines_1m, price }) {
     equal_highs: JSON.stringify(swings.highs.filter((v, i, a) => a.filter(x => Math.abs(x - v) < price * 0.001).length > 1).slice(-3)),
     equal_lows:  JSON.stringify(swings.lows.filter((v, i, a) => a.filter(x => Math.abs(x - v) < price * 0.001).length > 1).slice(-3)),
     klines_15m:  formatKlines(kl15, 30),
-    klines_5m:   formatKlines(kl5, 40),
+    klines_5m:   formatKlines(kl5, 25),
     klines_1m:   formatKlines(kl1, 20),
     h1_o:  lastH1.open?.toFixed(1),
     h1_h:  lastH1.high?.toFixed(1),
@@ -282,7 +306,7 @@ async function judasSweepDetector({ klines_15m, klines_5m, klines_1m, price }) {
     htf_bias: global.botState?.features?.f1?.htf_bias || "UNKNOWN",
   };
   const userPrompt = PROMPTS.fillTemplate(PROMPTS.JUDAS.user, vars);
-  const result = await claudeCall(PROMPTS.JUDAS.system, userPrompt);
+  const result = await claudeCall(PROMPTS.JUDAS.system, userPrompt, 600);
   const lat = Date.now() - t0;
 
   if (result) {
@@ -321,7 +345,7 @@ async function liquiditySweepEngine({ klines_15m, klines_5m, price, htf_bias }) 
     klines_5m:      formatKlines(klines_5m || kl, 30),
   };
   const userPrompt = PROMPTS.fillTemplate(PROMPTS.SWEEP.user, vars);
-  const result = await claudeCall(PROMPTS.SWEEP.system, userPrompt);
+  const result = await claudeCall(PROMPTS.SWEEP.system, userPrompt, 500);
   const lat = Date.now() - t0;
 
   if (result) {
@@ -376,7 +400,7 @@ async function volatilityRegime({ klines_1h, price }) {
     swing_lows:  JSON.stringify(swings.lows),
   };
   const userPrompt = PROMPTS.fillTemplate(PROMPTS.REGIME.user, vars);
-  const result = await claudeCall(PROMPTS.REGIME.system, userPrompt);
+  const result = await claudeCall(PROMPTS.REGIME.system, userPrompt, 350);
   const lat = Date.now() - t0;
 
   if (result) {
@@ -496,7 +520,7 @@ async function smartCompounder({ equity, base_size = 15, tradeHistory = [] }) {
     confluence_score: 70,
   };
   const userPrompt = PROMPTS.fillTemplate(PROMPTS.COMPOUNDER.user, vars);
-  const result = await claudeCall(PROMPTS.COMPOUNDER.system, userPrompt);
+  const result = await claudeCall(PROMPTS.COMPOUNDER.system, userPrompt, 650);
   const lat = Date.now() - t0;
 
   if (result) {
@@ -542,7 +566,7 @@ async function momentumIgnition({ klines_5m, klines_1m, price, current_candle, a
     clean_air_above: "2.0", clean_air_below: "2.0",
   };
   const userPrompt = PROMPTS.fillTemplate(PROMPTS.MOMENTUM.user, vars);
-  const result = await claudeCall(PROMPTS.MOMENTUM.system, userPrompt);
+  const result = await claudeCall(PROMPTS.MOMENTUM.system, userPrompt, 550);
   const lat = Date.now() - t0;
 
   if (result) {
@@ -584,11 +608,11 @@ async function obFreshnessScorer({ klines_1h, klines_15m, price }) {
     premium_level:   premium.toFixed(2),
     discount_level:  discount.toFixed(2),
     order_blocks_list: JSON.stringify(recent_obs),
-    klines_1h:  formatKlines(kl, 50),
+    klines_1h:  formatKlines(kl, 30),
     klines_15m: formatKlines(klines_15m || kl, 30),
   };
   const userPrompt = PROMPTS.fillTemplate(PROMPTS.OB_SCORER.user, vars);
-  const result = await claudeCall(PROMPTS.OB_SCORER.system, userPrompt);
+  const result = await claudeCall(PROMPTS.OB_SCORER.system, userPrompt, 600);
   const lat = Date.now() - t0;
 
   if (result) {
@@ -604,28 +628,9 @@ async function macroCorrelation({ btc_price, btc_change_24h }) {
   const cached = getCached("macro");
   if (cached) return cached;
 
-  const t0 = Date.now();
-  const vars = {
-    btc_price:       btc_price?.toFixed(2) || "N/A",
-    btc_change_24h:  btc_change_24h?.toFixed(2) || "0",
-    dxy_value:       "N/A", dxy_change: "N/A", dxy_weekly_trend: "N/A",
-    btc_dom:         "N/A", btcd_change: "N/A",
-    ethbtc_ratio:    "N/A", ethbtc_change: "N/A",
-    fear_greed:      "N/A", fear_greed_label: "N/A",
-    oi_value:        "N/A", oi_change_24h: "N/A",
-    long_pct:        "N/A", short_pct: "N/A",
-    spy_change:      "N/A", gold_change: "N/A", vix: "N/A",
-  };
-  const userPrompt = PROMPTS.fillTemplate(PROMPTS.MACRO.user, vars);
-  const result = await claudeCall(PROMPTS.MACRO.system, userPrompt);
-  const lat = Date.now() - t0;
-
-  if (result) {
-    setCache("macro", result);
-    if (global.botState) global.botState.features = { ...(global.botState.features || {}), macro: result };
-    aiLog("MACRO", lat, `bias=${result.macro_bias} score=${result.macro_bias_score}`);
-  }
-  return result;
+  // Skip entirely — all inputs are N/A, no real data available
+  aiLog("MACRO_SKIP", 0, "Macro skipped — no real data feed");
+  return null;
 }
 
 // ── EXIT OPTIMIZER ────────────────────────────────────────
@@ -663,7 +668,7 @@ async function exitOptimizer({ side, entry, current_price, pnl_pct, peak_pnl_pct
     minutes_to_session_close: 60,
   };
   const userPrompt = PROMPTS.fillTemplate(PROMPTS.EXIT_OPTIMIZER.user, vars);
-  const result = await claudeCall(PROMPTS.EXIT_OPTIMIZER.system, userPrompt);
+  const result = await claudeCall(PROMPTS.EXIT_OPTIMIZER.system, userPrompt, 600);
   const lat = Date.now() - t0;
 
   if (result) {
@@ -698,7 +703,7 @@ async function masterOrchestrator({ all_results, active_position, price, equity 
     equity: equity.toFixed(2),
   };
   const userPrompt = PROMPTS.fillTemplate(PROMPTS.ORCHESTRATOR.user, vars);
-  const result = await claudeCall(PROMPTS.ORCHESTRATOR.system, userPrompt);
+  const result = await claudeCall(PROMPTS.ORCHESTRATOR.system, userPrompt, 800);
   const lat = Date.now() - t0;
 
   if (result) {
@@ -788,7 +793,7 @@ async function reviewTrade(trade) {
   };
 
   const userPrompt = PROMPTS.fillTemplate(PROMPTS.F10.user, vars);
-  const result = await claudeCall(PROMPTS.F10.system, userPrompt);
+  const result = await claudeCall(PROMPTS.F10.system, userPrompt, 1000);
   const lat = Date.now() - t0;
   if (result) aiLog("F10_REVIEW", lat, `grade=${result.quality_score} flag=${result.behavioral_flag}`);
   return result;

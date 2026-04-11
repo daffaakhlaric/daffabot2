@@ -61,6 +61,7 @@ global.botState = {
   logs:           [],
   features:       {},
   aiLogs:         [],
+  psychWarnings:  [],
 };
 
 // ================= UTIL =================
@@ -486,6 +487,17 @@ async function run() {
                   if (review) {
                     lastTrade.aiReview = review;
                     log(`🔍 AI [${review.quality_score}] ${review.lesson}`);
+                    // Track behavioral flags for psychological monitoring
+                    if (review.behavioral_flag && review.behavioral_flag !== "GOOD") {
+                      if (!global.botState.psychWarnings) global.botState.psychWarnings = [];
+                      global.botState.psychWarnings.push({
+                        ts: Date.now(),
+                        flag: review.behavioral_flag,
+                        trade_id: lastTrade.id,
+                        lesson: review.lesson,
+                      });
+                      if (global.botState.psychWarnings.length > 20) global.botState.psychWarnings.shift();
+                    }
                   }
                 }).catch(() => {});
               } catch {}

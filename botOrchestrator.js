@@ -418,6 +418,11 @@ async function orchestrate({
       } catch {}
     }
 
+    // CRITICAL override — close immediately regardless of exit_mode
+    if (exit?.urgency === "CRITICAL") {
+      return { action: "CLOSE", reason: exit.reasoning || "AI CRITICAL exit", urgency: "CRITICAL", source: "AI_EXIT_CRITICAL" };
+    }
+
     if (exit?.exit_mode === "IMMEDIATE_EXIT") {
       return { action: "CLOSE", reason: exit.reasoning || "AI exit signal", urgency: exit.urgency, source: "AI_EXIT" };
     }
@@ -431,6 +436,13 @@ async function orchestrate({
     }
     if (exit?.action_details?.new_sl && exit.action_details.new_sl !== activePosition.sl) {
       return { action: "UPDATE_SL", new_sl: exit.action_details.new_sl, reason: exit.reasoning, source: "AI_EXIT" };
+    }
+
+    // TIGHTEN_TRAIL exit mode: move SL closer based on trail distance
+    if (exit?.exit_mode === "TIGHTEN_TRAIL" && exit.action_details?.trail_distance_pct) {
+      const dist = activePosition.entry * (exit.action_details.trail_distance_pct / 100);
+      const new_sl = activePosition.side === "LONG" ? price - dist : price + dist;
+      return { action: "UPDATE_SL", new_sl: +new_sl.toFixed(2), reason: exit.reasoning || "Trail tightened", source: "AI_EXIT_TRAIL" };
     }
 
     // FALLBACK EXIT ONLY — bukan untuk entry baru
@@ -521,12 +533,32 @@ async function orchestrate({
     const lastTr  = tradeHistory[tradeHistory.length - 1];
     const lastPnL = lastTr?.pnlUSDT || 0;
 
+    let smcForElite = null;
+    try {
+      smcForElite = await featureEngine.callF2({
+        klines_4h:  klines_4h || klines_1h,
+        klines_1h:  klines_1h || klines_15m,
+        klines_15m,
+        klines_5m:  klines_1m,
+        price,
+        htfBias:    htf,
+      });
+    } catch {}
+
     const elite = sniperEliteEntry({
-      htf, judas, smc: null, kz,
+      htf, judas, smc: smcForElite, kz,
       tradeHistory, dailyTrades, lastTradePnL: lastPnL,
     });
 
     if (elite) {
+      let eliteComp = null;
+      try {
+        eliteComp = await featureEngine.smartCompounder({ equity, base_size: 15, tradeHistory });
+      } catch {}
+      if (eliteComp && !eliteComp.approved) {
+        return { action: "HOLD", reason: "Compounder block (SNIPER_ELITE): " + (eliteComp.anti_tilt_reason || "tilt"), source: "COMPOUNDER_BLOCK" };
+      }
+
       const entryP = elite.entry || price;
       const slP    = elite.sl    || entryP * (elite.action === "LONG" ? 0.993 : 1.007);
       const r      = Math.abs(entryP - slP);
@@ -539,20 +571,19 @@ async function orchestrate({
 
   // STEP 5.6 — SNIPER KILLER (UPGRADE D): higher priority than Judas
   if (process.env.SNIPER_ENABLED !== "false") {
-    let smcForKiller = null;
-    try {
-      smcForKiller = await featureEngine.callF2({
-        klines_4h:  klines_4h || klines_1h,
-        klines_1h:  klines_1h || klines_15m,
-        klines_15m,
-        klines_5m:  klines_1m,
-        price,
-        htfBias:    htf,
-      });
-    } catch {}
+    // Reuse smcForElite from STEP 5.5 to avoid redundant callF2
+    const smcForKiller = smcForElite;
 
     const killer = sniperKiller({ htf, smc: smcForKiller, judas, liquidity, kz });
     if (killer) {
+      let killerComp = null;
+      try {
+        killerComp = await featureEngine.smartCompounder({ equity, base_size: 15, tradeHistory });
+      } catch {}
+      if (killerComp && !killerComp.approved) {
+        return { action: "HOLD", reason: "Compounder block (SNIPER_KILLER): " + (killerComp.anti_tilt_reason || "tilt"), source: "COMPOUNDER_BLOCK" };
+      }
+
       // Daily trade cap for SNIPER_KILLER (max 2)
       const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
       const dailyKiller = tradeHistory.filter(t =>
@@ -606,6 +637,9 @@ async function orchestrate({
     let size = null;
     try {
       const comp = await featureEngine.smartCompounder({ equity, base_size: 15, tradeHistory });
+      if (comp && !comp.approved) {
+        return { action: "HOLD", reason: "Compounder block (Judas): " + (comp.anti_tilt_reason || "tilt"), source: "COMPOUNDER_BLOCK" };
+      }
       size = comp?.recommended_size_usdt || 15;
     } catch {}
 
@@ -674,18 +708,21 @@ async function orchestrate({
   }
 
   // STEP 8: Normal SMC flow
-  if ((htf?.confidence || 0) >= 60) {
-    let smc = null;
-    try {
-      smc = await featureEngine.callF2({
-        klines_4h:  klines_4h || klines_1h,
-        klines_1h:  klines_1h || klines_15m,
-        klines_15m,
-        klines_5m:  klines_1m,
-        price,
-        htfBias:    htf,
-      });
-    } catch {}
+  if ((htf?.confidence || 0) >= 70) {
+    // Reuse smcForElite from STEP 5.5 if available; only call callF2 if null
+    let smc = smcForElite;
+    if (!smc) {
+      try {
+        smc = await featureEngine.callF2({
+          klines_4h:  klines_4h || klines_1h,
+          klines_1h:  klines_1h || klines_15m,
+          klines_15m,
+          klines_5m:  klines_1m,
+          price,
+          htfBias:    htf,
+        });
+      } catch {}
+    }
 
     if (smc?.signal !== "HOLD" && (smc?.confluence_score || 0) >= 65) {
       // Anti-FOMO (UPGRADE 6)
@@ -787,6 +824,9 @@ async function orchestrate({
       let size = 15;
       try {
         const comp = await featureEngine.smartCompounder({ equity, base_size: 15, tradeHistory });
+        if (comp && !comp.approved) {
+          return { action: "HOLD", reason: "Compounder block (SMC): " + (comp.anti_tilt_reason || "tilt"), source: "COMPOUNDER_BLOCK" };
+        }
         size = comp?.recommended_size_usdt || 15;
       } catch {}
 

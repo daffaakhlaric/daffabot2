@@ -1,0 +1,152 @@
+// ────────────────────────────────────────────────────────────────
+// RESPONSIVE QUERIES — Must be last in cascade
+// ────────────────────────────────────────────────────────────────
+
+@use 'variables' as *;
+
+// ── Tablet/Medium (max 1199px) ──
+@media (max-width: 1199px) {
+  .metrics-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .chart-row {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .gauge-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .perf-grid-3 {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+// ── Mobile (max 767px) ──
+@media (max-width: 767px) {
+  #topbar {
+    display: flex;
+    position: relative;
+    z-index: 1000;
+  }
+
+  #sidebar {
+    display: none;
+    position: fixed;
+    top: var(--topbar-h);
+    left: 0;
+    bottom: 0;
+    width: var(--sidebar-w);
+    z-index: 999;
+    box-shadow: 4px 0 20px rgba(0, 0, 0, 0.4);
+
+    &.mobile-open {
+      display: flex;
+    }
+  }
+
+  #main {
+    padding-top: var(--topbar-h);
+  }
+
+  #bottom-nav {
+    display: block;
+  }
+
+  #app {
+    flex-direction: column;
+  }
+
+  #main {
+    flex: 1;
+    overflow: hidden;
+  }
+
+  #content {
+    overflow-x: hidden;
+  }
+
+  .section {
+    padding: 8px;
+    gap: 8px;
+    overflow-x: hidden;
+
+    & > * {
+      max-width: 100%;
+      overflow-x: hidden;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+  }
+
+  .card {
+    padding: 10px;
+    overflow-x: hidden;
+  }
+
+  .chart-card {
+    padding: 10px;
+    overflow-x: hidden;
+  }
+
+  #ai-panel {
+    padding: 10px;
+    overflow-x: hidden;
+  }
+
+  // ── Grid Overrides for Mobile ──
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+  }
+
+  .gauge-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+  }
+
+  .gauge-card {
+    padding: 10px;
+  }
+
+  // ── Single-column grids ──
+  .chart-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .ai-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .perf-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .perf-grid-3 {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  // ── Metric Card Sizing ──
+  .mc {
+    padding: 10px 12px;
+  }
+
+  .mc-val {
+    font-size: 18px;
+  }
+}

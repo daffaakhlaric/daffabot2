@@ -1,0 +1,45 @@
+// ────────────────────────────────────────────────────────────────
+// MOBILE BOTTOM NAVIGATION
+// ────────────────────────────────────────────────────────────────
+
+@use 'variables' as *;
+
+#bottom-nav {
+  display: none;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+  height: 56px;
+  flex-shrink: 0;
+}
+
+.bnav-items {
+  display: flex;
+  height: 100%;
+}
+
+.bnav-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  transition: color 150ms;
+  border-top: 2px solid transparent;
+
+  &.active {
+    color: var(--amber);
+    border-top-color: var(--amber);
+  }
+}
+
+.bnav-icon {
+  font-size: 15px;
+  line-height: 1;
+}

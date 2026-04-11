@@ -1,0 +1,76 @@
+// ────────────────────────────────────────────────────────────────
+// METRIC CARDS (Overview section)
+// ────────────────────────────────────────────────────────────────
+
+@use 'variables' as *;
+
+@mixin mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+}
+
+.mc {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: $radius-md;
+  padding: 14px 16px;
+  cursor: default;
+  position: relative;
+  min-width: 0;
+
+  & > * {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &:hover {
+    border-color: var(--border-focus);
+  }
+}
+
+.mc-label {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.9px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.mc-val {
+  @include mono;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  &.pos {
+    color: var(--green);
+  }
+
+  &.neg {
+    color: var(--red);
+  }
+
+  &.warn {
+    color: var(--amber);
+  }
+}
+
+.mc-sub {
+  font-size: 11px;
+  margin-top: 4px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

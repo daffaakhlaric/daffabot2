@@ -1,0 +1,157 @@
+// ────────────────────────────────────────────────────────────────
+// TRADE HISTORY SECTION
+// ────────────────────────────────────────────────────────────────
+
+@use 'variables' as *;
+
+@mixin mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.fchip {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 3px 10px;
+  border-radius: $radius-sm;
+  font-size: 10px;
+  cursor: pointer;
+  transition: all 150ms;
+  font-family: 'Inter', sans-serif;
+
+  &:hover {
+    border-color: var(--border-focus);
+    color: var(--text-secondary);
+  }
+
+  &.active {
+    background: var(--bg-elevated);
+    border-color: var(--amber);
+    color: var(--amber);
+  }
+}
+
+.th-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+
+  th {
+    text-align: left;
+    padding: 7px 10px;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    white-space: nowrap;
+    position: sticky;
+    top: 0;
+    background: var(--bg-surface);
+    z-index: 1;
+
+    &:hover {
+      color: var(--text-secondary);
+    }
+  }
+
+  td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-soft);
+    white-space: nowrap;
+    @include mono;
+  }
+
+  td:first-child {
+    border-left: 2px solid transparent;
+  }
+
+  tr.win td:first-child {
+    border-left-color: var(--green);
+  }
+
+  tr.loss td:first-child {
+    border-left-color: var(--red);
+  }
+
+  tr:hover td {
+    background: var(--bg-elevated);
+    cursor: pointer;
+  }
+
+  tr:last-child td {
+    border-bottom: none;
+  }
+}
+
+.th-expanded {
+  background: var(--bg-overlay) !important;
+}
+
+.th-expand-content {
+  padding: 12px 16px;
+  background: var(--bg-overlay);
+  border-bottom: 1px solid var(--border);
+}
+
+.ai-review-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  font-size: 11px;
+}
+
+.ar-label {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.ar-val {
+  @include mono;
+}
+
+.pag {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0 0;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.pag-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 4px 12px;
+  border-radius: $radius-sm;
+  font-size: 10px;
+  cursor: pointer;
+  transition: all 150ms;
+  font-family: 'Inter', sans-serif;
+
+  &:hover:not(:disabled) {
+    border-color: var(--border-focus);
+    color: var(--text-secondary);
+  }
+
+  &:disabled {
+    opacity: 0.3;
+    cursor: default;
+  }
+}

@@ -1,0 +1,75 @@
+// ────────────────────────────────────────────────────────────────
+// STATUS BAR & CHIPS
+// ────────────────────────────────────────────────────────────────
+
+@use 'variables' as *;
+
+#status-bar {
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  padding: 3px 8px;
+  border-radius: $radius-sm;
+  background: var(--bg-overlay);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.chip-label {
+  color: var(--text-muted);
+}
+
+.chip-val {
+  color: var(--text-secondary);
+
+  &.bull {
+    color: var(--green);
+  }
+
+  &.bear {
+    color: var(--red);
+  }
+
+  &.range {
+    color: var(--amber);
+  }
+
+  &.active {
+    color: var(--teal);
+  }
+
+  &.ok {
+    color: var(--green);
+  }
+
+  &.warn {
+    color: var(--amber);
+  }
+}
+
+.chip-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-muted);
+
+  &.live {
+    background: var(--green);
+  }
+}

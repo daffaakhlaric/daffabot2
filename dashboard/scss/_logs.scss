@@ -1,0 +1,72 @@
+// ────────────────────────────────────────────────────────────────
+// LOGS SECTION — Terminal-style viewer
+// ────────────────────────────────────────────────────────────────
+
+@use 'variables' as *;
+
+@mixin mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+#log-terminal {
+  background: #03050a;
+  border: 1px solid var(--border);
+  border-radius: $radius-md;
+  @include mono;
+  font-size: 12px;
+  line-height: 1.8;
+  overflow-y: auto;
+  flex: 1;
+  padding: 10px 12px;
+  min-height: 0;
+  height: calc(100vh - 80px);
+}
+
+.log-line {
+  display: flex;
+  gap: 8px;
+  padding: 1px 0;
+}
+
+.log-ts {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+.log-ai {
+  color: var(--teal);
+}
+
+.log-trade {
+  color: var(--green);
+}
+
+.log-error {
+  color: var(--red);
+}
+
+.log-warn {
+  color: var(--amber);
+}
+
+.log-default {
+  color: var(--text-secondary);
+}
+
+#new-log-notice {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--amber);
+  color: var(--text-inverse);
+  padding: 4px 14px;
+  border-radius: $radius-pill;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  display: none;
+  z-index: 10;
+  letter-spacing: 0.5px;
+}

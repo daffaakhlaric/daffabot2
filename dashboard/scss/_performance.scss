@@ -1,0 +1,87 @@
+// ────────────────────────────────────────────────────────────────
+// PERFORMANCE SECTION
+// ────────────────────────────────────────────────────────────────
+
+@use 'variables' as *;
+
+@mixin mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.perf-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.perf-grid-3 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+}
+
+.split-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 12px;
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.split-bar-wrap {
+  flex: 1;
+  margin: 0 10px;
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+}
+
+.split-bar {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.setup-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+
+  th {
+    text-align: left;
+    padding: 5px 8px;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+  }
+
+  td {
+    padding: 7px 8px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  tr:last-child td {
+    border-bottom: none;
+  }
+
+  tr:hover td {
+    background: var(--bg-elevated);
+  }
+}
+
+.inline-bar {
+  display: inline-block;
+  height: 2px;
+  background: var(--green);
+  border-radius: 1px;
+  vertical-align: middle;
+  margin-left: 6px;
+}

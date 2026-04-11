@@ -1,0 +1,31 @@
+// ────────────────────────────────────────────────────────────────
+// CARD COMPONENTS
+// ────────────────────────────────────────────────────────────────
+
+@use 'variables' as *;
+
+@mixin card-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: $radius-md;
+  padding: 16px;
+  overflow: hidden;
+}
+
+.card-title {
+  @include card-title;
+}

@@ -5,16 +5,22 @@
   "main": "pepe-futures-bot.js",
   "scripts": {
     "start": "node pepe-futures-bot.js",
-    "dry":   "cross-env DRY_RUN=true node pepe-futures-bot.js",
-    "dash":  "node dashboard-server.js",
-    "dashboard": "node dashboard-server.js",
+    "dry": "cross-env DRY_RUN=true node pepe-futures-bot.js",
+    "dash": "npm run sass:build && node dashboard-server.js",
+    "dashboard": "npm run sass:build && node dashboard-server.js",
     "live": "cross-env DRY_RUN=false AI_ENABLED=true node pepe-futures-bot.js",
-    "test":  "node --test test/daffabot.test.js"
+    "test": "node --test test/daffabot.test.js",
+    "sass:build": "sass dashboard/scss/main.scss dashboard/css/main.css --style=compressed --no-source-map",
+    "sass:watch": "sass dashboard/scss/main.scss dashboard/css/main.css --watch --style=expanded",
+    "sass:dev": "sass dashboard/scss/main.scss dashboard/css/main.css --watch --style=expanded --source-map"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.44.0",
     "dotenv": "^16.4.5",
     "ws": "^8.17.0"
+  },
+  "devDependencies": {
+    "sass": "^1.99.0"
   },
   "engines": {
     "node": ">=18.0.0"

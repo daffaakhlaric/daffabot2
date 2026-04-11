@@ -295,6 +295,29 @@ const server = http.createServer((req, res) => {
     }, null, 2));
   }
 
+  // Static assets: CSS, source maps, JS
+  if (url.startsWith("/css/") || url.startsWith("/js/")) {
+    const assetPath = path.join(DASHBOARD_DIR, url);
+    // Prevent path traversal: ensure resolved path is inside DASHBOARD_DIR
+    if (!assetPath.startsWith(DASHBOARD_DIR + path.sep)) {
+      res.writeHead(403, { "Content-Type": "text/plain" });
+      return res.end("Forbidden");
+    }
+    if (!fs.existsSync(assetPath)) {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      return res.end("Not found");
+    }
+    const ext = path.extname(assetPath);
+    const mimeTypes = {
+      ".css": "text/css",
+      ".map": "application/json",
+      ".js": "text/javascript",
+    };
+    const contentType = mimeTypes[ext] || "text/plain";
+    res.writeHead(200, { "Content-Type": contentType });
+    return res.end(fs.readFileSync(assetPath));
+  }
+
   res.writeHead(404, { "Content-Type": "text/plain" });
   res.end("Not found");
 });

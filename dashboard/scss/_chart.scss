@@ -1,0 +1,73 @@
+// ────────────────────────────────────────────────────────────────
+// CHARTS & GRAPH WRAPPERS
+// ────────────────────────────────────────────────────────────────
+
+@use 'variables' as *;
+
+@mixin mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.chart-row {
+  display: grid;
+  grid-template-columns: 65fr 35fr;
+  gap: 10px;
+  overflow-x: hidden;
+}
+
+.chart-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: $radius-md;
+  padding: 16px;
+  overflow: hidden;
+}
+
+.chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chart-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.range-btns {
+  display: flex;
+  gap: 4px;
+}
+
+.rbtn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border-radius: $radius-sm;
+  font-size: 10px;
+  @include mono;
+  cursor: pointer;
+  transition: all 150ms;
+
+  &:hover {
+    border-color: var(--border-focus);
+    color: var(--text-secondary);
+  }
+
+  &.active {
+    background: var(--bg-elevated);
+    border-color: var(--amber);
+    color: var(--amber);
+  }
+}
+
+.chart-wrap {
+  position: relative;
+}

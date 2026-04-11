@@ -1,0 +1,71 @@
+// ────────────────────────────────────────────────────────────────
+// BADGES & PILLS
+// ────────────────────────────────────────────────────────────────
+
+@use 'variables' as *;
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: $radius-pill;
+  white-space: nowrap;
+
+  &.b-green {
+    background: rgba($green, 0.10);
+    color: $green;
+    border: 1px solid rgba($green, 0.20);
+  }
+
+  &.b-red {
+    background: rgba($red, 0.10);
+    color: $red;
+    border: 1px solid rgba($red, 0.20);
+  }
+
+  &.b-amber {
+    background: rgba($amber, 0.10);
+    color: $amber;
+    border: 1px solid rgba($amber, 0.10);
+  }
+
+  &.b-blue {
+    background: rgba($blue, 0.10);
+    color: $blue;
+    border: 1px solid rgba($blue, 0.10);
+  }
+
+  &.b-teal {
+    background: rgba($teal, 0.10);
+    color: $teal;
+    border: 1px solid rgba($teal, 0.10);
+  }
+
+  &.b-muted {
+    background: rgba(74, 90, 106, 0.12);
+    color: var(--text-muted);
+    border: 1px solid rgba(74, 90, 106, 0.20);
+  }
+
+  &.b-bot-run {
+    background: rgba($green, 0.10);
+    color: $green;
+    border: 1px solid rgba($green, 0.25);
+  }
+
+  &.b-bot-stop {
+    background: rgba($red, 0.10);
+    color: $red;
+    border: 1px solid rgba($red, 0.25);
+  }
+
+  &.b-bot-idle {
+    background: rgba($amber, 0.10);
+    color: $amber;
+    border: 1px solid rgba($amber, 0.25);
+  }
+}

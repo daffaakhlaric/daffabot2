@@ -1,0 +1,68 @@
+// ────────────────────────────────────────────────────────────────
+// TOP BAR & HAMBURGER (Mobile)
+// ────────────────────────────────────────────────────────────────
+
+@use 'variables' as *;
+
+@mixin mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+#topbar {
+  display: none;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  height: var(--topbar-h);
+  padding: 0 14px;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  z-index: 1000;
+  position: relative;
+}
+
+#hamburger {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  width: 36px;
+  height: 36px;
+  box-sizing: border-box;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+
+  span {
+    display: block;
+    width: 100%;
+    height: 2px;
+    background: var(--text-secondary);
+    border-radius: 1px;
+    transition: all 200ms;
+  }
+
+  &.open span:nth-child(1) {
+    transform: translateY(7px) rotate(45deg);
+  }
+
+  &.open span:nth-child(2) {
+    opacity: 0;
+    transform: scaleX(0);
+  }
+
+  &.open span:nth-child(3) {
+    transform: translateY(-7px) rotate(-45deg);
+  }
+}
+
+#topbar-brand {
+  @include mono;
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--amber);
+  letter-spacing: 0.06em;
+}

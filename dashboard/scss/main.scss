@@ -1,0 +1,36 @@
+// ────────────────────────────────────────────────────────────────
+// MAIN ENTRY POINT — Imports all SCSS partials in order
+// ────────────────────────────────────────────────────────────────
+
+// 1. TOKENS FIRST
+@use 'variables' as *;
+
+// 2. BASE STYLES
+@use 'reset' as *;
+
+// 3. LAYOUT SHELL
+@use 'layout' as *;
+@use 'sidebar' as *;
+@use 'topbar' as *;
+@use 'nav-mobile' as *;
+
+// 4. SHARED COMPONENTS
+@use 'badges' as *;
+@use 'chips' as *;
+@use 'cards' as *;
+
+// 5. SECTION-SPECIFIC COMPONENTS
+@use 'metrics' as *;
+@use 'chart' as *;
+@use 'position' as *;
+@use 'ai-panel' as *;
+@use 'performance' as *;
+@use 'trades' as *;
+@use 'risk' as *;
+@use 'logs' as *;
+
+// 6. ANIMATIONS & MOTION
+@use 'animations' as *;
+
+// 7. RESPONSIVE QUERIES (MUST BE LAST for cascade)
+@use 'responsive' as *;

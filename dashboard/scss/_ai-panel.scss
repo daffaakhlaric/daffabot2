@@ -1,0 +1,132 @@
+// ────────────────────────────────────────────────────────────────
+// AI SIGNAL PANEL
+// ────────────────────────────────────────────────────────────────
+
+@use 'variables' as *;
+
+@mixin mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+#ai-panel {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-top: 2px solid var(--amber);
+  border-radius: $radius-md;
+  padding: 16px;
+}
+
+.ai-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 16px;
+}
+
+.ai-signal-big {
+  @include mono;
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.ai-score {
+  @include mono;
+  font-size: 42px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.progress-bar {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.smc-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
+}
+
+.smc-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 3px 0;
+}
+
+.smc-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+
+  &.pass {
+    background: var(--green);
+  }
+
+  &.fail {
+    background: var(--red);
+  }
+
+  &.unk {
+    background: var(--text-muted);
+  }
+}
+
+.level-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border-soft);
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.just-box {
+  background: var(--bg-overlay);
+  border: 1px solid var(--border);
+  border-radius: $radius-sm;
+  padding: 8px;
+  @include mono;
+  font-size: 11px;
+  color: var(--amber);
+  font-style: italic;
+  margin-top: 8px;
+  line-height: 1.6;
+  min-height: 48px;
+}
+
+.ai-alert {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: $radius-sm;
+  font-size: 11px;
+  margin-top: 8px;
+
+  &.judas {
+    background: rgba($amber, 0.10);
+    border: 1px solid rgba($amber, 0.25);
+    color: $amber;
+  }
+
+  &.momentum {
+    background: rgba($teal, 0.10);
+    border: 1px solid rgba($teal, 0.25);
+    color: $teal;
+  }
+}

@@ -19,7 +19,8 @@
       "Bash(node --check /c/Users/HP/Documents/Daffabot2/tradeMemory.js)",
       "Bash(node --check /c/Users/HP/Documents/Daffabot2/dashboard-server.js)",
       "Bash(node --check botOrchestrator.js)",
-      "Bash(node --check prompts.js)"
+      "Bash(node --check prompts.js)",
+      "Bash(npm --version)"
     ]
   }
 }

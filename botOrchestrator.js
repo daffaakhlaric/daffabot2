@@ -525,6 +525,9 @@ async function orchestrate({
     return { action: "HOLD", reason: sniperLock.reason, source: "SNIPER_LOCK" };
   }
 
+  // Shared SMC result — fetched once in SNIPER_ELITE, reused in KILLER & STEP 8
+  let smcForElite = null;
+
   // STEP 5.5 — SNIPER ELITE (UPGRADE 5): priority di atas SMC flow biasa
   if (process.env.SNIPER_ENABLED !== "false") {
     const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
@@ -532,8 +535,6 @@ async function orchestrate({
       (t.exitTime || t.timestamp || 0) >= todayStart.getTime()).length;
     const lastTr  = tradeHistory[tradeHistory.length - 1];
     const lastPnL = lastTr?.pnlUSDT || 0;
-
-    let smcForElite = null;
     try {
       smcForElite = await featureEngine.callF2({
         klines_4h:  klines_4h || klines_1h,

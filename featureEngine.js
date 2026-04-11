@@ -12,18 +12,18 @@ const PROMPTS = require("./prompts");
 // ── CACHE SYSTEM ──────────────────────────────────────────
 const CACHE = {};
 const COOLDOWNS = {
-  f1_htf:       30 * 60 * 1000,    // 30 min — HTF rarely changes
-  f2_smc:       10 * 60 * 1000,    // 10 min — SMC is stable signal
-  sniper:        5 * 60 * 1000,    // 5 min — not needed every 10s
-  judas:         5 * 60 * 1000,    // 5 min — sweep patterns don't change fast
-  sweep:        10 * 60 * 1000,    // 10 min — rare event
-  regime:       30 * 60 * 1000,    // 30 min — regime is persistent
-  compounder:   10 * 60 * 1000,    // 10 min — equity updates slowly
-  momentum:      5 * 60 * 1000,    // 5 min — not a primary signal
-  ob_scorer:    30 * 60 * 1000,    // 30 min — orderbook slow-moving
+  f1_htf:       5 * 60 * 1000,     // ↓ 5 min (was 30) — market sensitivity
+  f2_smc:       3 * 60 * 1000,     // ↓ 3 min (was 10) — faster SMC updates
+  sniper:       2 * 60 * 1000,     // ↓ 2 min (was 5) — intraday responsiveness
+  judas:        3 * 60 * 1000,     // ↓ 3 min (was 5) — sweep recheck
+  sweep:        5 * 60 * 1000,     // ↓ 5 min (was 10) — rare but crucial
+  regime:       5 * 60 * 1000,     // ↓ 5 min (was 30) — regime can shift intraday
+  compounder:   5 * 60 * 1000,     // ↓ 5 min (was 10) — faster equity tracking
+  momentum:     3 * 60 * 1000,     // ↓ 3 min (was 5) — momentum is volatile
+  ob_scorer:    5 * 60 * 1000,     // ↓ 5 min (was 30) — orderbook changes faster
   macro:        60 * 60 * 1000,    // skip anyway
-  exit:          2 * 60 * 1000,    // 2 min — only on active trades
-  orchestrator:  5 * 60 * 1000,    // 5 min — meta analysis
+  exit:         2 * 60 * 1000,     // 2 min — only on active trades
+  orchestrator: 3 * 60 * 1000,     // ↓ 3 min (was 5) — faster meta analysis
 };
 
 function getCached(key) {
@@ -84,11 +84,12 @@ function claudeCall(systemPrompt, userPrompt, maxTokens = 600) {
             const match = text.match(/\{[\s\S]*\}/);
             if (match) { resolve(JSON.parse(match[0])); return; }
           } catch {}
-          // Empty or invalid response
+          // Empty or invalid response — retry with exponential backoff
           if (retryLeft > 0) {
-            setTimeout(() => attempt(retryLeft - 1), 2000);
+            const backoffMs = 1000 * Math.pow(2, 2 - retryLeft); // 2000ms, 4000ms
+            setTimeout(() => attempt(retryLeft - 1), backoffMs);
           } else {
-            aiLog("API_EMPTY", 0, "Empty/invalid response after retry");
+            aiLog("API_EMPTY", 0, "Empty/invalid response after 2 retries");
             resolve(null);
           }
         });
@@ -96,25 +97,32 @@ function claudeCall(systemPrompt, userPrompt, maxTokens = 600) {
 
       req.on("error", () => {
         if (retryLeft > 0) {
-          setTimeout(() => attempt(retryLeft - 1), 2000);
+          const backoffMs = 1000 * Math.pow(2, 2 - retryLeft);
+          setTimeout(() => attempt(retryLeft - 1), backoffMs);
         } else {
-          aiLog("API_ERROR", 0, "Network error after retry");
+          aiLog("API_ERROR", 0, "Network error after 2 retries");
           resolve(null);
         }
       });
 
-      req.setTimeout(12000, () => {
+      req.setTimeout(8000, () => {
         req.destroy();
-        // Don't retry on timeout — already waited 12s
-        aiLog("API_TIMEOUT", 0, "Request timed out");
-        resolve(null);
+        // RETRY on timeout (was silently failing)
+        if (retryLeft > 0) {
+          const backoffMs = 1000 * Math.pow(2, 2 - retryLeft);
+          aiLog("API_TIMEOUT", 8000, `Timeout — retry ${2 - retryLeft}`);
+          setTimeout(() => attempt(retryLeft - 1), backoffMs);
+        } else {
+          aiLog("API_TIMEOUT", 8000, "Timeout after 2 retries");
+          resolve(null);
+        }
       });
 
       req.write(body);
       req.end();
     };
 
-    attempt(1); // 1 retry allowed
+    attempt(2); // 2 retries allowed (3 total attempts)
   });
 }
 

@@ -47,10 +47,6 @@
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1 L15 5 V9 C15 12.5 11.5 15 8 15 C4.5 15 1 12.5 1 9 V5 Z"/></svg>
       Risk Monitor
     </div>
-    <div class="nav-item" data-sec="scoreboard">
-      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="3" cy="6" r="2"/><circle cx="8" cy="4" r="2"/><circle cx="13" cy="8" r="2"/><line x1="5" y1="6" x2="6" y2="4"/><line x1="10" y1="4" x2="11" y2="8"/></svg>
-      Scores
-    </div>
     <div class="nav-item" data-sec="logs">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="14" height="14" rx="2"/><line x1="4" y1="5" x2="12" y2="5"/><line x1="4" y1="8" x2="9" y2="8"/><line x1="4" y1="11" x2="7" y2="11"/></svg>
       Logs
@@ -371,67 +367,6 @@
       </div>
     </div>
 
-    <!-- ══ SECTION: SCOREBOARD ══ -->
-    <div id="sec-scoreboard" class="section">
-      <div class="card">
-        <div class="card-title">AI Confidence Scores</div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px">
-          <div style="padding:12px;background:var(--bg-secondary);border-radius:4px;border-left:3px solid var(--blue)">
-            <div style="font-size:9px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px">HTF Confidence</div>
-            <div id="sb-htf-val" class="mono" style="font-size:24px;font-weight:700;color:var(--blue)">—</div>
-            <div style="font-size:10px;color:var(--text-muted);margin-top:4px">Target: ≥70%</div>
-          </div>
-          <div style="padding:12px;background:var(--bg-secondary);border-radius:4px;border-left:3px solid var(--teal)">
-            <div style="font-size:9px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px">SMC Confluence</div>
-            <div id="sb-smc-val" class="mono" style="font-size:24px;font-weight:700;color:var(--teal)">—</div>
-            <div style="font-size:10px;color:var(--text-muted);margin-top:4px">Target: ≥65%</div>
-          </div>
-          <div style="padding:12px;background:var(--bg-secondary);border-radius:4px;border-left:3px solid var(--amber)">
-            <div style="font-size:9px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px">Decision Score</div>
-            <div id="sb-decision-val" class="mono" style="font-size:24px;font-weight:700;color:var(--amber)">—</div>
-            <div style="font-size:10px;color:var(--text-muted);margin-top:4px">Target: ≥75%</div>
-          </div>
-          <div style="padding:12px;background:var(--bg-secondary);border-radius:4px;border-left:3px solid var(--green)">
-            <div style="font-size:9px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px">Momentum</div>
-            <div id="sb-momentum-val" class="mono" style="font-size:24px;font-weight:700;color:var(--green)">—</div>
-            <div style="font-size:10px;color:var(--text-muted);margin-top:4px">Ignition Confidence</div>
-          </div>
-          <div style="padding:12px;background:var(--bg-secondary);border-radius:4px;border-left:3px solid var(--red)">
-            <div style="font-size:9px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px">Judas Sweep</div>
-            <div id="sb-judas-val" class="mono" style="font-size:24px;font-weight:700;color:var(--red)">—</div>
-            <div style="font-size:10px;color:var(--text-muted);margin-top:4px">Reversal Confidence</div>
-          </div>
-          <div style="padding:12px;background:var(--bg-secondary);border-radius:4px;border-left:3px solid var(--purple)">
-            <div style="font-size:9px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px">Market Regime</div>
-            <div id="sb-regime-val" class="mono" style="font-size:14px;font-weight:700;color:var(--purple)">—</div>
-            <div style="font-size:10px;color:var(--text-muted);margin-top:4px;word-break:break-word">Current Market State</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">Score History</div>
-        <div class="chart-wrap" style="height:200px"><canvas id="scoreChart"></canvas></div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">Latest Scores (Live)</div>
-        <table style="width:100%;border-collapse:collapse;font-size:12px">
-          <thead>
-            <tr style="border-bottom:1px solid var(--border)">
-              <th style="text-align:left;padding:8px;color:var(--text-muted)">Timestamp</th>
-              <th style="text-align:right;padding:8px;color:var(--text-muted)">HTF</th>
-              <th style="text-align:right;padding:8px;color:var(--text-muted)">SMC</th>
-              <th style="text-align:right;padding:8px;color:var(--text-muted)">Decision</th>
-              <th style="text-align:right;padding:8px;color:var(--text-muted)">Momentum</th>
-              <th style="text-align:right;padding:8px;color:var(--text-muted)">Judas</th>
-            </tr>
-          </thead>
-          <tbody id="sb-history"></tbody>
-        </table>
-      </div>
-    </div>
-
     <!-- ══ SECTION: LOGS ══ -->
     <div id="sec-logs" class="section" style="height:calc(100vh - 80px);flex:1">
       <div class="card" style="display:flex;flex-direction:column;flex:1;min-height:0">
@@ -464,7 +399,6 @@
     <div class="bnav-item" data-sec="performance"><div class="bnav-icon">&#9650;</div>Performance</div>
     <div class="bnav-item" data-sec="trades"><div class="bnav-icon">&#9776;</div>Trades</div>
     <div class="bnav-item" data-sec="risk"><div class="bnav-icon">&#9670;</div>Risk</div>
-    <div class="bnav-item" data-sec="scoreboard"><div class="bnav-icon">📊</div>Scores</div>
     <div class="bnav-item" data-sec="logs"><div class="bnav-icon">&#9632;</div>Logs</div>
   </div>
 </div>
@@ -573,27 +507,6 @@ let histChart = new Chart(document.getElementById('histChart'), {
     scales:{
       x:{grid:{display:false},ticks:{color:'#4a5a6a',maxRotation:45,font:{size:9}}},
       y:{grid:{color:'rgba(30,42,56,.5)',lineWidth:.5},ticks:{color:'#4a5a6a'}},
-    },
-  },
-});
-
-let scoreChart = new Chart(document.getElementById('scoreChart'), {
-  type:'line',
-  data:{
-    labels:[],
-    datasets:[
-      {label:'HTF',data:[],borderColor:'var(--blue)',backgroundColor:'transparent',tension:0.3,borderWidth:2,pointRadius:3,pointBackgroundColor:'var(--blue)'},
-      {label:'SMC',data:[],borderColor:'var(--teal)',backgroundColor:'transparent',tension:0.3,borderWidth:2,pointRadius:3,pointBackgroundColor:'var(--teal)'},
-      {label:'Decision',data:[],borderColor:'var(--amber)',backgroundColor:'transparent',tension:0.3,borderWidth:2,pointRadius:3,pointBackgroundColor:'var(--amber)'},
-    ],
-  },
-  options:{
-    responsive:true,maintainAspectRatio:false,animation:{duration:0},
-    interaction:{mode:'index',intersect:false},
-    plugins:{legend:{display:true,position:'bottom',labels:{usePointStyle:true,padding:12,font:{size:10},color:'#4a5a6a'}},tooltip:TT_BASE},
-    scales:{
-      x:{grid:{display:false},ticks:{color:'#4a5a6a',font:{size:9}}},
-      y:{grid:{color:'rgba(30,42,56,.5)',lineWidth:.5},ticks:{color:'#4a5a6a'},min:0,max:100},
     },
   },
 });
@@ -843,87 +756,6 @@ function updateAIPanel(live) {
   if(feat.judas?.judas_detected) html+=`<div class="ai-alert judas">&#9650; Judas swing detected — ${feat.judas.explanation||''}</div>`;
   if(feat.momentum?.ignition_detected) html+=`<div class="ai-alert momentum">&#9889; Momentum ignition — ${feat.momentum.estimated_move_pct?.toFixed(1)||'?'}% move expected</div>`;
   alerts.innerHTML=html;
-}
-
-function updateScoreBoard(live) {
-  // Extract scoreBoard data
-  const sb = live?.scoreBoard || {};
-
-  // Update individual score displays
-  const setScore = (id, val, target) => {
-    const el = $(id);
-    if (!el) return;
-    if (val === null || val === undefined) {
-      el.textContent = '—';
-      el.style.color = 'var(--text-muted)';
-    } else {
-      el.textContent = val + '%';
-      const valNum = Number(val);
-      if (valNum >= target) {
-        el.style.color = 'var(--green)';
-      } else if (valNum >= target - 15) {
-        el.style.color = 'var(--amber)';
-      } else {
-        el.style.color = 'var(--red)';
-      }
-    }
-  };
-
-  setScore('sb-htf-val', sb.htf_confidence, 70);
-  setScore('sb-smc-val', sb.smc_confluence_score, 65);
-  setScore('sb-decision-val', sb.decision_score, 75);
-  setScore('sb-momentum-val', sb.momentum_confidence, 70);
-  setScore('sb-judas-val', sb.judas_confidence, 70);
-
-  // Update regime
-  const regimeEl = $('sb-regime-val');
-  if (regimeEl) {
-    regimeEl.textContent = sb.regime || '—';
-    const regimeMap = {
-      'TRENDING_BULL': 'var(--green)',
-      'TRENDING_BEAR': 'var(--red)',
-      'RANGING': 'var(--amber)',
-      'VOLATILE_SPIKE': 'var(--red)',
-    };
-    regimeEl.style.color = regimeMap[sb.regime] || 'var(--text-muted)';
-  }
-
-  // Add to history (keep last 20 records)
-  if (!window.scoreHistory) window.scoreHistory = [];
-  const record = {
-    ts: sb.timestamp || Date.now(),
-    htf: sb.htf_confidence,
-    smc: sb.smc_confluence_score,
-    decision: sb.decision_score,
-    momentum: sb.momentum_confidence,
-    judas: sb.judas_confidence,
-  };
-  window.scoreHistory.push(record);
-  if (window.scoreHistory.length > 20) window.scoreHistory.shift();
-
-  // Update history table
-  const historyEl = $('sb-history');
-  if (historyEl) {
-    historyEl.innerHTML = window.scoreHistory.map(r => `
-      <tr style="border-bottom:1px solid var(--border)">
-        <td style="padding:8px;color:var(--text-muted)">${fmtTime(r.ts)}</td>
-        <td style="text-align:right;padding:8px;color:${r.htf >= 70 ? 'var(--green)' : r.htf >= 55 ? 'var(--amber)' : 'var(--red)'}">${r.htf ?? '—'}</td>
-        <td style="text-align:right;padding:8px;color:${r.smc >= 65 ? 'var(--green)' : r.smc >= 50 ? 'var(--amber)' : 'var(--red)'}">${r.smc ?? '—'}</td>
-        <td style="text-align:right;padding:8px;color:${r.decision >= 75 ? 'var(--green)' : r.decision >= 60 ? 'var(--amber)' : 'var(--red)'}">${r.decision ?? '—'}</td>
-        <td style="text-align:right;padding:8px;color:${r.momentum >= 70 ? 'var(--green)' : r.momentum >= 55 ? 'var(--amber)' : 'var(--red)'}">${r.momentum ?? '—'}</td>
-        <td style="text-align:right;padding:8px;color:${r.judas >= 70 ? 'var(--green)' : r.judas >= 55 ? 'var(--amber)' : 'var(--red)'}">${r.judas ?? '—'}</td>
-      </tr>
-    `).reverse().join('');
-  }
-
-  // Update scoreChart (simple line chart)
-  if (window.scoreChart && window.scoreHistory.length > 1) {
-    scoreChart.data.labels = window.scoreHistory.map((_, i) => i);
-    scoreChart.data.datasets[0].data = window.scoreHistory.map(r => r.htf ?? null);
-    scoreChart.data.datasets[1].data = window.scoreHistory.map(r => r.smc ?? null);
-    scoreChart.data.datasets[2].data = window.scoreHistory.map(r => r.decision ?? null);
-    scoreChart.update('none');
-  }
 }
 
 function updateEquityChart(a) {
@@ -1239,12 +1071,10 @@ function doRender() {
   try { updatePosition(L); } catch(e){}
   try { updateAIPanel(L); } catch(e){}
   try { updateEquityChart(A); } catch(e){}
-  try { updateScoreBoard(L); } catch(e){}
 
   const activeSection=document.querySelector('.nav-item.active')?.dataset.sec||'overview';
   if(activeSection==='performance') try{updatePerformance(A);}catch(e){}
   if(activeSection==='risk') try{updateRisk(L,A);}catch(e){}
-  if(activeSection==='scoreboard') try{updateScoreBoard(L);}catch(e){}
 }
 
 // ══ WEBSOCKET ════════════════════════════════════════════

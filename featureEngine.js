@@ -249,7 +249,34 @@ async function callF2({ klines_4h, klines_1h, klines_15m, klines_5m, price, htfB
   if (result) {
     setCache("f2_smc", result);
     if (global.botState) global.botState.features = { ...(global.botState.features || {}), f2: result };
-    aiLog("F2_SMC", lat, `Signal=${result.signal} setup=${result.setup_type} score=${result.confluence_score}`);
+
+    // Enhanced F2 debugging
+    const checklistCount = [
+      result.checklist?.htf_bias_clear,
+      result.checklist?.liquidity_swept,
+      result.checklist?.structure_break,
+      result.checklist?.mitigation_zone,
+      result.checklist?.choch_confirmed,
+      result.checklist?.entry_candle_valid,
+      result.checklist?.rr_minimum_met,
+      result.checklist?.no_htf_resistance,
+    ].filter(v => v === true).length;
+
+    const checklistStr = [
+      result.checklist?.htf_bias_clear ? '✓HTF' : '✗HTF',
+      result.checklist?.liquidity_swept ? '✓LIQ' : '✗LIQ',
+      result.checklist?.structure_break ? '✓BOS' : '✗BOS',
+      result.checklist?.mitigation_zone ? '✓ZONE' : '✗ZONE',
+      result.checklist?.choch_confirmed ? '✓CHOCH' : '✗CHOCH',
+      result.checklist?.entry_candle_valid ? '✓CANDLE' : '✗CANDLE',
+      result.checklist?.rr_minimum_met ? '✓RR' : '✗RR',
+      result.checklist?.no_htf_resistance ? '✓CLEAN' : '✗BLOCK',
+    ].join(' ');
+
+    aiLog("F2_SMC", lat, `signal=${result.signal} score=${result.confluence_score} setup=${result.setup_type}`);
+    aiLog("F2_CHECKLIST", lat, `${checklistCount}/8 passed → ${checklistStr}`);
+  } else {
+    aiLog("F2_SMC", lat, "⚠️ NULL response");
   }
   return result;
 }

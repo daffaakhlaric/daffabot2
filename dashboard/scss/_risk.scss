@@ -3,6 +3,7 @@
 // ────────────────────────────────────────────────────────────────
 
 @use 'variables' as *;
+@use 'cards' as *;
 
 @mixin mono {
   font-family: 'JetBrains Mono', monospace;
@@ -16,13 +17,18 @@
 }
 
 .gauge-card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: $radius-md;
+  @include glass-card;
   padding: 16px;
   text-align: center;
   min-width: 0;
   overflow: hidden;
+  transition: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  &:hover {
+    border-color: rgba($blue-accent, 0.3);
+    box-shadow: var(--shadow-md), var(--shadow-glow);
+    transform: translateY(-1px);
+  }
 
   & > * {
     min-width: 0;
@@ -51,7 +57,7 @@
 }
 
 .gauge-bar {
-  height: 3px;
+  height: 5px;
   background: var(--border);
   border-radius: 2px;
   margin-top: 8px;
@@ -61,6 +67,7 @@
   height: 100%;
   border-radius: 2px;
   transition: width 0.4s ease;
+  box-shadow: 0 0 8px currentColor;
 }
 
 // ── Risk Checklist ──
@@ -90,11 +97,16 @@
 
 // ── Psychological State ──
 .psych-card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: $radius-md;
+  @include glass-card;
   padding: 20px;
   text-align: center;
+  transition: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  &:hover {
+    border-color: rgba($blue-accent, 0.3);
+    box-shadow: var(--shadow-md), var(--shadow-glow);
+    transform: translateY(-1px);
+  }
 }
 
 .psych-state-big {
@@ -113,11 +125,17 @@
 }
 
 .psych-ind {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: $radius-sm;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
   padding: 8px;
   text-align: center;
+  transition: all 200ms;
+
+  &:hover {
+    border-color: rgba(59, 130, 246, 0.2);
+    background: rgba(255, 255, 255, 0.06);
+  }
 }
 
 .psych-ind-label {
@@ -139,6 +157,7 @@
   font-weight: 700;
   color: var(--red);
   margin: 8px 0;
+  text-shadow: 0 0 20px rgba(255, 77, 106, 0.6);
 }
 
 // ── Balance/Account ──

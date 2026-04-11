@@ -34,6 +34,50 @@
   }
 }
 
+// ── Premium Keyframes ──
+@keyframes glow-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 8px rgba(59, 130, 246, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 24px rgba(59, 130, 246, 0.6), 0 0 48px rgba(59, 130, 246, 0.2);
+  }
+}
+
+@keyframes float-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes neon-flicker {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 6px var(--green);
+  }
+  50% {
+    opacity: 0.8;
+    box-shadow: 0 0 12px var(--green), 0 0 20px var(--green);
+  }
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+// ── Utility Classes ──
 .flash-g {
   animation: flash-green 0.3s ease;
 }
@@ -44,4 +88,23 @@
 
 .blink {
   animation: blink 2s infinite;
+}
+
+.glow-pulse {
+  animation: glow-pulse 2s ease infinite;
+}
+
+.section-enter {
+  animation: float-up 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.05) 0%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0.05) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 2s infinite;
 }

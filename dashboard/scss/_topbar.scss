@@ -10,8 +10,10 @@
 
 #topbar {
   display: none;
-  background: var(--bg-surface);
-  border-bottom: 1px solid var(--border);
+  background: rgba(11, 11, 15, 0.8);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   height: var(--topbar-h);
   padding: 0 14px;
   align-items: center;
@@ -63,6 +65,6 @@
   @include mono;
   font-weight: 700;
   font-size: 14px;
-  color: var(--amber);
+  color: var(--accent);
   letter-spacing: 0.06em;
 }

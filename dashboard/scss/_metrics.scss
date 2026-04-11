@@ -3,6 +3,7 @@
 // ────────────────────────────────────────────────────────────────
 
 @use 'variables' as *;
+@use 'cards' as *;
 
 @mixin mono {
   font-family: 'JetBrains Mono', monospace;
@@ -15,15 +16,12 @@
 }
 
 .mc {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: $radius-md;
+  @include glass-card;
   padding: 20px 22px;
   cursor: default;
   position: relative;
   min-width: 0;
-  box-shadow: var(--shadow-sm);
-  transition: all 250ms ease;
+  transition: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
 
   & > * {
     min-width: 0;
@@ -32,8 +30,9 @@
   }
 
   &:hover {
-    border-color: rgba($blue-accent, 0.4);
-    box-shadow: 0 0 0 1px rgba($blue-accent, 0.15), var(--shadow-md);
+    border-color: rgba($blue-accent, 0.3);
+    box-shadow: var(--shadow-md), var(--shadow-glow);
+    transform: translateY(-1px);
   }
 }
 
@@ -55,13 +54,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  transition: text-shadow 300ms ease;
 
   &.pos {
     color: var(--green);
+    text-shadow: 0 0 16px rgba(0, 214, 143, 0.4);
   }
 
   &.neg {
     color: var(--red);
+    text-shadow: 0 0 16px rgba(255, 77, 106, 0.4);
   }
 
   &.warn {

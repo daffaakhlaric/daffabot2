@@ -5,7 +5,9 @@
 @use 'variables' as *;
 
 #status-bar {
-  background: var(--bg-elevated);
+  background: rgba(11, 11, 15, 0.8);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--border);
   padding: 0 16px;
   height: 40px;
@@ -25,14 +27,15 @@
   font-weight: 600;
   letter-spacing: 0.5px;
   padding: 4px 10px;
-  border-radius: $radius-sm;
-  background: var(--bg-overlay);
-  border: 1px solid rgba($blue-accent, 0.1);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   white-space: nowrap;
   transition: all 150ms;
 
   &:hover {
-    border-color: rgba($blue-accent, 0.2);
+    border-color: rgba(59, 130, 246, 0.2);
+    box-shadow: 0 0 8px rgba(59, 130, 246, 0.2);
   }
 }
 

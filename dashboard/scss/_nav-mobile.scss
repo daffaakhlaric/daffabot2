@@ -6,8 +6,10 @@
 
 #bottom-nav {
   display: none;
-  background: var(--bg-surface);
-  border-top: 1px solid var(--border);
+  background: rgba(11, 11, 15, 0.8);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
   height: 56px;
   flex-shrink: 0;
 }
@@ -34,8 +36,8 @@
   border-top: 2px solid transparent;
 
   &.active {
-    color: var(--amber);
-    border-top-color: var(--amber);
+    color: var(--accent);
+    border-top-color: var(--accent);
   }
 }
 

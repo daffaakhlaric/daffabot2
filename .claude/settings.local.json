@@ -21,7 +21,8 @@
       "Bash(node --check botOrchestrator.js)",
       "Bash(node --check prompts.js)",
       "Bash(npm --version)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(curl -s http://localhost:3000)"
     ],
     "additionalDirectories": [
       "C:\\Users\\HP\\.claude\\plans"

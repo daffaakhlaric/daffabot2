@@ -5,14 +5,14 @@
 // ── SASS Variables (compile-time)
 // Used for SASS functions like rgba(), lighten(), darken()
 
-// Backgrounds (slightly lighter for "clean minimal" feel)
-$bg-base:      #0a0e14;
-$bg-surface:   #101620;
-$bg-elevated:  #172238;
-$bg-overlay:   #1e2d3d;
-$border:       #2a3a50;
-$border-soft:  #1a2a3a;
-$border-focus: #3a4a60;
+// Backgrounds — Dark Premium with Glassmorphism
+$bg-base:      #0B0B0F;
+$bg-surface:   rgba(255, 255, 255, 0.04);
+$bg-elevated:  rgba(255, 255, 255, 0.07);
+$bg-overlay:   rgba(255, 255, 255, 0.09);
+$border:       rgba(255, 255, 255, 0.08);
+$border-soft:  rgba(255, 255, 255, 0.04);
+$border-focus: rgba(59, 130, 246, 0.5);
 
 $text-primary:   #e2e8f0;
 $text-secondary: #8899aa;
@@ -24,24 +24,31 @@ $green:  #00d68f;
 $red:    #ff4d6a;
 $teal:   #00c9c9;
 
-// Primary brand: Electric Blue
+// Primary brand: Electric Blue + Restored Amber
 $blue-accent: #3b82f6;
 $blue:        #60a5fa;
 $blue-light:  #60a5fa;
 $blue-dark:   #1e40af;
+$amber:       #f59e0b;
 
-// Sizing & Spacing
+// Sizing & Spacing — Premium rounded corners
 $sidebar-w:   220px;
 $topbar-h:    48px;
 $radius-sm:   6px;
-$radius-md:   12px;
-$radius-lg:   16px;
+$radius-md:   18px;
+$radius-lg:   24px;
+$radius-xl:   24px;
 $radius-pill: 9999px;
 
-// Shadows (new)
-$shadow-sm:   0 1px 2px rgba(0, 0, 0, 0.3);
-$shadow-md:   0 4px 8px rgba(0, 0, 0, 0.4);
-$shadow-lg:   0 8px 16px rgba(0, 0, 0, 0.5);
+// Shadows — Premium with depth & glow
+$shadow-sm:   0 2px 8px rgba(0, 0, 0, 0.4);
+$shadow-md:   0 8px 32px rgba(0, 0, 0, 0.6);
+$shadow-lg:   0 16px 48px rgba(0, 0, 0, 0.7);
+$shadow-glow: 0 0 24px rgba(59, 130, 246, 0.35);
+
+// Glass & Neon
+$glass-bg:     rgba(255, 255, 255, 0.04);
+$glass-border: rgba(255, 255, 255, 0.1);
 
 // ── CSS Custom Properties (runtime)
 // Accessible from JavaScript & scoped to :root
@@ -67,14 +74,14 @@ $shadow-lg:   0 8px 16px rgba(0, 0, 0, 0.5);
   --red-dim:    #{rgba($red, 0.10)};
   --red-glow:   #{rgba($red, 0.20)};
 
-  // Primary accent: Electric Blue (replacing amber)
+  // Primary accent: Electric Blue
   --accent:      #{$blue-accent};
   --accent-dim:  #{rgba($blue-accent, 0.10)};
   --accent-glow: #{rgba($blue-accent, 0.25)};
 
-  // Keep amber for backward compatibility with JS that references it
-  --amber:       #{$blue-accent};
-  --amber-dim:   #{rgba($blue-accent, 0.10)};
+  // Amber: Restored for warnings (separate from accent)
+  --amber:       #{$amber};
+  --amber-dim:   #{rgba($amber, 0.10)};
 
   --blue:       #{$blue-light};
   --blue-dim:   #{rgba($blue-light, 0.10)};
@@ -84,8 +91,13 @@ $shadow-lg:   0 8px 16px rgba(0, 0, 0, 0.5);
   --sidebar-w: #{$sidebar-w};
   --topbar-h:  #{$topbar-h};
 
-  // Shadows
-  --shadow-sm: #{$shadow-sm};
-  --shadow-md: #{$shadow-md};
-  --shadow-lg: #{$shadow-lg};
+  // Shadows & Glow
+  --shadow-sm:   #{$shadow-sm};
+  --shadow-md:   #{$shadow-md};
+  --shadow-lg:   #{$shadow-lg};
+  --shadow-glow: #{$shadow-glow};
+
+  // Glass & Neon Effects
+  --glass-blur: blur(12px) saturate(150%);
+  --neon-glow:  0 0 20px rgba(59, 130, 246, 0.4), 0 0 60px rgba(59, 130, 246, 0.15);
 }

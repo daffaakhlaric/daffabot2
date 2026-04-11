@@ -10,8 +10,8 @@
 
 #log-terminal {
   background: #03050a;
-  border: 1px solid var(--border);
-  border-radius: $radius-md;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: $radius-lg;
   @include mono;
   font-size: 12px;
   line-height: 1.8;
@@ -47,7 +47,7 @@
 }
 
 .log-warn {
-  color: var(--amber);
+  color: #f59e0b;
 }
 
 .log-default {
@@ -59,7 +59,7 @@
   bottom: 12px;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--amber);
+  background: #3b82f6;
   color: var(--text-inverse);
   padding: 4px 14px;
   border-radius: $radius-pill;
@@ -69,4 +69,5 @@
   display: none;
   z-index: 10;
   letter-spacing: 0.5px;
+  box-shadow: 0 0 16px rgba(59, 130, 246, 0.5);
 }

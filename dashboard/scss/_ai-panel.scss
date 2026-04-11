@@ -3,18 +3,17 @@
 // ────────────────────────────────────────────────────────────────
 
 @use 'variables' as *;
+@use 'cards' as *;
 
 @mixin mono {
   font-family: 'JetBrains Mono', monospace;
 }
 
 #ai-panel {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
+  @include glass-card;
   border-top: 3px solid var(--accent);
-  border-radius: $radius-md;
   padding: 20px;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-md), 0 -4px 20px rgba(59, 130, 246, 0.2);
 }
 
 .ai-grid {
@@ -38,7 +37,7 @@
 }
 
 .progress-bar {
-  height: 3px;
+  height: 5px;
   background: var(--border);
   border-radius: 2px;
   overflow: hidden;
@@ -49,6 +48,7 @@
   height: 100%;
   border-radius: 2px;
   transition: width 0.4s ease;
+  box-shadow: 0 0 10px currentColor;
 }
 
 .smc-grid {
@@ -97,9 +97,11 @@
 }
 
 .just-box {
-  background: rgba($blue-accent, 0.05);
-  border: 1px solid rgba($blue-accent, 0.2);
-  border-radius: $radius-sm;
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 14px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   padding: 12px;
   @include mono;
   font-size: 11px;
@@ -115,7 +117,7 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  border-radius: $radius-sm;
+  border-radius: 12px;
   font-size: 11px;
   margin-top: 8px;
 

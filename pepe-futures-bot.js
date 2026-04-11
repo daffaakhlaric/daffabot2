@@ -62,6 +62,16 @@ global.botState = {
   features:       {},
   aiLogs:         [],
   psychWarnings:  [],
+  scoreBoard:     {
+    htf_confidence:        null,
+    smc_confluence_score:  null,
+    decision_score:        null,
+    momentum_confidence:   null,
+    judas_confidence:      null,
+    regime:                "UNKNOWN",
+    market_state:          "UNKNOWN",
+    timestamp:             0,
+  },
 };
 
 // ================= UTIL =================
@@ -409,7 +419,37 @@ async function run() {
         decision.source = "BTCSTRATEGY_ONLY_MODE";
       }
 
-      log(`🧠 ${decision.action} [${decision.source || "UNKNOWN"}]${decision.reason ? " — " + decision.reason : ""}`);
+      // Extract confidence scores for dashboard monitoring
+      const htfConf      = global.botState.features?.f1?.confidence || decision.htf_confidence || null;
+      const smcConf      = global.botState.features?.f2?.confluence_score || decision.smc?.confluence_score || null;
+      const momConf      = global.botState.features?.momentum?.confidence || null;
+      const judasConf    = global.botState.features?.judas?.confidence || null;
+      const decisionConf = decision.confidence || null;
+      const regime       = global.botState.marketState || "UNKNOWN";
+
+      // Update scoreBoard for dashboard display
+      global.botState.scoreBoard = {
+        htf_confidence:       htfConf,
+        smc_confluence_score: smcConf,
+        decision_score:       decisionConf,
+        momentum_confidence:  momConf,
+        judas_confidence:     judasConf,
+        regime:               regime,
+        market_state:         global.botState.marketState || "UNKNOWN",
+        timestamp:            Date.now(),
+      };
+
+      // Enhanced logging with confidence scores
+      const scoreStr = [
+        htfConf !== null ? `HTF=${htfConf}%` : null,
+        smcConf !== null ? `SMC=${smcConf}%` : null,
+        decisionConf !== null ? `DECISION=${decisionConf}%` : null,
+        momConf !== null ? `MOM=${momConf}%` : null,
+        judasConf !== null ? `JUDAS=${judasConf}%` : null,
+      ].filter(Boolean).join(" | ");
+
+      const logMsg = `🧠 ${decision.action} [${decision.source || "UNKNOWN"}]${scoreStr ? " | " + scoreStr : ""}${decision.reason ? " — " + decision.reason : ""}`;
+      log(logMsg);
 
       // Sync live state to global.botState for dashboard
       global.botState.price        = price;

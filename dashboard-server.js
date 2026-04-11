@@ -132,9 +132,24 @@ async function fetchLiveData() {
       ? s.activePosition
       : liveData.activePosition;
 
-    // Upgrade data: decision score, bot mode, trade memory
+    // Upgrade data: decision score, bot mode, trade memory, scoreBoard
     liveData.decisionScore = s.decisionScore ?? null;
     liveData.botMode       = process.env.BOT_MODE || "SAFE";
+
+    // Add scoreBoard for confidence monitoring
+    if (s.scoreBoard) {
+      liveData.scoreBoard = {
+        htf_confidence:       s.scoreBoard.htf_confidence,
+        smc_confluence_score: s.scoreBoard.smc_confluence_score,
+        decision_score:       s.scoreBoard.decision_score,
+        momentum_confidence:  s.scoreBoard.momentum_confidence,
+        judas_confidence:     s.scoreBoard.judas_confidence,
+        regime:               s.scoreBoard.regime,
+        market_state:         s.scoreBoard.market_state,
+        timestamp:            s.scoreBoard.timestamp,
+      };
+    }
+
     try {
       const tm = require("./tradeMemory");
       liveData.tradeMemory = s.tradeMemory || null;

@@ -23,7 +23,10 @@
       "Bash(npm --version)",
       "Bash(npm run:*)",
       "Bash(curl -s http://localhost:3000)",
-      "Bash(ls -la c:/Users/HP/Documents/Daffabot2/*.js)"
+      "Bash(ls -la c:/Users/HP/Documents/Daffabot2/*.js)",
+      "Bash(ls -la *.js)",
+      "Bash(kill -9 1147)",
+      "Bash(pkill -9 node)"
     ],
     "additionalDirectories": [
       "C:\\Users\\HP\\.claude\\plans"

@@ -53,8 +53,8 @@ let tradeHistory = loadTrades();
 
 // Public: bot calls this to record a closed trade
 function recordTrade(trade) {
+  if (tradeHistory.some(t => t.id === trade.id)) return; // dedup — prevent double-record
   tradeHistory.push(trade);
-  // Keep last 5000 trades in memory
   if (tradeHistory.length > 5000) tradeHistory = tradeHistory.slice(-5000);
   saveTrades(tradeHistory);
 }
@@ -124,7 +124,7 @@ async function fetchLiveData() {
     if (s.marketState)              liveData.marketState    = s.marketState;
     if (s.lastDecision)             liveData.lastDecision   = s.lastDecision;
     if (s.botStatus)                liveData.botStatus      = s.botStatus;
-    if (s.tradeHistory?.length)     tradeHistory            = s.tradeHistory;
+    if (s.tradeHistory?.length)     tradeHistory            = s.tradeHistory.slice(); // copy, bukan alias
 
     // Posisi dari bot selalu prioritas — termasuk saat DRY_RUN
     // (Bitget tidak punya posisi jika DRY_RUN, jadi jangan overwrite dengan null)

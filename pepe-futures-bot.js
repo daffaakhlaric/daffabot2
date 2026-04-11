@@ -41,8 +41,10 @@ const CONFIG = {
 
 // ================= STATE =================
 let state = {
-  activePosition: null,
-  lastTradeTime: 0,
+  activePosition:     null,
+  lastTradeTime:      0,
+  lastJudasLevel:     null,
+  lastJudasLevelTime: 0,
 };
 
 // ── GLOBAL BOT STATE (shared with dashboard) ──────────────
@@ -262,6 +264,10 @@ async function openPosition(side, price, entryConfig, setup = "TREND") {
   };
 
   state.lastTradeTime = Date.now();
+  if (setup === "JUDAS_SWING") {
+    state.lastJudasLevel     = price;
+    state.lastJudasLevelTime = Date.now();
+  }
   global.botState.activePosition = { side, entry: price, leverage: CONFIG.LEVERAGE, setup, pnl: 0, pnlPct: 0 };
 }
 
@@ -440,6 +446,19 @@ async function run() {
         const entryConfig = typeof decision.entry === "object" && decision.entry !== null
           ? decision.entry
           : { price: entryPrice, sl: 0.7, trailActivate: 1.5, trailDrop: 0.3, pyr1: 1.5, pyr2: 3.0 };
+
+        // Judas re-entry guard — block same sweep level within 2h
+        if (decision.source === "JUDAS") {
+          const judasLevel = entryPrice;
+          const judasAge   = now - state.lastJudasLevelTime;
+          const sameLevel  = state.lastJudasLevel &&
+            Math.abs(judasLevel - state.lastJudasLevel) / judasLevel < 0.002;
+          if (sameLevel && judasAge < 2 * 60 * 60 * 1000) {
+            log(`⛔ Judas re-entry blocked — same level $${judasLevel.toFixed(0)} used ${Math.round(judasAge / 60000)}min ago`);
+            _tickRunning = false;
+            continue;
+          }
+        }
 
         if (!state.activePosition && !_openingPosition && now - state.lastTradeTime > CONFIG.TRADE_COOLDOWN_MS) {
           const setup = decision.setup || "TREND";

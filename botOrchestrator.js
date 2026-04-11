@@ -326,6 +326,11 @@ async function orchestrate({
       return { action: "HOLD", reason: "Anti-FOMO: Judas entry zone passed", source: "ANTI_FOMO" };
     }
 
+    // Asian session filter — require conf>=85 during ASIAN_KZ (low liquidity)
+    if (kz.current_kill_zone === "ASIAN_KZ" && (judas.confidence || 0) < 85) {
+      return { action: "HOLD", reason: `Judas in Asian session requires conf>=85, got ${judas.confidence}`, source: "ASIAN_KZ_JUDAS_FILTER" };
+    }
+
     const decisionScore = buildDecisionScore({ htf, smc: null, momentum, judas, regime });
     const ct = isCounterTrend(judas.signal, htf, regime);
     if (ct.isCounter) {

@@ -28,7 +28,10 @@
       "Bash(kill -9 1147)",
       "Bash(pkill -9 node)",
       "Bash(node test-logs-sync.js)",
-      "Bash(curl -s -X POST http://localhost:3000/api/mode -H \"Content-Type: application/json\" -d '{\"mode\":\"AI\"}')"
+      "Bash(curl -s -X POST http://localhost:3000/api/mode -H \"Content-Type: application/json\" -d '{\"mode\":\"AI\"}')",
+      "Bash(curl -s -X POST http://localhost:3000/api/mode -H \"Content-Type: application/json\" -d '{\"mode\":\"BOT\"}')",
+      "Bash(curl -s http://localhost:3000/api/data)",
+      "Bash(curl -s -X POST http://localhost:3000/api/mode -H 'Content-Type: application/json' -d '{\"mode\":\"__TRACKED_VAR__\"}')"
     ],
     "additionalDirectories": [
       "C:\\Users\\HP\\.claude\\plans"

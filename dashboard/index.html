@@ -615,11 +615,11 @@ function updateStatusChips(live) {
 
   // AI mode indicator — show 5 states based on forceMode, aiHealthy, aiMode
   const aiModeEl = $('chip-ai-mode');
-  if (aiModeEl) {
-    const forceMode = live?.forceMode;     // null=AUTO, "AI"=forced, "BOT"=forced
-    const aiHealthy = live?.aiHealthy !== false;
-    const isAIMode = live?.aiMode !== false;
-    const aiDownReason = live?.aiDownReason;
+  if (aiModeEl && live) {
+    const forceMode = live.forceMode ?? null;           // null=AUTO, "AI"=forced, "BOT"=forced
+    const aiHealthy = live.aiHealthy !== false;         // default true
+    const isAIMode = live.aiMode !== false;             // default true
+    const aiDownReason = live.aiDownReason ?? null;     // default null
 
     let displayText, displayColor, displayTitle;
 
@@ -637,7 +637,8 @@ function updateStatusChips(live) {
       // Auto mode, but AI is down due to billing/auth
       displayText = "⚠ BILLING DOWN";
       displayColor = "#ff6b6b";
-      displayTitle = `AI disabled: ${aiDownReason || "API error"}. Click to retry.`;
+      const reason = aiDownReason || "API error";
+      displayTitle = "AI disabled: " + reason + ". Click to retry.";
     } else if (isAIMode) {
       // Auto mode, AI is healthy and active
       displayText = "✓ AI (Auto)";
@@ -1364,7 +1365,7 @@ async function toggleAIMode() {
     if (r.ok) {
       showToast(`Mode → ${nextMode}`);
       // Force immediate UI update
-      await pollData();
+      await pollFallback();
     } else {
       const err = await r.json();
       showToast(`Error: ${err.error}`, "error");

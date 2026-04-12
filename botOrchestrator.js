@@ -359,9 +359,11 @@ async function orchestrate({
 
   // STEP 2: Kill zone (sync, no API)
   const kz = featureEngine.killZoneTimer();
-  if (kz.kz_quality === "AVOID") {
-    return { action: "HOLD", reason: `Off-hours (${kz.current_kill_zone})`, setup: "KZ_AVOID", source: "KILLZONE" };
-  }
+  // RELAXED: Allow off-hours entry (lower liquidity but acceptable for testing)
+  // Uncomment below to block off-hours if needed
+  // if (kz.kz_quality === "AVOID") {
+  //   return { action: "HOLD", reason: `Off-hours (${kz.current_kill_zone})`, setup: "KZ_AVOID", source: "KILLZONE" };
+  // }
 
   // STEP 3: Active position → exit management first
   if (activePosition) {
@@ -597,7 +599,8 @@ async function orchestrate({
   }
 
   // STEP 6: Judas override (high-priority fake-move signal)
-  if (judas?.judas_detected && (judas.confidence || 0) >= 80 && judas.signal && judas.signal !== "HOLD" && (htf?.confidence || 0) >= 65) {
+  // RELAXED: reduced from 80→60 and HTF from 65→50 for more sweep entries
+  if (judas?.judas_detected && (judas.confidence || 0) >= 60 && judas.signal && judas.signal !== "HOLD" && (htf?.confidence || 0) >= 50) {
     // Anti-FOMO (UPGRADE 6)
     if (judas?.entry_price && checkPriceMoved(price, judas.entry_price, 0.015)) {
       return { action: "HOLD", reason: "Anti-FOMO: Judas entry zone passed", source: "ANTI_FOMO" };
@@ -619,9 +622,11 @@ async function orchestrate({
       }
     }
 
-    // Final decision filter (UPGRADE 7+8): score >= 75 required; orderbook must not oppose
-    if (decisionScore < 75) {
-      return { action: "HOLD", reason: `Score ${decisionScore} < 75 (min threshold)`, source: "LOW_SCORE" };
+    // Final decision filter (UPGRADE 7+8): score >= 60 required; orderbook must not oppose
+    // RELAXED: reduced from 75 to 60 for more entries
+    const minScore = 60;
+    if (decisionScore < minScore) {
+      return { action: "HOLD", reason: `Score ${decisionScore} < ${minScore}`, source: "LOW_SCORE" };
     }
     if (obBias !== "NEUTRAL" && obBias !== judas.signal.replace("LONG", "BULLISH").replace("SHORT", "BEARISH")) {
       return { action: "HOLD", reason: `Orderbook ${obBias} opposes ${judas.signal} entry`, source: "OB_FILTER" };
@@ -679,8 +684,9 @@ async function orchestrate({
     }
 
     // Final decision filter
-    if (decisionScore < 75) {
-      return { action: "HOLD", reason: `Score ${decisionScore} < 75 (min threshold)`, source: "LOW_SCORE" };
+    // RELAXED: reduced from 75 to 60
+    if (decisionScore < 60) {
+      return { action: "HOLD", reason: `Score ${decisionScore} < 60`, source: "LOW_SCORE" };
     }
     if (obBias !== "NEUTRAL" && obBias !== momentum.direction.replace("LONG", "BULLISH").replace("SHORT", "BEARISH")) {
       return { action: "HOLD", reason: `Orderbook ${obBias} opposes ${momentum.direction} entry`, source: "OB_FILTER" };
@@ -709,7 +715,8 @@ async function orchestrate({
   }
 
   // STEP 8: Normal SMC flow
-  if ((htf?.confidence || 0) >= 70) {
+  // RELAXED: reduced from 70 to 55 for more responsive entries
+  if ((htf?.confidence || 0) >= 55) {
     // Reuse smcForElite from STEP 5.5 if available; only call callF2 if null
     let smc = smcForElite;
     if (!smc) {
@@ -725,7 +732,8 @@ async function orchestrate({
       } catch {}
     }
 
-    if (smc?.signal !== "HOLD" && (smc?.confluence_score || 0) >= 65) {
+    // RELAXED: reduced from 65 to 50 for more SMC entries
+    if (smc?.signal !== "HOLD" && (smc?.confluence_score || 0) >= 50) {
       // Anti-FOMO (UPGRADE 6)
       if (smc?.entry_zone && checkPriceMoved(price, smc.entry_zone, 0.012)) {
         return { action: "HOLD", reason: "Anti-FOMO: price moved >1.2% from zone", source: "ANTI_FOMO" };
@@ -748,8 +756,9 @@ async function orchestrate({
       }
 
       // Final decision filter (UPGRADE 7+8)
-      if (decisionScore < 75) {
-        return { action: "HOLD", reason: `Score ${decisionScore} < 75 (min threshold)`, source: "LOW_SCORE" };
+      // RELAXED: reduced from 75 to 60
+      if (decisionScore < 60) {
+        return { action: "HOLD", reason: `Score ${decisionScore} < 60`, source: "LOW_SCORE" };
       }
       if (obBias !== "NEUTRAL" && obBias !== smc.signal.replace("LONG", "BULLISH").replace("SHORT", "BEARISH")) {
         return { action: "HOLD", reason: `Orderbook ${obBias} opposes ${smc.signal} entry`, source: "OB_FILTER" };

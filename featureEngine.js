@@ -78,11 +78,31 @@ function claudeCall(systemPrompt, userPrompt, maxTokens = 600) {
         let data = "";
         res.on("data", d => (data += d));
         res.on("end", () => {
+          // Check for permanent billing/auth errors BEFORE parsing
+          if ([401, 402, 529].includes(res.statusCode)) {
+            const reason = res.statusCode === 401 ? "AUTH"
+                         : res.statusCode === 402 ? "BILLING"
+                         : "OVERLOADED";
+            if (global.botState) {
+              global.botState.aiHealthy = false;
+              global.botState.aiDownReason = reason;
+            }
+            aiLog("API_BILLING_ERROR", res.statusCode, `HTTP ${res.statusCode} — ${reason} error, switching to btcStrategy`);
+            resolve(null);
+            return;
+          }
+          // 429 = rate limit, fall through to retry logic
+
           try {
             const parsed = JSON.parse(data);
             const text = parsed.content?.[0]?.text || "";
             const match = text.match(/\{[\s\S]*\}/);
-            if (match) { resolve(JSON.parse(match[0])); return; }
+            if (match) {
+              // Mark AI as healthy on successful parse
+              if (global.botState) global.botState.aiHealthy = true;
+              resolve(JSON.parse(match[0]));
+              return;
+            }
           } catch {}
           // Empty or invalid response — retry with exponential backoff
           if (retryLeft > 0) {
@@ -884,11 +904,25 @@ function detectLiquidityTrap({ klines }) {
   } catch { return null; }
 }
 
+/**
+ * TEST AI HEALTH — Lightweight Claude call for auto-recovery check
+ * Called every 5 minutes when aiHealthy = false to check if API has recovered
+ */
+async function testAIHealth() {
+  const testPrompt = "Respond with valid JSON: {\"ok\": true}";
+  const result = await claudeCall(
+    "You are a health check service. Respond ONLY with valid JSON.",
+    testPrompt,
+    100
+  );
+  return result && result.ok === true;
+}
+
 module.exports = {
   callF1, callF2, sniperMode, judasSweepDetector, liquiditySweepEngine,
   volatilityRegime, killZoneTimer, smartCompounder, momentumIgnition,
   obFreshnessScorer, macroCorrelation, exitOptimizer, masterOrchestrator,
-  reviewTrade, runAll, detectLiquidityTrap,
+  reviewTrade, runAll, detectLiquidityTrap, testAIHealth,
   // helpers exported for testing
   calcATR, calcEMA, extractSwings, formatKlines,
 };

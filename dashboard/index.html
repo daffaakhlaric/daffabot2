@@ -74,6 +74,7 @@
     <div class="chip"><span class="chip-label">SCORE</span><span id="chip-score" class="chip-val">—</span></div>
     <div class="chip"><span class="chip-label">MARKET</span><span id="chip-market" class="chip-val">—</span></div>
     <div class="chip"><span class="chip-label">MODE</span><span id="chip-mode" class="chip-val">SAFE</span></div>
+    <div class="chip" id="chip-ai-wrap" title="Click to toggle AI/Bot mode" style="cursor:pointer" onclick="toggleAIMode()"><span class="chip-label">AI</span><span id="chip-ai-mode" class="chip-val" style="color:var(--green)">✓ ON</span></div>
     <div class="chip" style="margin-left:auto"><span class="chip-label">SIGNAL</span><span id="chip-signal" class="chip-val">HOLD</span></div>
     <div class="chip"><span class="chip-label">UPTIME</span><span id="chip-uptime" class="chip-val mono">—</span></div>
   </div>
@@ -611,6 +612,48 @@ function updateStatusChips(live) {
 
   // Bot mode
   setTxt('chip-mode', live?.botMode||'SAFE');
+
+  // AI mode indicator — show 5 states based on forceMode, aiHealthy, aiMode
+  const aiModeEl = $('chip-ai-mode');
+  if (aiModeEl) {
+    const forceMode = live?.forceMode;     // null=AUTO, "AI"=forced, "BOT"=forced
+    const aiHealthy = live?.aiHealthy !== false;
+    const isAIMode = live?.aiMode !== false;
+    const aiDownReason = live?.aiDownReason;
+
+    let displayText, displayColor, displayTitle;
+
+    if (forceMode === "BOT") {
+      // User forced BOT mode
+      displayText = "✗ BOT (Manual)";
+      displayColor = "var(--amber)";
+      displayTitle = "Manually forced to btcStrategy mode";
+    } else if (forceMode === "AI") {
+      // User forced AI mode
+      displayText = "✓ AI (Manual)";
+      displayColor = "var(--blue)";
+      displayTitle = "Manually forced to Orchestrator mode";
+    } else if (!aiHealthy) {
+      // Auto mode, but AI is down due to billing/auth
+      displayText = "⚠ BILLING DOWN";
+      displayColor = "#ff6b6b";
+      displayTitle = `AI disabled: ${aiDownReason || "API error"}. Click to retry.`;
+    } else if (isAIMode) {
+      // Auto mode, AI is healthy and active
+      displayText = "✓ AI (Auto)";
+      displayColor = "var(--green)";
+      displayTitle = "Auto mode, using Orchestrator";
+    } else {
+      // Auto mode, but AI not active (shouldn't happen if aiHealthy=true)
+      displayText = "✗ BOT (Auto)";
+      displayColor = "var(--amber)";
+      displayTitle = "Auto mode, using btcStrategy";
+    }
+
+    aiModeEl.textContent = displayText;
+    aiModeEl.style.color = displayColor;
+    aiModeEl.title = displayTitle;
+  }
 }
 
 function updateOverviewScores(live) {
@@ -1289,6 +1332,58 @@ setInterval(()=>updateHeader(state.live), 1000);
   setInterval(pollTrades, 10000);
   setInterval(pollLogs, 4000);
 })();
+
+// ═══════════════════════════════════════════════════════════
+// AI MODE TOGGLE — Toggle between Auto/AI/BOT modes
+// ═══════════════════════════════════════════════════════════
+async function toggleAIMode() {
+  const s = state.live;
+  if (!s) return;
+
+  let nextMode;
+  const forceMode = s.forceMode;
+  const aiMode = s.aiMode !== false;
+
+  // State machine: determine next mode
+  if (forceMode === "BOT") {
+    nextMode = "AUTO";        // BOT manual → back to auto
+  } else if (forceMode === "AI") {
+    nextMode = "BOT";         // AI manual → force BOT
+  } else if (aiMode) {
+    nextMode = "BOT";         // Auto with AI active → force BOT
+  } else {
+    nextMode = "AI";          // Auto with BOT/billing → try AI again
+  }
+
+  try {
+    const r = await fetch("/api/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: nextMode })
+    });
+    if (r.ok) {
+      showToast(`Mode → ${nextMode}`);
+      // Force immediate UI update
+      await pollData();
+    } else {
+      const err = await r.json();
+      showToast(`Error: ${err.error}`, "error");
+    }
+  } catch (e) {
+    showToast("Failed to change mode: " + e.message, "error");
+  }
+}
+
+// Toast notification helper
+function showToast(msg, type = "info") {
+  const t = document.createElement("div");
+  const bgColor = type === "error" ? "#ff6b6b" : "#1e293b";
+  const textColor = type === "error" ? "#fff" : "#fff";
+  t.style.cssText = `position:fixed;bottom:20px;right:20px;background:${bgColor};color:${textColor};padding:12px 18px;border-radius:8px;font-size:13px;z-index:9999;font-weight:500;`;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
 
 // Footer shortcuts hint
 (()=>{

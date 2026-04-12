@@ -62,6 +62,12 @@ global.botState = {
   features:       {},
   aiLogs:         [],
   psychWarnings:  [],
+  aiMode:         true,             // ← AI enabled/disabled flag
+  aiSource:       "ORCHESTRATOR",   // ← Which engine is active
+  forceMode:      null,             // ← null=AUTO | "AI"=force | "BOT"=force
+  aiHealthy:      true,             // ← false when billing/auth error detected
+  aiDownReason:   null,             // ← "BILLING" | "AUTH" | "OVERLOADED" | null
+  aiForced:       false,            // ← true if user manually set mode
   scoreBoard:     {
     htf_confidence:        null,
     smc_confluence_score:  null,
@@ -392,8 +398,13 @@ async function run() {
       // Hanya SATU otak yang aktif — tidak ada voting/gabungan
       // Kondisi 1: AI_ENABLED=true DAN ANTHROPIC_API_KEY ada → orchestrator saja
       // Kondisi 2: salah satu tidak ada → btcStrategy saja
-      const aiEnabled = process.env.AI_ENABLED !== "false"
-                     && !!process.env.ANTHROPIC_API_KEY;
+      // NEW: Respect forceMode override (manual toggle from dashboard)
+      const forceMode = global.botState.forceMode;
+      const keyAvailable = process.env.AI_ENABLED !== "false"
+                        && !!process.env.ANTHROPIC_API_KEY;
+      const aiEnabled = forceMode === "BOT" ? false
+                      : forceMode === "AI"  ? keyAvailable
+                      : keyAvailable && global.botState.aiHealthy !== false;
 
       let decision;
       if (aiEnabled) {
@@ -439,7 +450,13 @@ async function run() {
         timestamp:            Date.now(),
       };
 
-      // Enhanced logging with confidence scores
+      // Track AI mode status (show if using AI or btcStrategy fallback)
+      global.botState.aiMode = aiEnabled;
+      global.botState.aiSource = aiEnabled ? "ORCHESTRATOR" : "BTCSTRATEGY";
+      global.botState.aiForced = forceMode !== null;
+      global.botState.aiDownReason = aiHealthy === false ? global.botState.aiDownReason : null;
+
+      // Enhanced logging with confidence scores + AI mode
       const scoreStr = [
         htfConf !== null ? `HTF=${htfConf}%` : null,
         smcConf !== null ? `SMC=${smcConf}%` : null,
@@ -448,7 +465,8 @@ async function run() {
         judasConf !== null ? `JUDAS=${judasConf}%` : null,
       ].filter(Boolean).join(" | ");
 
-      const logMsg = `🧠 ${decision.action} [${decision.source || "UNKNOWN"}]${scoreStr ? " | " + scoreStr : ""}${decision.reason ? " — " + decision.reason : ""}`;
+      const modeTag = aiEnabled ? "🤖" : "🔴";
+      const logMsg = `${modeTag} ${decision.action} [${decision.source || "UNKNOWN"}]${scoreStr ? " | " + scoreStr : ""}${decision.reason ? " — " + decision.reason : ""}`;
       log(logMsg);
 
       // Sync live state to global.botState for dashboard
@@ -580,6 +598,21 @@ async function run() {
 // ── HTF KLINES STATE (diisi setiap 3 tick) ───────────────
 let tickCount = 0;
 let klines_4h = [], klines_1h = [], klines_15m = [];
+
+// ── AUTO-RECOVERY AI HEALTH CHECK ────────────────────────
+// Every 5 minutes, if AI is down (aiHealthy=false) and not force-botted,
+// try a minimal Claude call to see if billing/auth has recovered
+setInterval(async () => {
+  if (global.botState.aiHealthy === false && global.botState.forceMode !== "BOT") {
+    const featureEngine = require("./featureEngine");
+    const result = await featureEngine.testAIHealth?.();
+    if (result) {
+      global.botState.aiHealthy = true;
+      global.botState.aiDownReason = null;
+      log("🟢 AI RESTORED — switching back to ORCHESTRATOR");
+    }
+  }
+}, 5 * 60 * 1000); // 5 minutes
 
 // ── START DASHBOARD ──────────────────────────────────────
 try {

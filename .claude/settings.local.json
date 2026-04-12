@@ -27,7 +27,8 @@
       "Bash(ls -la *.js)",
       "Bash(kill -9 1147)",
       "Bash(pkill -9 node)",
-      "Bash(node test-logs-sync.js)"
+      "Bash(node test-logs-sync.js)",
+      "Bash(curl -s -X POST http://localhost:3000/api/mode -H \"Content-Type: application/json\" -d '{\"mode\":\"AI\"}')"
     ],
     "additionalDirectories": [
       "C:\\Users\\HP\\.claude\\plans"

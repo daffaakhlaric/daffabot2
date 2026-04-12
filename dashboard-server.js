@@ -139,6 +139,14 @@ async function fetchLiveData() {
     liveData.decisionScore = s.decisionScore ?? null;
     liveData.botMode       = process.env.BOT_MODE || "SAFE";
 
+    // Add AI mode info for mode toggle
+    liveData.aiMode        = s.aiMode !== false;
+    liveData.aiSource      = s.aiSource || "UNKNOWN";
+    liveData.forceMode     = s.forceMode || null;       // null = AUTO, "AI", "BOT"
+    liveData.aiHealthy     = s.aiHealthy !== false;     // false if billing/auth error
+    liveData.aiDownReason  = s.aiDownReason || null;    // "BILLING" | "AUTH" | "OVERLOADED"
+    liveData.aiForced      = s.aiForced || false;       // true if manually set
+
     // Add scoreBoard for confidence monitoring
     if (s.scoreBoard) {
       liveData.scoreBoard = {
@@ -271,7 +279,14 @@ const server = http.createServer((req, res) => {
 
   // CORS headers for dev convenience
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  // ── OPTIONS preflight handler (CORS) ────────────────────
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    return res.end();
+  }
 
   if (url === "/" || url === "/dashboard") {
     const htmlPath = path.join(DASHBOARD_DIR, "index.html");
@@ -311,6 +326,44 @@ const server = http.createServer((req, res) => {
       liveData: { ...liveData, _raw: undefined }, // tanpa raw
       raw: liveData._raw || "belum ada data — tunggu 5 detik",
     }, null, 2));
+  }
+
+  // ── POST /api/mode: Toggle between AI/BOT mode ────────────
+  if (url === "/api/mode" && req.method === "POST") {
+    let body = "";
+    req.on("data", chunk => (body += chunk));
+    req.on("end", () => {
+      try {
+        const data = JSON.parse(body);
+        const { mode } = data; // "AI" | "BOT" | "AUTO"
+
+        if (!["AI", "BOT", "AUTO"].includes(mode)) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ error: "Invalid mode. Use: AI, BOT, or AUTO" }));
+        }
+
+        // Set forceMode: null for AUTO, "AI" or "BOT" for forced modes
+        global.botState.forceMode = mode === "AUTO" ? null : mode;
+        global.botState.aiForced = mode !== "AUTO";
+
+        // If user forces AI back on, reset aiHealthy to trigger retry
+        if (mode === "AI") {
+          global.botState.aiHealthy = true;
+          global.botState.aiDownReason = null;
+        }
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          ok: true,
+          forceMode: global.botState.forceMode,
+          message: `Mode set to ${mode}`
+        }));
+      } catch (err) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid JSON: " + err.message }));
+      }
+    });
+    return;
   }
 
   // Static assets: CSS, source maps, JS

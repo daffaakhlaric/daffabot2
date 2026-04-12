@@ -622,14 +622,21 @@ async function orchestrate({
       }
     }
 
-    // Final decision filter (UPGRADE 7+8): score >= 60 required; orderbook must not oppose
+    // Final decision filter (UPGRADE 7+8): score >= 60 required; orderbook filter relaxed
     // RELAXED: reduced from 75 to 60 for more entries
+    // OPTION A: Allow entry even if OB slightly opposes, if score is high enough (>=90)
     const minScore = 60;
     if (decisionScore < minScore) {
       return { action: "HOLD", reason: `Score ${decisionScore} < ${minScore}`, source: "LOW_SCORE" };
     }
-    if (obBias !== "NEUTRAL" && obBias !== judas.signal.replace("LONG", "BULLISH").replace("SHORT", "BEARISH")) {
-      return { action: "HOLD", reason: `Orderbook ${obBias} opposes ${judas.signal} entry`, source: "OB_FILTER" };
+
+    // Orderbook filter — only block if OB opposes AND score is also low
+    const obSignal = judas.signal.replace("LONG", "BULLISH").replace("SHORT", "BEARISH");
+    if (obBias === "BEARISH" && obSignal === "BULLISH" && decisionScore < 90) {
+      return { action: "HOLD", reason: `Orderbook bearish opposes bullish entry + score ${decisionScore} < 90`, source: "OB_FILTER" };
+    }
+    if (obBias === "BULLISH" && obSignal === "BEARISH" && decisionScore < 90) {
+      return { action: "HOLD", reason: `Orderbook bullish opposes bearish entry + score ${decisionScore} < 90`, source: "OB_FILTER" };
     }
 
     if (global.botState) global.botState.decisionScore = decisionScore;

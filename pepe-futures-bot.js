@@ -454,7 +454,7 @@ async function run() {
       global.botState.aiMode = aiEnabled;
       global.botState.aiSource = aiEnabled ? "ORCHESTRATOR" : "BTCSTRATEGY";
       global.botState.aiForced = forceMode !== null;
-      global.botState.aiDownReason = aiHealthy === false ? global.botState.aiDownReason : null;
+      global.botState.aiDownReason = global.botState.aiHealthy === false ? global.botState.aiDownReason : null;
 
       // Enhanced logging with confidence scores + AI mode
       const scoreStr = [

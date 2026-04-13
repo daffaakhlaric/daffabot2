@@ -464,19 +464,36 @@ async function run() {
             mode:           CONFIG.MODE,
           }),
           12000,
-          { action: "HOLD", reason: "AI timeout >12s", source: "TIMEOUT_GUARD" }
+          null  // Return null on timeout instead of HOLD
         );
 
-        // INSTANT FALLBACK: if billing error detected during orchestrator call, switch to btcStrategy immediately
-        if (global.botState.aiHealthy === false) {
-          log(`🔴 FALLBACK TRIGGERED: ${global.botState.aiDownReason || "API error"} detected — switching to btcStrategy`);
+        if (!decision || global.botState.aiHealthy === false) {
+          // AI gagal/timeout → fallback ke btcStrategy dengan context HTF
+          log(`🔄 FALLBACK: AI ${!decision ? 'timeout' : global.botState.aiDownReason} — using btcStrategy`);
           decision = btcStrategy.analyze({ klines, position: state.activePosition });
-          decision.source = "BTCSTRATEGY_FALLBACK_BILLING";
+          decision.source = !decision.source
+            ? "BTCSTRATEGY_FALLBACK"
+            : decision.source;
+
+          // Jangan blokir entry saat fallback — reset scoreBoard agar tidak confusing
+          global.botState.scoreBoard = {
+            htf_confidence: null,
+            smc_confluence_score: null,
+            decision_score: null,
+            momentum_confidence: null,
+            judas_confidence: null,
+            regime: "FALLBACK_MODE",
+            market_state: "UNKNOWN",
+            timestamp: Date.now(),
+          };
         }
       } else {
         decision = btcStrategy.analyze({ klines, position: state.activePosition });
-        decision.source = "BTCSTRATEGY_ONLY_MODE";
+        decision.source = "BTCSTRATEGY_ONLY";
       }
+
+      // Pastikan decision selalu ada
+      if (!decision) decision = { action: "HOLD", reason: "No decision generated", source: "GUARD" };
 
       // Extract confidence scores for dashboard monitoring
       const htfConf      = global.botState.features?.f1?.confidence || decision.htf_confidence || null;

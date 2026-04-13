@@ -8,23 +8,23 @@
 const CONFIG = {
   // HTF Analysis (4H)
   HTF_EMA_PERIOD: 50,
-  HTF_MIN_CONFIDENCE: 55,  // Mirror AI: 55% (was 70)
+  HTF_MIN_CONFIDENCE: 50,   // was 55 — lebih permissive
 
   // Structure Analysis
-  SWING_LOOKBACK: 15,
-  STRUCTURE_MIN_BARS: 3,
-  PULLBACK_THRESHOLD: 0.5,  // <0.5% from EMA = pullback zone
+  SWING_LOOKBACK: 20,       // was 15 — lebih banyak context
+  STRUCTURE_MIN_BARS: 5,    // was 3 — kurangi noise
+  PULLBACK_THRESHOLD: 0.8,  // was 0.5 — zone lebih lebar
 
   // Entry Validation
-  VOLUME_MIN: 1.2,
-  MIN_RR_RATIO: 2.0,  // 1:2 minimum risk/reward
+  VOLUME_MIN: 1.05,         // was 1.2 — jangan terlalu ketat
+  MIN_RR_RATIO: 1.5,        // was 2.0 — lebih realistis untuk BTC
 
   // Position Management
-  SL_PCT: 0.7,
-  TRAIL_ACTIVATE: 1.5,
-  TRAIL_DROP: 0.3,
-  PYR_1: 1.5,
-  PYR_2: 3.0,
+  SL_PCT: 1.2,              // was 0.7 — SL harus lebih wide di BTC
+  TRAIL_ACTIVATE: 1.0,      // was 1.5 — aktifkan trail lebih awal
+  TRAIL_DROP: 0.5,          // was 0.3 — trail lebih longgar
+  PYR_1: 1.0,               // was 1.5 — pyramid lebih cepat
+  PYR_2: 2.5,               // was 3.0
 };
 
 // ================= HELPERS =================
@@ -103,11 +103,12 @@ function validateSMCChecklist(klines, price) {
       checks.liquidity_swept = price < lastHigh && (lastHigh - price) / lastHigh * 100 < 2;
     }
 
-    // 3. Structure Break (BOS)
-    const recent = klines.slice(-5);
-    const highest = Math.max(...recent.map(k => k.high));
-    const lowest = Math.min(...recent.map(k => k.low));
-    checks.structure_break = (price > highest || price < lowest) && recent.length >= 3;
+    // 3. Structure Break (BOS) — gunakan 15 candle + konfirmasi close
+    const structureCandles = klines.slice(-15);
+    const prevHigh = Math.max(...structureCandles.slice(0,-3).map(k => k.high));
+    const prevLow  = Math.min(...structureCandles.slice(0,-3).map(k => k.low));
+    const lastClose = klines[klines.length - 1].close;
+    checks.structure_break = lastClose > prevHigh * 1.001 || lastClose < prevLow * 0.999;
 
     // 4. Mitigation Zone (pullback)
     if (htf?.ema) {
@@ -165,6 +166,57 @@ function calculateConfluenceScore(checks) {
   return Math.round((passed / 8) * 100);
 }
 
+// ================= HTF & MOMENTUM ANALYSIS =================
+// Simple multi-TF bias check menggunakan EMA slope
+function calcHTFBias(klines) {
+  if (!klines || klines.length < 50) return "RANGING";
+  const closes = klines.map(k => k.close);
+  const ema50  = ema(closes, 50);
+  const ema20  = ema(closes, 20);
+  if (!ema50 || !ema20) return "RANGING";
+  const price = closes[closes.length - 1];
+  // Slope: compare current EMA vs 5 candles ago
+  const closes5ago = closes.slice(0, -5);
+  const ema50_5ago = ema(closes5ago, 50);
+  if (!ema50_5ago) return "RANGING";
+  const slope = (ema50 - ema50_5ago) / ema50_5ago * 100;
+  if (price > ema50 && slope > 0.05)  return "BULLISH";
+  if (price < ema50 && slope < -0.05) return "BEARISH";
+  return "RANGING";
+}
+
+// Simple momentum score (0-100)
+function calcMomentumScore(klines) {
+  if (klines.length < 10) return 50;
+  const last5 = klines.slice(-5);
+  const prev5 = klines.slice(-10, -5);
+  const lastAvgClose = last5.reduce((s,k) => s+k.close,0) / 5;
+  const prevAvgClose = prev5.reduce((s,k) => s+k.close,0) / 5;
+  const lastAvgVol   = last5.reduce((s,k) => s+k.volume,0) / 5;
+  const prevAvgVol   = prev5.reduce((s,k) => s+k.volume,0) / 5;
+  const priceMom = (lastAvgClose - prevAvgClose) / prevAvgClose * 100;
+  const volRatio = prevAvgVol > 0 ? lastAvgVol / prevAvgVol : 1;
+  // Score: momentum + volume confirmation
+  const score = 50 + (priceMom * 10) + ((volRatio - 1) * 15);
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+// Helper ATR sederhana
+function calcATRSimple(klines, period = 14) {
+  const k = klines.slice(-period - 1);
+  if (k.length < 2) return 0;
+  let total = 0;
+  for (let i = 1; i < k.length; i++) {
+    const tr = Math.max(
+      k[i].high - k[i].low,
+      Math.abs(k[i].high - k[i-1].close),
+      Math.abs(k[i].low  - k[i-1].close)
+    );
+    total += tr;
+  }
+  return total / (k.length - 1);
+}
+
 // ================= MAIN ANALYZE =================
 function analyze({ klines, position }) {
   try {
@@ -182,42 +234,41 @@ function analyze({ klines, position }) {
       return managePosition(position, price);
     }
 
-    // ================= SMC CHECKLIST ANALYSIS =================
+    // ================= HTF & MOMENTUM ANALYSIS =================
+    const htfBias = calcHTFBias(klines);
+    const momScore = calcMomentumScore(klines);
     const checks = validateSMCChecklist(klines, price);
     const confluenceScore = calculateConfluenceScore(checks);
     const htf = calculateHTFConfidence(klines, price);
 
-    // Score threshold: relaxed to 50 (mirror AI: was 65, now 50)
-    if (confluenceScore < 50) {
-      return { action: "HOLD", reason: `Confluence ${confluenceScore}% < 50`, source: "SMC_FILTER" };
+    // FILTER: jangan masuk kalau HTF ranging + momentum lemah
+    if (htfBias === "RANGING" && momScore < 55) {
+      return { action: "HOLD", reason: "HTF ranging + low momentum", source: "HTF_FILTER" };
     }
 
-    // ================= HTF VALIDATION =================
+    // Score threshold: relaxed to 37 (4/8 checklist minimal)
+    if (confluenceScore < 37) {
+      return { action: "HOLD", reason: `Confluence ${confluenceScore}% < 37`, source: "SMC_FILTER" };
+    }
+
     if (!htf || htf.confidence < CONFIG.HTF_MIN_CONFIDENCE) {
       return { action: "HOLD", reason: "HTF confidence too low", source: "HTF_FILTER" };
     }
 
     // ================= ENTRY SIGNAL =================
-    const swings = extractSwings(klines);
-    const prev = klines[klines.length - 2];
-
-    // BULLISH: HTF bullish + structure valid
-    if (htf.bias === "BULLISH" && checks.structure_break && checks.entry_candle_valid) {
-      return buildEntry("LONG", price, "SMC");
+    // Entry dengan HTF alignment
+    if (htf.bias === "BULLISH" && htfBias !== "BEARISH" && checks.structure_break && checks.entry_candle_valid) {
+      return buildEntry("LONG", price, "BTCStrategy_TREND", klines);
     }
-
-    // BEARISH: HTF bearish + structure valid
-    if (htf.bias === "BEARISH" && checks.structure_break && checks.entry_candle_valid) {
-      return buildEntry("SHORT", price, "SMC");
+    if (htf.bias === "BEARISH" && htfBias !== "BULLISH" && checks.structure_break && checks.entry_candle_valid) {
+      return buildEntry("SHORT", price, "BTCStrategy_TREND", klines);
     }
-
-    // SNIPER: pullback entry
     if (checks.mitigation_zone && checks.entry_candle_valid) {
       if (htf.bias === "BULLISH" && current.close > current.open) {
-        return buildEntry("LONG", price, "SNIPER");
+        return buildEntry("LONG", price, "BTCStrategy_SNIPER", klines);
       }
       if (htf.bias === "BEARISH" && current.close < current.open) {
-        return buildEntry("SHORT", price, "SNIPER");
+        return buildEntry("SHORT", price, "BTCStrategy_SNIPER", klines);
       }
     }
 
@@ -229,23 +280,43 @@ function analyze({ klines, position }) {
 }
 
 // ================= ENTRY BUILDER =================
-function buildEntry(side, price, setup = "SMC") {
-  const sl = price * (1 - CONFIG.SL_PCT / 100);
-  const r = Math.abs(price - sl);
+function buildEntry(side, price, setup = "SMC", klines = []) {
+  // ATR-based SL — lebih adaptif dari % hardcoded
+  let atrMultiplier = 1.5;
+  let slPct = CONFIG.SL_PCT;
+
+  if (klines.length >= 15) {
+    const atrRaw = calcATRSimple(klines, 14);
+    const atrPct = atrRaw / price * 100;
+    // SL = 1.5x ATR, min 0.8%, max 2.5%
+    slPct = Math.max(0.8, Math.min(2.5, atrPct * atrMultiplier));
+  }
+
+  const sl  = price * (1 - slPct / 100);
+  const risk = Math.abs(price - sl);
+  const tp1 = side === "LONG" ? price + risk * 2   : price - risk * 2;
+  const tp2 = side === "LONG" ? price + risk * 4   : price - risk * 4;
+  const tp3 = side === "LONG" ? price + risk * 7   : price - risk * 7;
 
   return {
     action: side,
     setup,
     entry: {
       price,
-      sl: CONFIG.SL_PCT,
+      sl:            slPct,
       trailActivate: CONFIG.TRAIL_ACTIVATE,
-      trailDrop: CONFIG.TRAIL_DROP,
-      pyr1: CONFIG.PYR_1,
-      pyr2: CONFIG.PYR_2,
+      trailDrop:     CONFIG.TRAIL_DROP,
+      pyr1:          CONFIG.PYR_1,
+      pyr2:          CONFIG.PYR_2,
     },
-    confidence: 70,  // Fallback confidence
-    reason: `${setup} entry: ${side} at ${price.toFixed(2)}`,
+    // Expose levels untuk dashboard
+    sl_price: +sl.toFixed(2),
+    tp1:      +tp1.toFixed(2),
+    tp2:      +tp2.toFixed(2),
+    tp3:      +tp3.toFixed(2),
+    confidence: 60,
+    reason: `${setup}: ${side} ATR-SL=${slPct.toFixed(2)}%`,
+    source: "BTCSTRATEGY",
   };
 }
 
@@ -274,6 +345,14 @@ function managePosition(pos, price) {
       if (pnl <= pos.peak - drop) {
         return { action: "CLOSE", reason: "TRAILING EXIT" };
       }
+    }
+
+    // DEAD TRADE EXIT: jika dalam 30 menit tidak ada progress
+    const holdMinutes = pos.openedAt
+      ? (Date.now() - pos.openedAt) / 60000
+      : 0;
+    if (holdMinutes > 30 && Math.abs(pnl) < 0.3) {
+      return { action: "CLOSE", reason: "DEAD_TRADE_EXIT — no movement 30min" };
     }
 
     // PYRAMID

@@ -368,6 +368,11 @@ async function closePosition(price, reason = "UNKNOWN") {
     timestamp: state.lastTradeTime || Date.now(),
     exitTime:  Date.now(),
     setup:     pos.setup || "TREND",
+    // Trade execution details
+    size:      pos.size || "0",
+    sizeUSDT:  pos.sizeUSDT || 0,
+    leverage:  CONFIG.LEVERAGE,
+    source:    global.botState.aiSource || "UNKNOWN",
   };
 
   global.botState.tradeHistory.push(trade);

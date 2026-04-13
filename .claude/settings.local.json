@@ -46,7 +46,9 @@
       "Bash(grep -o \"[0-9]*$\")",
       "Bash(xargs -I {} wmic process where processid={} delete)",
       "Bash(cat)",
-      "Bash(bash /tmp/env_update.sh)"
+      "Bash(bash /tmp/env_update.sh)",
+      "Bash(git add:*)",
+      "Bash(git commit -m 'Add missing trade history fields: size, leverage, source:*)"
     ],
     "additionalDirectories": [
       "C:\\Users\\HP\\.claude\\plans"

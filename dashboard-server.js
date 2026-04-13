@@ -188,20 +188,30 @@ async function fetchLiveData() {
   liveData._raw        = { accsRes, posRes, tickRes };
   liveData.lastUpdate  = Date.now();
 
-  // ── BALANCE & EQUITY (dari Bitget) ───────────────────────
-  const accsOk = accsRes?.code === "00000" && Array.isArray(accsRes.data);
-  if (accsOk) {
-    const usdt = accsRes.data.find(a => a.marginCoin === "USDT") || accsRes.data[0];
-    if (usdt) {
-      liveData.balance       = parseFloat(usdt.available                              || 0);
-      liveData.equity        = parseFloat(usdt.usdtEquity  || usdt.equity             || 0);
-      liveData.unrealizedPnL = parseFloat(usdt.unrealizedPL || usdt.crossedUnrealizedPL || 0);
+  // ── MODE DETECTION ─────────────────────────────────────────
+  const isDryRun = process.env.DRY_RUN !== "false";
+  liveData.mode = isDryRun ? "DRY_RUN" : "LIVE";
+
+  // ── BALANCE & EQUITY ────────────────────────────────────────
+  if (isDryRun) {
+    // DRY_RUN: Use default balance of $100 for testing
+    liveData.balance       = 100;
+    liveData.equity        = 100;
+    liveData.unrealizedPnL = 0;
+  } else {
+    // LIVE: Use real balance from Bitget
+    const accsOk = accsRes?.code === "00000" && Array.isArray(accsRes.data);
+    if (accsOk) {
+      const usdt = accsRes.data.find(a => a.marginCoin === "USDT") || accsRes.data[0];
+      if (usdt) {
+        liveData.balance       = parseFloat(usdt.available                              || 0);
+        liveData.equity        = parseFloat(usdt.usdtEquity  || usdt.equity             || 0);
+        liveData.unrealizedPnL = parseFloat(usdt.unrealizedPL || usdt.crossedUnrealizedPL || 0);
+      }
     }
   }
 
   // ── POSISI AKTIF ─────────────────────────────────────────
-  // MODE: DRY_RUN vs LIVE
-  const isDryRun = process.env.DRY_RUN !== "false";
 
   if (isDryRun) {
     // DRY_RUN MODE: Use bot state only (no real Bitget position)

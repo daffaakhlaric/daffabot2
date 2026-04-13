@@ -73,6 +73,7 @@
     <div class="chip"><span class="chip-label">PSYCH</span><span id="chip-psych" class="chip-val ok">NORMAL</span></div>
     <div class="chip"><span class="chip-label">SCORE</span><span id="chip-score" class="chip-val">—</span></div>
     <div class="chip"><span class="chip-label">MARKET</span><span id="chip-market" class="chip-val">—</span></div>
+    <div class="chip"><span class="chip-label">EXEC</span><span id="chip-exec-mode" class="chip-val" style="color:var(--amber)" title="Execution mode: DRY_RUN or LIVE">DRY_RUN</span></div>
     <div class="chip"><span class="chip-label">MODE</span><span id="chip-mode" class="chip-val">SAFE</span></div>
     <div class="chip" id="chip-ai-wrap" title="Click to toggle AI/Bot mode" style="cursor:pointer" onclick="toggleAIMode()"><span class="chip-label">AI</span><span id="chip-ai-mode" class="chip-val" style="color:var(--green)">✓ ON</span></div>
     <div class="chip" style="margin-left:auto"><span class="chip-label">SIGNAL</span><span id="chip-signal" class="chip-val">HOLD</span></div>
@@ -612,6 +613,15 @@ function updateStatusChips(live) {
 
   // Bot mode
   setTxt('chip-mode', live?.botMode||'SAFE');
+
+  // Execution mode (DRY_RUN vs LIVE)
+  const execModeEl = $('chip-exec-mode');
+  if (execModeEl) {
+    const mode = live?.mode || 'UNKNOWN';
+    execModeEl.textContent = mode;
+    execModeEl.style.color = mode === 'DRY_RUN' ? 'var(--amber)' : mode === 'LIVE' ? 'var(--green)' : 'var(--text-muted)';
+    execModeEl.title = mode === 'DRY_RUN' ? 'Testing mode - $100 default balance' : 'Live mode - Real Bitget account';
+  }
 
   // AI mode indicator — show 5 states based on forceMode, aiHealthy, aiMode
   const aiModeEl = $('chip-ai-mode');

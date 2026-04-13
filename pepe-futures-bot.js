@@ -425,6 +425,13 @@ async function run() {
           12000,
           { action: "HOLD", reason: "AI timeout >12s", source: "TIMEOUT_GUARD" }
         );
+
+        // INSTANT FALLBACK: if billing error detected during orchestrator call, switch to btcStrategy immediately
+        if (global.botState.aiHealthy === false) {
+          log(`🔴 FALLBACK TRIGGERED: ${global.botState.aiDownReason || "API error"} detected — switching to btcStrategy`);
+          decision = btcStrategy.analyze({ klines, position: state.activePosition });
+          decision.source = "BTCSTRATEGY_FALLBACK_BILLING";
+        }
       } else {
         decision = btcStrategy.analyze({ klines, position: state.activePosition });
         decision.source = "BTCSTRATEGY_ONLY_MODE";

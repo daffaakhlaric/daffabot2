@@ -31,7 +31,11 @@
       "Bash(curl -s -X POST http://localhost:3000/api/mode -H \"Content-Type: application/json\" -d '{\"mode\":\"AI\"}')",
       "Bash(curl -s -X POST http://localhost:3000/api/mode -H \"Content-Type: application/json\" -d '{\"mode\":\"BOT\"}')",
       "Bash(curl -s http://localhost:3000/api/data)",
-      "Bash(curl -s -X POST http://localhost:3000/api/mode -H 'Content-Type: application/json' -d '{\"mode\":\"__TRACKED_VAR__\"}')"
+      "Bash(curl -s -X POST http://localhost:3000/api/mode -H 'Content-Type: application/json' -d '{\"mode\":\"__TRACKED_VAR__\"}')",
+      "Bash(node -c c:/Users/HP/Documents/Daffabot2/pepe-futures-bot.js)",
+      "Bash(powershell -Command \"Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force\")",
+      "Bash(npm start:*)",
+      "Bash(curl -s http://localhost:3000/health)"
     ],
     "additionalDirectories": [
       "C:\\Users\\HP\\.claude\\plans"

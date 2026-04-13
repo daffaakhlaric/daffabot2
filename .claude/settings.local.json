@@ -35,7 +35,9 @@
       "Bash(node -c c:/Users/HP/Documents/Daffabot2/pepe-futures-bot.js)",
       "Bash(powershell -Command \"Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force\")",
       "Bash(npm start:*)",
-      "Bash(curl -s http://localhost:3000/health)"
+      "Bash(curl -s http://localhost:3000/health)",
+      "Bash(curl -s http://localhost:3000/api/logs)",
+      "Bash(curl -s http://localhost:3000/api/debug)"
     ],
     "additionalDirectories": [
       "C:\\Users\\HP\\.claude\\plans"

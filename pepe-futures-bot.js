@@ -252,10 +252,12 @@ async function fetchRealPosition() {
 async function openPosition(side, price, entryConfig, setup = "TREND") {
   log(`🚀 OPEN ${side} @ ${price} | DRY_RUN: ${CONFIG.DRY_RUN}`);
 
+  const size = calcSizeBTC(price);
+  const notional = parseFloat(size) * price;
+
   if (!CONFIG.DRY_RUN) {
     await setLeverage();
 
-    const size      = calcSizeBTC(price);
     const orderSide = side === "LONG" ? "buy" : "sell";
     const res       = await placeOrder(orderSide, "open", size);
 
@@ -269,6 +271,8 @@ async function openPosition(side, price, entryConfig, setup = "TREND") {
     side,
     entry: price,
     setup,
+    size,                 // Add size for dashboard display
+    sizeUSDT: notional,   // Add notional for dashboard display
     openedAt:      Date.now(),
     sl:            entryConfig.sl ?? 0.7,
     trailActivate: entryConfig.trailActivate ?? 1.5,
@@ -285,7 +289,7 @@ async function openPosition(side, price, entryConfig, setup = "TREND") {
     state.lastJudasLevel     = price;
     state.lastJudasLevelTime = Date.now();
   }
-  global.botState.activePosition = { side, entry: price, leverage: CONFIG.LEVERAGE, setup, pnl: 0, pnlPct: 0 };
+  global.botState.activePosition = { side, entry: price, leverage: CONFIG.LEVERAGE, setup, size, sizeUSDT: notional, pnl: 0, pnlPct: 0 };
 }
 
 async function closePosition(price, reason = "UNKNOWN") {

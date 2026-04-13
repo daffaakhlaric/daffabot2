@@ -200,66 +200,77 @@ async function fetchLiveData() {
   }
 
   // ── POSISI AKTIF ─────────────────────────────────────────
-  const posOk = posRes?.code === "00000";
-  if (posOk) {
-    const pos = Array.isArray(posRes.data) ? posRes.data[0] : posRes.data;
-    const qty = parseFloat(pos?.total || 0);
+  // MODE: DRY_RUN vs LIVE
+  const isDryRun = process.env.DRY_RUN !== "false";
 
-    if (pos && qty > 0) {
-      // Bitget has complete position data
-      liveData.activePosition = {
-        // Core
-        side:         pos.holdSide === "long" ? "LONG" : "SHORT",
-        marginMode:   pos.marginMode || "isolated",
-        leverage:     parseFloat(pos.leverage        || 1),
-        // Size
-        size:         qty,
-        sizeUSDT:     parseFloat(pos.notionalUsd     || 0),
-        available:    parseFloat(pos.available        || 0),
-        // Prices
-        entry:        parseFloat(pos.openPriceAvg    || 0),
-        markPrice:    parseFloat(pos.markPrice        || 0),
-        breakEven:    parseFloat(pos.breakEvenPrice   || 0),
-        liquidation:  parseFloat(pos.liquidationPrice || 0),
-        // PnL
-        pnl:          parseFloat(pos.unrealizedPL     || 0),
-        pnlPct:       parseFloat(pos.unrealizedPLR    || 0) * 100, // ROE
-        realizedPnL:  parseFloat(pos.achievedProfits  || 0),
-        // Margin
-        margin:       parseFloat(pos.margin           || 0),
-        marginRatio:  parseFloat(pos.marginRatio      || 0) * 100,
-        mmr:          parseFloat(pos.keepMarginRate   || 0) * 100,
-      };
-    } else if (pos && global.botState?.activePosition) {
-      // Bitget position is open but size=0, use bot state for size + Bitget for prices
-      const botPos = global.botState.activePosition;
-      liveData.activePosition = {
-        // Core
-        side:         pos.holdSide === "long" ? "LONG" : "SHORT",
-        marginMode:   pos.marginMode || "isolated",
-        leverage:     parseFloat(pos.leverage        || botPos.leverage || 1),
-        // Size — use bot state when Bitget returns 0
-        size:         parseFloat(botPos.size || 0) || qty,
-        sizeUSDT:     parseFloat(botPos.sizeUSDT || 0) || parseFloat(pos.notionalUsd || 0),
-        available:    parseFloat(pos.available        || 0),
-        // Prices
-        entry:        parseFloat(pos.openPriceAvg    || botPos.entry || 0),
-        markPrice:    parseFloat(pos.markPrice        || 0),
-        breakEven:    parseFloat(pos.breakEvenPrice   || 0),
-        liquidation:  parseFloat(pos.liquidationPrice || 0),
-        // PnL
-        pnl:          parseFloat(pos.unrealizedPL     || botPos.pnl || 0),
-        pnlPct:       parseFloat(pos.unrealizedPLR    || botPos.pnlPct || 0) * 100,
-        realizedPnL:  parseFloat(pos.achievedProfits  || 0),
-        // Margin
-        margin:       parseFloat(pos.margin           || 0),
-        marginRatio:  parseFloat(pos.marginRatio      || 0) * 100,
-        mmr:          parseFloat(pos.keepMarginRate   || 0) * 100,
-      };
-    }
-    // Fallback: if Bitget empty but bot has position, use bot state
-    if (!liveData.activePosition && global.botState?.activePosition) {
+  if (isDryRun) {
+    // DRY_RUN MODE: Use bot state only (no real Bitget position)
+    if (global.botState?.activePosition) {
       liveData.activePosition = global.botState.activePosition;
+    }
+  } else {
+    // LIVE MODE: Use Bitget as primary, bot state as fallback
+    const posOk = posRes?.code === "00000";
+    if (posOk) {
+      const pos = Array.isArray(posRes.data) ? posRes.data[0] : posRes.data;
+      const qty = parseFloat(pos?.total || 0);
+
+      if (pos && qty > 0) {
+        // Bitget has complete position data
+        liveData.activePosition = {
+          // Core
+          side:         pos.holdSide === "long" ? "LONG" : "SHORT",
+          marginMode:   pos.marginMode || "isolated",
+          leverage:     parseFloat(pos.leverage        || 1),
+          // Size
+          size:         qty,
+          sizeUSDT:     parseFloat(pos.notionalUsd     || 0),
+          available:    parseFloat(pos.available        || 0),
+          // Prices
+          entry:        parseFloat(pos.openPriceAvg    || 0),
+          markPrice:    parseFloat(pos.markPrice        || 0),
+          breakEven:    parseFloat(pos.breakEvenPrice   || 0),
+          liquidation:  parseFloat(pos.liquidationPrice || 0),
+          // PnL
+          pnl:          parseFloat(pos.unrealizedPL     || 0),
+          pnlPct:       parseFloat(pos.unrealizedPLR    || 0) * 100, // ROE
+          realizedPnL:  parseFloat(pos.achievedProfits  || 0),
+          // Margin
+          margin:       parseFloat(pos.margin           || 0),
+          marginRatio:  parseFloat(pos.marginRatio      || 0) * 100,
+          mmr:          parseFloat(pos.keepMarginRate   || 0) * 100,
+        };
+      } else if (pos && global.botState?.activePosition) {
+        // Bitget position open but size=0, use bot state for size + Bitget for prices
+        const botPos = global.botState.activePosition;
+        liveData.activePosition = {
+          // Core
+          side:         pos.holdSide === "long" ? "LONG" : "SHORT",
+          marginMode:   pos.marginMode || "isolated",
+          leverage:     parseFloat(pos.leverage        || botPos.leverage || 1),
+          // Size — use bot state when Bitget returns 0
+          size:         parseFloat(botPos.size || 0) || qty,
+          sizeUSDT:     parseFloat(botPos.sizeUSDT || 0) || parseFloat(pos.notionalUsd || 0),
+          available:    parseFloat(pos.available        || 0),
+          // Prices
+          entry:        parseFloat(pos.openPriceAvg    || botPos.entry || 0),
+          markPrice:    parseFloat(pos.markPrice        || 0),
+          breakEven:    parseFloat(pos.breakEvenPrice   || 0),
+          liquidation:  parseFloat(pos.liquidationPrice || 0),
+          // PnL
+          pnl:          parseFloat(pos.unrealizedPL     || botPos.pnl || 0),
+          pnlPct:       parseFloat(pos.unrealizedPLR    || botPos.pnlPct || 0) * 100,
+          realizedPnL:  parseFloat(pos.achievedProfits  || 0),
+          // Margin
+          margin:       parseFloat(pos.margin           || 0),
+          marginRatio:  parseFloat(pos.marginRatio      || 0) * 100,
+          mmr:          parseFloat(pos.keepMarginRate   || 0) * 100,
+        };
+      }
+      // Fallback: if Bitget empty but bot has position, use bot state
+      if (!liveData.activePosition && global.botState?.activePosition) {
+        liveData.activePosition = global.botState.activePosition;
+      }
     }
   }
 

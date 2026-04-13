@@ -19,8 +19,8 @@ const CONFIG = {
   SECRET_KEY: process.env.BITGET_SECRET_KEY,
   PASSPHRASE: process.env.BITGET_PASSPHRASE,
 
-  LEVERAGE: 7,
-  POSITION_SIZE_USDT: 15,
+  LEVERAGE: 50,             // 50x leverage
+  POSITION_SIZE_USDT: 0.40, // Margin: $0.40 → Notional: $20 (0.40 × 50)
 
   TRADE_COOLDOWN_MS: 5 * 60 * 1000,
   CHECK_INTERVAL: 20000,
@@ -192,8 +192,8 @@ async function getKlinesHTF(granularity, limit) {
 function calcSizeBTC(price) {
   const notional = CONFIG.POSITION_SIZE_USDT * CONFIG.LEVERAGE;
   const raw      = notional / price;
-  // Minimum 0.001 BTC, floor ke 3 desimal
-  return Math.max(0.001, Math.floor(raw * 1000) / 1000).toFixed(3);
+  // Minimum 0.00005 BTC (allows smaller positions), floor ke 5 desimal
+  return Math.max(0.00005, Math.floor(raw * 100000) / 100000).toFixed(5);
 }
 
 // Set leverage sebelum open posisi

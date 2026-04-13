@@ -106,7 +106,7 @@ function withTimeout(promise, ms, fallback = null) {
 let _tickRunning = false;
 let _openingPosition = false;
 
-// ================= SAFE REQUEST =================
+// ================= SAFE REQUEST ==================
 function safeJsonParse(data) {
   try {
     return JSON.parse(data);

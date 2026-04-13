@@ -497,6 +497,8 @@ async function run() {
           entry:    pos.entry,
           leverage: CONFIG.LEVERAGE,
           setup:    pos.setup,
+          size:     pos.size,
+          sizeUSDT: pos.sizeUSDT,
           pnlPct:   +pnlPct.toFixed(3),
           pnl:      +pnlUSDT.toFixed(3),
         };

@@ -192,6 +192,11 @@ async function fetchLiveData() {
   const isDryRun = process.env.DRY_RUN !== "false";
   liveData.mode = isDryRun ? "DRY_RUN" : "LIVE";
 
+  // ── DEFINE API OK FLAGS (scoped outside if/else) ──────────────
+  let accsOk = false;
+  let posOk = false;
+  let tickOk = false;
+
   // ── BALANCE & EQUITY ────────────────────────────────────────
   if (isDryRun) {
     // DRY_RUN: Use default balance of $100 for testing
@@ -200,7 +205,7 @@ async function fetchLiveData() {
     liveData.unrealizedPnL = 0;
   } else {
     // LIVE: Use real balance from Bitget
-    const accsOk = accsRes?.code === "00000" && Array.isArray(accsRes.data);
+    accsOk = accsRes?.code === "00000" && Array.isArray(accsRes.data);
     if (accsOk) {
       const usdt = accsRes.data.find(a => a.marginCoin === "USDT") || accsRes.data[0];
       if (usdt) {
@@ -220,7 +225,7 @@ async function fetchLiveData() {
     }
   } else {
     // LIVE MODE: Use Bitget as primary, bot state as fallback
-    const posOk = posRes?.code === "00000";
+    posOk = posRes?.code === "00000";
     if (posOk) {
       const pos = Array.isArray(posRes.data) ? posRes.data[0] : posRes.data;
       const qty = parseFloat(pos?.total || 0);
@@ -277,15 +282,20 @@ async function fetchLiveData() {
           mmr:          parseFloat(pos.keepMarginRate   || 0) * 100,
         };
       }
-      // Fallback: if Bitget empty but bot has position, use bot state
+      // Fallback 1: if Bitget has no position data but bot has, use bot state
       if (!liveData.activePosition && global.botState?.activePosition) {
         liveData.activePosition = global.botState.activePosition;
       }
     }
+
+    // Fallback 2: if LIVE mode but still no position, try bot state as last resort
+    if (!liveData.activePosition && global.botState?.activePosition) {
+      liveData.activePosition = global.botState.activePosition;
+    }
   }
 
   // ── HARGA ────────────────────────────────────────────────
-  const tickOk = tickRes?.code === "00000";
+  tickOk = tickRes?.code === "00000";
   if (tickOk) {
     const tick = Array.isArray(tickRes.data) ? tickRes.data[0] : tickRes.data;
     const raw  = parseFloat(tick?.lastPr || tick?.last || tick?.close || 0);

@@ -159,6 +159,25 @@ async function request(method, path, body = null) {
 
 // ================= MARKET =================
 async function getKlines() {
+  // DRY_RUN mode: generate fake price data for testing
+  if (CONFIG.DRY_RUN) {
+    const basePrice = 71000;
+    const now = Date.now();
+    const klines = [];
+    for (let i = 99; i >= 0; i--) {
+      const variation = (Math.random() - 0.5) * 100; // ±50 price variation
+      const price = basePrice + variation;
+      klines.push({
+        open: price,
+        high: price + 50,
+        low: price - 50,
+        close: price,
+        volume: Math.random() * 1000,
+      });
+    }
+    return klines;
+  }
+
   const res = await request(
     "GET",
     `/api/v2/mix/market/candles?symbol=${CONFIG.SYMBOL}&productType=${CONFIG.PRODUCT_TYPE}&granularity=1m&limit=100`
@@ -176,6 +195,24 @@ async function getKlines() {
 }
 
 async function getKlinesHTF(granularity, limit) {
+  // DRY_RUN mode: generate fake price data for testing
+  if (CONFIG.DRY_RUN) {
+    const basePrice = 71000;
+    const klines = [];
+    for (let i = limit - 1; i >= 0; i--) {
+      const variation = (Math.random() - 0.5) * 500; // larger variation for HTF
+      const price = basePrice + variation;
+      klines.push({
+        open: price,
+        high: price + 200,
+        low: price - 200,
+        close: price,
+        volume: Math.random() * 5000,
+      });
+    }
+    return klines;
+  }
+
   const res = await request(
     "GET",
     `/api/v2/mix/market/candles?symbol=${CONFIG.SYMBOL}&productType=${CONFIG.PRODUCT_TYPE}&granularity=${granularity}&limit=${limit}`

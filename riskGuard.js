@@ -292,6 +292,7 @@ function runAllChecks({
   regime = "RANGING",
   whaleResult = null,  // ← Optional whale analyzer result
 } = {}) {
+  const now = Date.now();
   const blocks = [];
   const warnings = [];
 

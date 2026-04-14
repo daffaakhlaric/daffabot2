@@ -53,7 +53,22 @@
       "Bash(node -c btcStrategy.js)",
       "Bash(node -e \"const fs=require\\('fs'\\);const html=fs.readFileSync\\('c:/Users/HP/Documents/Daffabot2/dashboard/index.html','utf8'\\);const openTags=html.match\\(/<div/g\\)||[];const closeTags=html.match\\(/<\\\\/div>/g\\)||[];console.log\\('✓ HTML loaded'\\);console.log\\('Open divs:',openTags.length\\);console.log\\('Close divs:',closeTags.length\\);\")",
       "Bash(git commit -m ':*)",
-      "Bash(node -c c:/Users/HP/Documents/Daffabot2/btcStrategy.js)"
+      "Bash(node -c c:/Users/HP/Documents/Daffabot2/btcStrategy.js)",
+      "Bash(grep -n \"function \\\\$\\\\|const \\\\$\\\\|let \\\\$\" c:/Users/HP/Documents/Daffabot2/dashboard/index.html)",
+      "Bash(grep -n \"^\\\\s*\\\\$\\\\s*=\" c:/Users/HP/Documents/Daffabot2/dashboard/index.html)",
+      "Bash(grep -n \"function \\\\$\" c:/Users/HP/Documents/Daffabot2/dashboard/index.html)",
+      "Bash(grep -n \"\\\\$\\\\|function\")",
+      "Bash(grep -m1 \"^const \\\\$ =\\\\|^let \\\\$ =\\\\|^ *\\\\$ *=\" c:/Users/HP/Documents/Daffabot2/dashboard/index.html)",
+      "Bash(git commit -m 'Fix: Preserve symbol and pairDisplayName in activePosition tick updates:*)",
+      "Bash(git commit -m 'Add: Debug logging for position tracking on tick updates:*)",
+      "Bash(git commit -m 'Add: Debug logging and fix pair symbol in position size display:*)",
+      "Bash(git commit -m 'Fix: Handle string numbers in position data and add error logging:*)",
+      "Bash(git commit -m 'Fix: Return number from calcSizeBTC instead of string:*)",
+      "Bash(grep -r \"exit.*Date.now\\\\|exitCache\\\\|exit_\" c:/Users/HP/Documents/Daffabot2/*.js)",
+      "Bash(git commit -m 'Fix: Critical bugs in exit caching, resistance check, tick safety, and trade recording:*)",
+      "Bash(git commit -m 'fix: Add decimal precision for micro-cap coins \\(PEPE 0.00000345\\):*)",
+      "Bash(git commit -m 'fix: Add entryTime capture and increase entry filter strictness:*)",
+      "Bash(git commit -m 'fix: DRY_RUN equity now updates based on trade PnL:*)"
     ],
     "additionalDirectories": [
       "C:\\Users\\HP\\.claude\\plans"

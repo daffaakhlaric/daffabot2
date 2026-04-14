@@ -1293,7 +1293,7 @@ function renderTrades() {
       <td style="color:var(--text-muted);font-size:10px">${t.entryTime?`${fmtTime(t.entryTime)}`:'—'}</td>
       <td>${fmtPrice(t.exit)}</td>
       <td style="color:var(--text-muted);font-size:10px">${t.exitTime?`${fmtTime(t.exitTime)}`:'—'}</td>
-      <td style="color:var(--text-muted)">${fmtDurMin(t.duration)}</td>
+      <td style="color:var(--text-muted)">${fmtDur(t.duration)}</td>
       <td style="color:${pp?'var(--green)':'var(--red)'};font-weight:600">${fmtPnL(t.pnlUSDT)}</td>
       <td style="color:${pp?'var(--green)':'var(--red)'}">${fmtPct(t.pnl)}</td>
       <td>${grade!=='—'?`<span class="badge ${gradeClass(grade)}">${grade}</span>`:'—'}</td>

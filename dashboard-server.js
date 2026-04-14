@@ -219,7 +219,7 @@ async function fetchLiveData() {
   // ── BALANCE & EQUITY ────────────────────────────────────────
   if (isDryRun) {
     // DRY_RUN: Calculate equity from trade history
-    const initialEquity = 100;
+    const initialEquity = INITIAL_EQ;
     const closedPnL = tradeHistory.reduce((sum, t) => sum + (t.pnlUSDT || 0), 0);
     const unrealizedPnL = global.botState?.activePosition
       ? global.botState.activePosition.pnl || 0

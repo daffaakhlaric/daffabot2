@@ -458,6 +458,9 @@ async function closePosition(price, reason = "UNKNOWN") {
 
   log(`💰 CLOSE @ ${price} | PnL: ${pnl.toFixed(2)}% (${pnlUSDT > 0 ? "+" : ""}${pnlUSDT} USDT) | ${reason}`);
 
+  const exitTime = Date.now();
+  const entryTime = pos.openedAt || state.lastTradeTime || Date.now();
+
   const trade = {
     id:        `T-${Date.now()}`,
     side:      pos.side,
@@ -467,10 +470,10 @@ async function closePosition(price, reason = "UNKNOWN") {
     pnlUSDT,
     result:    pnl > 0 ? "WIN" : "LOSS",
     reason,
-    duration:  Math.round((Date.now() - state.lastTradeTime) / 60000),
-    timestamp: state.lastTradeTime || Date.now(),
-    entryTime: pos.openedAt || state.lastTradeTime || Date.now(),
-    exitTime:  Date.now(),
+    duration:  Math.max(0, exitTime - entryTime),  // milliseconds
+    timestamp: entryTime,
+    entryTime,
+    exitTime,
     setup:     pos.setup || "TREND",
     // Trade execution details
     size:      pos.size || "0",

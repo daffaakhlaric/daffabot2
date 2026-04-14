@@ -324,9 +324,7 @@ function dynamicExit(pos, price, atrPct) {
       }
     }
 
-    if (pnlPct > 3) {
-      return { action: "PARTIAL_CLOSE", percentage: 50, reason: "Dynamic exit: pnl>3%, close 50%", source: "DYNAMIC_EXIT" };
-    }
+    // Removed early 3% profit taking — let AI/signals decide for maximum profit
 
     if (pnlPct > 1.5 && pos.sl !== entry) {
       return { action: "UPDATE_SL", new_sl: entry, reason: "Dynamic exit: pnl>1.5%, move SL to BE", source: "DYNAMIC_EXIT" };

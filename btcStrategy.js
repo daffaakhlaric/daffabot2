@@ -23,8 +23,8 @@ const DEFAULT_CONFIG = {
 
   // Position Management
   SL_PCT: 1.2,              // was 0.7 — SL harus lebih wide di BTC
-  TRAIL_ACTIVATE: 1.0,      // was 1.5 — aktifkan trail lebih awal
-  TRAIL_DROP: 0.5,          // was 0.3 — trail lebih longgang
+  TRAIL_ACTIVATE: 2.0,      // Activate trailing at 2% profit (was 1.0%)
+  TRAIL_DROP: 1.0,          // Trail drops by 1% (was 0.5%) — more room to run
   PYR_1: 1.0,               // was 1.5 — pyramid lebih cepat
   PYR_2: 2.5,               // was 3.0
 };
@@ -303,9 +303,10 @@ function analyze({ klines, position, pairConfig }) {
     }
 
     // ═══ RELAXED ENTRY (Multi-pair mode) ═══
-    // Mode 1: confluence >=55% + HTF >=70% + current candle matches trend
-    const hasGoodConfluence = confluenceScore >= 55;
-    const hasStrongHTF = htf && htf.confidence >= 70;
+    // Mode 1: confluence >=60% + HTF >=75% + current candle matches trend
+    // Increased thresholds to avoid weak/micro-profit entries
+    const hasGoodConfluence = confluenceScore >= 60;
+    const hasStrongHTF = htf && htf.confidence >= 75;
     const hasClearTrend = htf && (htf.bias === "BULLISH" || htf.bias === "BEARISH");
 
     if (hasGoodConfluence && hasStrongHTF && hasClearTrend) {
@@ -340,10 +341,12 @@ function analyze({ klines, position, pairConfig }) {
 
     // Provide feedback why ULTRA/RELAXED didn't trigger
     let reason = "Setup not ready";
-    if (confluenceScore < 55 && confluenceScore >= 37) {
-      reason = `Confluence ${confluenceScore}% < 55% (waiting for stronger SMC setup) | HTF=${htf.confidence}%`;
+    if (confluenceScore < 60 && confluenceScore >= 37) {
+      reason = `Confluence ${confluenceScore}% < 60% (waiting for stronger SMC setup) | HTF=${htf.confidence}%`;
     } else if (confluenceScore < 37) {
       reason = `Confluence ${confluenceScore}% < 37% (SMC checklist needs more patterns) | HTF=${htf.confidence}%`;
+    } else if (confluenceScore >= 60 && htf.confidence < 75) {
+      reason = `HTF ${htf.confidence}% < 75% (waiting for stronger trend) | Confluence=${confluenceScore}%`;
     } else if (unmetChecks.length > 0) {
       reason = `${unmetChecks.join(" + ")} | Confluence=${confluenceScore}% HTF=${htf.confidence}%`;
     }
@@ -370,9 +373,9 @@ function buildEntry(side, price, setup = "SMC", klines = []) {
 
   const sl  = price * (1 - slPct / 100);
   const risk = Math.abs(price - sl);
-  const tp1 = side === "LONG" ? price + risk * 2   : price - risk * 2;
-  const tp2 = side === "LONG" ? price + risk * 4   : price - risk * 4;
-  const tp3 = side === "LONG" ? price + risk * 7   : price - risk * 7;
+  const tp1 = side === "LONG" ? price + risk * 3   : price - risk * 3;   // 3:1 RR ratio
+  const tp2 = side === "LONG" ? price + risk * 5   : price - risk * 5;   // 5:1 RR ratio
+  const tp3 = side === "LONG" ? price + risk * 8   : price - risk * 8;   // 8:1 RR ratio
 
   return {
     action: side,

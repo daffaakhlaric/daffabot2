@@ -214,17 +214,27 @@ async function getKlines() {
 
 // Parameterized klines fetch for multi-pair support
 async function fetchKlinesForSymbol(symbol, granularity = "1m", limit = 100) {
-  // DRY_RUN mode: generate fake price data
+  // DRY_RUN mode: generate fake price data with pair-specific base prices
   if (CONFIG.DRY_RUN) {
-    const basePrice = symbol === "BTCUSDT" ? 71000 : 3200;
+    const pairPrices = {
+      "BTCUSDT": 71000,
+      "ETHUSDT": 3900,
+      "SOLUSDT": 210,
+      "PEPEUSDT": 0.000015,
+      "BNBUSDT": 650,
+      "XRPUSDT": 2.5,
+    };
+    const basePrice = pairPrices[symbol] || 100; // Default to 100 if unknown pair
     const klines = [];
+    // Use smaller variation for small-price pairs (PEPE)
+    const variationFactor = basePrice < 0.01 ? 0.0000005 : basePrice < 100 ? 5 : 100;
     for (let i = limit - 1; i >= 0; i--) {
-      const variation = (Math.random() - 0.5) * 100;
+      const variation = (Math.random() - 0.5) * variationFactor;
       const price = basePrice + variation;
       klines.push({
         open: price,
-        high: price + 50,
-        low: price - 50,
+        high: price + variationFactor * 0.5,
+        low: price - variationFactor * 0.5,
         close: price,
         volume: Math.random() * 1000,
       });

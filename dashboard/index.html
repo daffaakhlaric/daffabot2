@@ -814,6 +814,13 @@ function updateMetrics(live, a) {
 function updatePosition(live) {
   const pos=live?.activePosition;
   const card=$('pos-card'); if(!card) return;
+
+  // Debug: log what we receive
+  if(pos && (!window._lastPosRender || window._lastPosRender !== JSON.stringify(pos))) {
+    console.log('🎯 [DASHBOARD] Position received:', {side: pos.side, symbol: pos.symbol, size: pos.size, entry: pos.entry});
+    window._lastPosRender = JSON.stringify(pos);
+  }
+
   if(!pos){
     card.innerHTML=`<div class="card-title">Active Position</div><div class="pos-empty"><div class="pos-empty-icon">&#9649;</div><div>No open position</div><div style="font-size:11px;margin-top:4px">Last: <strong>${live?.lastDecision||'HOLD'}</strong></div></div>`;
     return;
@@ -832,7 +839,7 @@ function updatePosition(live) {
     <hr class="pos-divider">
     <div class="pos-row"><span class="pos-key">Entry</span><span class="pos-val">${fmtPrice(pos.entry)}</span></div>
     <div class="pos-row"><span class="pos-key">Mark</span><span class="pos-val">${fmtPrice(pos.markPrice||live?.price)}</span></div>
-    <div class="pos-row"><span class="pos-key">Size</span><span class="pos-val">${(pos.size||0).toFixed(4)} BTC</span></div>
+    <div class="pos-row"><span class="pos-key">Size</span><span class="pos-val">${(pos.size||0).toFixed(4)} ${(pos.symbol||'BTC').replace('USDT','')}</span></div>
     <div class="pos-row"><span class="pos-key">Notional</span><span class="pos-val">${fmtCompact(pos.sizeUSDT)}</span></div>
     <div class="pos-row"><span class="pos-key">Break Even</span><span class="pos-val">${fmtPrice(pos.breakEven)}</span></div>
     <div class="pos-row"><span class="pos-key">Liquidation</span><span class="pos-val" style="color:var(--red)">${fmtPrice(pos.liquidation)}</span></div>

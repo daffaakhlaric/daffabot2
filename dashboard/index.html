@@ -47,6 +47,14 @@
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1 L15 5 V9 C15 12.5 11.5 15 8 15 C4.5 15 1 12.5 1 9 V5 Z"/></svg>
       Risk Monitor
     </div>
+    <div class="nav-item" data-sec="pairs">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="4" r="2.5"/><circle cx="12" cy="4" r="2.5"/><circle cx="8" cy="12" r="2.5"/><line x1="4" y1="6.5" x2="8" y2="10"/><line x1="12" y1="6.5" x2="8" y2="10"/></svg>
+      Pair Scoring
+    </div>
+    <div class="nav-item" data-sec="whales">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 8 Q4 6 6 8 Q8 10 10 8 Q12 6 14 8" fill="none"/><circle cx="3" cy="4" r="1"/><circle cx="13" cy="4" r="1"/></svg>
+      Whale Tracker
+    </div>
   </div>
   <div class="sb-bottom">
     <div id="sb-price" class="sb-price mono">$—</div>
@@ -380,6 +388,76 @@
       </div>
     </div>
 
+    <!-- ══ SECTION: PAIR SCORING ══ -->
+    <div id="sec-pairs" class="section">
+      <div class="card">
+        <div class="card-title">Pair Scoreboard (Multi-Pair Fund Manager)</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-top:10px" id="pair-scoreboard">
+          <!-- Pair cards will be rendered here -->
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:10px">
+        <div class="card-title">Score Breakdown</div>
+        <div style="font-size:11px;color:var(--text-muted);line-height:1.6">
+          <div>• <strong>Trend</strong> (25pts): EMA alignment + slope strength</div>
+          <div>• <strong>Volume</strong> (20pts): Anomaly detection vs 20-bar average</div>
+          <div>• <strong>ATR</strong> (20pts): Volatility in optimal range</div>
+          <div>• <strong>Momentum</strong> (20pts): Price + volume acceleration</div>
+          <div>• <strong>Session</strong> (15pts): London/NY trading hours bonus</div>
+          <div>• <strong>Bonus</strong> (8pts+): Whale signals, Break of Structure</div>
+          <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+            <strong>Status:</strong> <span id="pair-eval-mode">—</span> |
+            <strong>Next eval:</strong> <span id="pair-next-eval">—</span>s |
+            <strong>Switches today:</strong> <span id="pair-switch-count">0</span>/3
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:10px">
+        <div class="card-title">Recent Pair Switches</div>
+        <div id="pair-switch-history" style="font-size:11px"></div>
+      </div>
+    </div>
+
+    <!-- ══ SECTION: WHALE TRACKER ══ -->
+    <div id="sec-whales" class="section">
+      <div class="card">
+        <div class="card-title">Whale Activity Tracking</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:10px" id="whale-alerts-list">
+          <!-- Whale alert cards will be rendered here -->
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:10px">
+        <div class="card-title">Pattern Detection Guide</div>
+        <div style="font-size:11px;color:var(--text-muted);line-height:1.6">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px">
+            <div>
+              <strong>Bullish Patterns:</strong>
+              <div>🟢 ABSORPTION_BULL — Bottom fishing</div>
+              <div>🟢 STOP_HUNT_BULL — Liquidation sweep + recovery</div>
+              <div>🟢 ACCUMULATION — 4 green candles + volume</div>
+            </div>
+            <div>
+              <strong>Bearish Patterns:</strong>
+              <div>🔴 ABSORPTION_BEAR — Distribution phase</div>
+              <div>🔴 STOP_HUNT_BEAR — Liquidation sweep down</div>
+              <div>🔴 DISTRIBUTION — 4 red candles + volume</div>
+            </div>
+          </div>
+          <div style="margin-top:10px;padding:10px;background:var(--bg-overlay);border-radius:4px;border-left:3px solid var(--amber)">
+            <strong>Confidence Scoring:</strong> Patterns detected are scored 60-85% confidence. Confidence is a weighted average of detected patterns on the current pair.
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:10px">
+        <div class="card-title">Whale Alert History (Last 20)</div>
+        <div id="whale-history" style="font-size:11px"></div>
+      </div>
+    </div>
+
   </div><!-- /content -->
 </div><!-- /main -->
 </div><!-- /app -->
@@ -391,6 +469,8 @@
     <div class="bnav-item" data-sec="performance"><div class="bnav-icon">&#9650;</div>Performance</div>
     <div class="bnav-item" data-sec="trades"><div class="bnav-icon">&#9776;</div>Trades</div>
     <div class="bnav-item" data-sec="risk"><div class="bnav-icon">&#9670;</div>Risk</div>
+    <div class="bnav-item" data-sec="pairs"><div class="bnav-icon">&#9830;</div>Pairs</div>
+    <div class="bnav-item" data-sec="whales"><div class="bnav-icon">&#126;</div>Whales</div>
   </div>
 </div>
 
@@ -973,6 +1053,123 @@ function updateRisk(live, a) {
   piSet('pi-postwin',pState==='EUPHORIA'?'EUPHORIA':'NORMAL',pState==='EUPHORIA'?'var(--teal)':'var(--green)');
 }
 
+// ══ PAIR SCORING & WHALE TRACKER ══════════════════════════
+function renderPairScoreboard() {
+  const scoreboard = state.live?.pairScoreboard || [];
+  const switchHist = state.live?.pairSwitchHistory || [];
+  const switchCnt = state.live?.pairSwitchCount || 0;
+  const multiPairEnabled = state.live?.multiPairEnabled;
+  const currentMode = state.live?.currentMode || 'UNKNOWN';
+
+  if (!multiPairEnabled) {
+    $('pair-scoreboard').innerHTML = '<div style="color:var(--text-muted);padding:20px;text-align:center">Multi-pair mode disabled. Set MULTI_PAIR_ENABLED=true</div>';
+    return;
+  }
+
+  let html = '';
+  scoreboard.forEach(p => {
+    const scoreColor = p.score >= 70 ? 'var(--green)' : p.score >= 55 ? 'var(--teal)' : 'var(--amber)';
+    const satColor = p.isSaturated ? 'var(--red)' : 'var(--green)';
+    const trend = p.trendDirection === 'BULLISH' ? '📈' : p.trendDirection === 'BEARISH' ? '📉' : '〰️';
+    const whale = p.whaleDetected ? `🐋 ${p.whaleSignal}` : '—';
+
+    html += `
+      <div style="border:1px solid var(--border);border-radius:6px;padding:12px;background:var(--bg-overlay)">
+        <div style="font-weight:600;font-size:13px;margin-bottom:8px">${p.displayName}</div>
+        <div style="font-size:24px;font-weight:700;color:${scoreColor};margin-bottom:6px">${p.score}</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+          <div>Trend: ${trend} ${p.trendDirection}</div>
+          <div>Volume: ${p.volumeAnomaly.toFixed(1)}x</div>
+          <div>ATR: ${p.atrQuality}pts</div>
+          <div>Whale: ${whale}</div>
+          <div style="margin-top:4px;color:${satColor}">Saturated: ${p.isSaturated ? '🔴 YES' : '🟢 NO'}</div>
+        </div>
+        <div style="font-size:10px;color:var(--text-muted);border-top:1px solid var(--border);padding-top:8px">
+          Status: <strong>${p.recommendation}</strong>
+        </div>
+      </div>
+    `;
+  });
+
+  $('pair-scoreboard').innerHTML = html || '<div style="color:var(--text-muted);padding:20px">No pair data yet</div>';
+
+  // Update mode & switch info
+  $('pair-eval-mode').textContent = currentMode;
+  $('pair-switch-count').textContent = switchCnt;
+
+  // Render switch history
+  let histHtml = '<div style="font-size:11px">';
+  if (switchHist.length === 0) {
+    histHtml += '<div style="color:var(--text-muted)">No switches yet</div>';
+  } else {
+    switchHist.slice(-10).reverse().forEach(sw => {
+      histHtml += `
+        <div style="padding:8px;border-bottom:1px solid var(--border);display:grid;grid-template-columns:1fr auto">
+          <div>
+            <strong>${sw.from}</strong> → <strong>${sw.to}</strong>
+            <div style="color:var(--text-muted);font-size:10px">${sw.reason}</div>
+          </div>
+          <div style="text-align:right;color:var(--text-muted)">${fmtDate(sw.timestamp)}</div>
+        </div>
+      `;
+    });
+  }
+  histHtml += '</div>';
+  $('pair-switch-history').innerHTML = histHtml;
+}
+
+function renderWhaleAlerts() {
+  const alerts = state.live?.whaleAlerts || [];
+  const whaleHistory = state.live?.pairWhaleAlerts || [];
+
+  let html = '';
+  alerts.slice(0, 6).forEach(a => {
+    const icon = a.signal === 'LONG' ? '🟢' : a.signal === 'SHORT' ? '🔴' : '⚪';
+    const confColor = a.confidence >= 75 ? 'var(--green)' : a.confidence >= 60 ? 'var(--teal)' : 'var(--amber)';
+
+    html += `
+      <div style="border:1px solid var(--border);border-radius:6px;padding:12px;background:var(--bg-overlay)">
+        <div style="font-weight:600;font-size:13px;margin-bottom:6px">${a.symbol}</div>
+        <div style="font-size:12px;margin-bottom:8px">
+          <strong>${icon} ${a.signal}</strong>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+          <div>Type: ${a.type}</div>
+          <div style="color:${confColor}">Confidence: <strong>${a.confidence}%</strong></div>
+        </div>
+        <div style="font-size:10px;color:var(--text-muted)">${fmtTime(a.timestamp)}</div>
+      </div>
+    `;
+  });
+
+  $('whale-alerts-list').innerHTML = html || '<div style="color:var(--text-muted);padding:20px">No whale activity detected</div>';
+
+  // Render detailed history
+  let histHtml = '<div style="font-size:11px">';
+  const allWhaleAlerts = whaleHistory || [];
+  if (allWhaleAlerts.length === 0) {
+    histHtml += '<div style="color:var(--text-muted)">No whale history yet</div>';
+  } else {
+    allWhaleAlerts.slice(0, 20).forEach(a => {
+      const icon = a.signal === 'LONG' ? '🟢' : a.signal === 'SHORT' ? '🔴' : '⚪';
+      histHtml += `
+        <div style="padding:8px;border-bottom:1px solid var(--border)">
+          <div style="display:grid;grid-template-columns:auto 1fr auto">
+            <div>${icon}</div>
+            <div>
+              <strong>${a.symbol}</strong> ${a.type}
+              <div style="color:var(--text-muted);font-size:10px">Conf: ${a.confidence}%</div>
+            </div>
+            <div style="text-align:right;color:var(--text-muted);font-size:10px">${fmtTime(a.timestamp)}</div>
+          </div>
+        </div>
+      `;
+    });
+  }
+  histHtml += '</div>';
+  $('whale-history').innerHTML = histHtml;
+}
+
 // ══ TRADE TABLE ══════════════════════════════════════════
 let expandedRow = null;
 
@@ -1147,6 +1344,8 @@ function doRender() {
   const activeSection=document.querySelector('.nav-item.active')?.dataset.sec||'overview';
   if(activeSection==='performance') try{updatePerformance(A);}catch(e){}
   if(activeSection==='risk') try{updateRisk(L,A);}catch(e){}
+  if(activeSection==='pairs') try{renderPairScoreboard();}catch(e){}
+  if(activeSection==='whales') try{renderWhaleAlerts();}catch(e){}
 }
 
 // ══ WEBSOCKET ════════════════════════════════════════════
@@ -1324,7 +1523,8 @@ document.addEventListener('keydown',e=>{
   if(e.key==='2') navigate('performance');
   if(e.key==='3') navigate('trades');
   if(e.key==='4') navigate('risk');
-  if(e.key==='5') navigate('logs');
+  if(e.key==='5') navigate('pairs');
+  if(e.key==='6') navigate('whales');
   if(e.key==='r'||e.key==='R'){pollFallback();pollTrades();pollLogs();}
   if(e.key==='p'||e.key==='P') $('log-pause')?.click();
   if(e.key==='Escape'){document.querySelectorAll('.th-expand-content').forEach(el=>el.remove());document.querySelectorAll('.th-expanded').forEach(el=>el.classList.remove('th-expanded'));}

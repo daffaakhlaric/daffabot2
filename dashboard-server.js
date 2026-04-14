@@ -167,8 +167,10 @@ async function fetchLiveData() {
       liveData.pairScoreboard       = pm.scoreboard || [];
       liveData.activePair           = pm.activePair || s.currentPair || null;
       liveData.pairRecommendation   = pm.recommendation || null;
+      liveData.pairSwitchHistory    = (pm.switchHistory || []).slice(-10);
       liveData.switchHistory        = (pm.switchHistory || []).slice(-10);
       liveData.whaleAlerts          = (pm.whaleAlerts || []).slice(-5);
+      liveData.pairWhaleAlerts      = (pm.whaleAlerts || []).slice(-20);
       liveData.pairSwitchCount      = pm.switchCount || 0;
       liveData.multiPairEnabled     = s.multiPairEnabled || false;
       liveData.currentMode          = pm.currentMode || "UNKNOWN";

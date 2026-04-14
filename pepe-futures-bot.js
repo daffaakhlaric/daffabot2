@@ -177,34 +177,7 @@ async function request(method, path, body = null) {
 
 // ================= MARKET =================
 async function getKlines(symbol = CONFIG.SYMBOL) {
-  // DRY_RUN mode: generate fake price data with pair-specific base prices
-  if (CONFIG.DRY_RUN) {
-    const pairPrices = {
-      "BTCUSDT": 71000,
-      "ETHUSDT": 3900,
-      "SOLUSDT": 210,
-      "PEPEUSDT": 0.000015,
-      "BNBUSDT": 650,
-      "XRPUSDT": 2.5,
-    };
-    const basePrice = pairPrices[symbol] || 100; // Default to 100 if unknown pair
-    const now = Date.now();
-    const klines = [];
-    const variationFactor = basePrice < 0.01 ? 0.0000005 : basePrice < 100 ? 5 : 100;
-    for (let i = 99; i >= 0; i--) {
-      const variation = (Math.random() - 0.5) * variationFactor;
-      const price = basePrice + variation;
-      klines.push({
-        open: price,
-        high: price + variationFactor * 0.5,
-        low: price - variationFactor * 0.5,
-        close: price,
-        volume: Math.random() * 1000,
-      });
-    }
-    return klines;
-  }
-
+  // Both DRY_RUN and LIVE: fetch real prices from Bitget
   const res = await request(
     "GET",
     `/api/v2/mix/market/candles?symbol=${symbol}&productType=${CONFIG.PRODUCT_TYPE}&granularity=1m&limit=100`
@@ -223,35 +196,7 @@ async function getKlines(symbol = CONFIG.SYMBOL) {
 
 // Parameterized klines fetch for multi-pair support
 async function fetchKlinesForSymbol(symbol, granularity = "1m", limit = 100) {
-  // DRY_RUN mode: generate fake price data with pair-specific base prices
-  if (CONFIG.DRY_RUN) {
-    const pairPrices = {
-      "BTCUSDT": 71000,
-      "ETHUSDT": 3900,
-      "SOLUSDT": 210,
-      "PEPEUSDT": 0.000015,
-      "BNBUSDT": 650,
-      "XRPUSDT": 2.5,
-    };
-    const basePrice = pairPrices[symbol] || 100; // Default to 100 if unknown pair
-    const klines = [];
-    // Use smaller variation for small-price pairs (PEPE)
-    const variationFactor = basePrice < 0.01 ? 0.0000005 : basePrice < 100 ? 5 : 100;
-    for (let i = limit - 1; i >= 0; i--) {
-      const variation = (Math.random() - 0.5) * variationFactor;
-      const price = basePrice + variation;
-      klines.push({
-        open: price,
-        high: price + variationFactor * 0.5,
-        low: price - variationFactor * 0.5,
-        close: price,
-        volume: Math.random() * 1000,
-      });
-    }
-    return klines;
-  }
-
-  // LIVE mode: fetch from Bitget
+  // Both DRY_RUN and LIVE: fetch real prices from Bitget
   const res = await request(
     "GET",
     `/api/v2/mix/market/candles?symbol=${symbol}&productType=${CONFIG.PRODUCT_TYPE}&granularity=${granularity}&limit=${limit}`
@@ -293,33 +238,7 @@ async function fetchAllPairKlines() {
 }
 
 async function getKlinesHTF(granularity, limit, symbol = CONFIG.SYMBOL) {
-  // DRY_RUN mode: generate fake price data with pair-specific base prices
-  if (CONFIG.DRY_RUN) {
-    const pairPrices = {
-      "BTCUSDT": 71000,
-      "ETHUSDT": 3900,
-      "SOLUSDT": 210,
-      "PEPEUSDT": 0.000015,
-      "BNBUSDT": 650,
-      "XRPUSDT": 2.5,
-    };
-    const basePrice = pairPrices[symbol] || 100;
-    const klines = [];
-    const variationFactor = basePrice < 0.01 ? 0.000001 : basePrice < 100 ? 10 : 500;
-    for (let i = limit - 1; i >= 0; i--) {
-      const variation = (Math.random() - 0.5) * variationFactor;
-      const price = basePrice + variation;
-      klines.push({
-        open: price,
-        high: price + variationFactor * 0.4,
-        low: price - variationFactor * 0.4,
-        close: price,
-        volume: Math.random() * 5000,
-      });
-    }
-    return klines;
-  }
-
+  // Both DRY_RUN and LIVE: fetch real prices from Bitget
   const res = await request(
     "GET",
     `/api/v2/mix/market/candles?symbol=${symbol}&productType=${CONFIG.PRODUCT_TYPE}&granularity=${granularity}&limit=${limit}`

@@ -330,17 +330,24 @@ function analyze({ klines, position, pairConfig }) {
       }
     }
 
-    // Fallback: detail what checks failed
-    const failedChecks = [];
-    if (!checks.structure_break) failedChecks.push("no_structure_break");
-    if (!checks.entry_candle_valid) failedChecks.push("invalid_entry_candle");
-    if (!checks.mitigation_zone) failedChecks.push("no_mitigation_zone");
-    if (htf.bias !== "BULLISH" && htf.bias !== "BEARISH") failedChecks.push("htf_neutral");
-    const reason = failedChecks.length > 0
-      ? `Checks failed: ${failedChecks.join(", ")} | Confluence=${confluenceScore}% HTF=${htf.confidence}%`
-      : "No entry signal";
+    // Fallback: detail why setup not ready
+    const unmetChecks = [];
+    if (!checks.structure_break) unmetChecks.push("awaiting_structure_break");
+    if (!checks.entry_candle_valid) unmetChecks.push("candle_pattern_forming");
+    if (!checks.mitigation_zone) unmetChecks.push("no_pullback_zone");
+    if (htf.bias !== "BULLISH" && htf.bias !== "BEARISH") unmetChecks.push("trend_uncertain");
 
-    return { action: "HOLD", reason, source: "NO_ENTRY_SIGNAL" };
+    // Provide feedback why ULTRA/RELAXED didn't trigger
+    let reason = "Setup not ready";
+    if (confluenceScore < 55 && confluenceScore >= 37) {
+      reason = `Confluence ${confluenceScore}% < 55% (waiting for stronger SMC setup) | HTF=${htf.confidence}%`;
+    } else if (confluenceScore < 37) {
+      reason = `Confluence ${confluenceScore}% < 37% (SMC checklist needs more patterns) | HTF=${htf.confidence}%`;
+    } else if (unmetChecks.length > 0) {
+      reason = `${unmetChecks.join(" + ")} | Confluence=${confluenceScore}% HTF=${htf.confidence}%`;
+    }
+
+    return { action: "HOLD", reason, source: "AWAITING_SETUP" };
 
   } catch (err) {
     return { action: "HOLD", error: err.message };

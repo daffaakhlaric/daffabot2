@@ -469,6 +469,7 @@ async function closePosition(price, reason = "UNKNOWN") {
     reason,
     duration:  Math.round((Date.now() - state.lastTradeTime) / 60000),
     timestamp: state.lastTradeTime || Date.now(),
+    entryTime: pos.openedAt || state.lastTradeTime || Date.now(),
     exitTime:  Date.now(),
     setup:     pos.setup || "TREND",
     // Trade execution details

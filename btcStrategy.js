@@ -10,7 +10,7 @@
 const DEFAULT_CONFIG = {
   // HTF Analysis (4H)
   HTF_EMA_PERIOD: 50,
-  HTF_MIN_CONFIDENCE: 50,   // was 55 — lebih permissive
+  HTF_MIN_CONFIDENCE: 65,   // increased from 50 — stricter entry filters
 
   // Structure Analysis
   SWING_LOOKBACK: 20,       // was 15 — lebih banyak context
@@ -272,9 +272,9 @@ function analyze({ klines, position, pairConfig }) {
     const htf = calculateHTFConfidence(klines, price);
 
     // Primary filter: SMC checklist score (4-8 checks passing)
-    // Relaxed: allow 3+ checks passing (confluence 37%+) for flexibility in choppy markets
-    if (confluenceScore < 37) {
-      return { action: "HOLD", reason: `Confluence ${confluenceScore}% < 37`, source: "SMC_FILTER" };
+    // Strict: require 5+ checks passing (confluence 60%+) to reduce false entries
+    if (confluenceScore < 60) {
+      return { action: "HOLD", reason: `Confluence ${confluenceScore}% < 60`, source: "SMC_FILTER" };
     }
 
     // Secondary filter: HTF confidence must exist, but allow low-momentum ranging if SMC score is high
@@ -341,10 +341,8 @@ function analyze({ klines, position, pairConfig }) {
 
     // Provide feedback why ULTRA/RELAXED didn't trigger
     let reason = "Setup not ready";
-    if (confluenceScore < 60 && confluenceScore >= 37) {
-      reason = `Confluence ${confluenceScore}% < 60% (waiting for stronger SMC setup) | HTF=${htf.confidence}%`;
-    } else if (confluenceScore < 37) {
-      reason = `Confluence ${confluenceScore}% < 37% (SMC checklist needs more patterns) | HTF=${htf.confidence}%`;
+    if (confluenceScore < 60) {
+      reason = `Confluence ${confluenceScore}% < 60% (need 5+ SMC checklist patterns) | HTF=${htf.confidence}%`;
     } else if (confluenceScore >= 60 && htf.confidence < 75) {
       reason = `HTF ${htf.confidence}% < 75% (waiting for stronger trend) | Confluence=${confluenceScore}%`;
     } else if (unmetChecks.length > 0) {

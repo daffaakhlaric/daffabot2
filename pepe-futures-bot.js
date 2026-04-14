@@ -707,6 +707,8 @@ async function run() {
           sizeUSDT: pos.sizeUSDT,
           pnlPct:   +pnlPct.toFixed(3),
           pnl:      +pnlUSDT.toFixed(3),
+          symbol:   currentSymbol,
+          pairDisplayName: currentPairConfig?.displayName || currentSymbol,
         };
       } else {
         global.botState.activePosition = null;

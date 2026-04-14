@@ -376,7 +376,7 @@ function buildEntry(side, price, setup = "SMC", klines = []) {
     slPct = Math.max(0.8, Math.min(2.5, atrPct * atrMultiplier));
   }
 
-  const sl  = price * (1 - slPct / 100);
+  const sl  = side === "LONG" ? price * (1 - slPct / 100) : price * (1 + slPct / 100);
   const risk = Math.abs(price - sl);
   const tp1 = side === "LONG" ? price + risk * 3   : price - risk * 3;   // 3:1 RR ratio
   const tp2 = side === "LONG" ? price + risk * 5   : price - risk * 5;   // 5:1 RR ratio

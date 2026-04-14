@@ -699,7 +699,8 @@ async function macroCorrelation({ btc_price, btc_change_24h }) {
 // ── EXIT OPTIMIZER ────────────────────────────────────────
 async function exitOptimizer({ side, entry, current_price, pnl_pct, peak_pnl_pct,
   current_sl, tp1, tp2, klines_15m, klines_5m, duration_minutes, setup_type }) {
-  const exitCacheKey = `exit_${entry}`;
+  // 2-minute cache window to allow periodic re-evaluation
+  const exitCacheKey = `exit_${entry}_${Math.floor(Date.now() / 120000)}`;
   const cached = getCached(exitCacheKey);
   if (cached) return cached;
 

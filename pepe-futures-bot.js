@@ -466,6 +466,8 @@ async function closePosition(price, reason = "UNKNOWN") {
     sizeUSDT:  pos.sizeUSDT || 0,
     leverage:  CONFIG.LEVERAGE,
     source:    global.botState.aiSource || "UNKNOWN",
+    symbol:    pos.symbol || currentSymbol,
+    pairDisplay: pos.pairDisplayName || currentPairConfig?.displayName || currentSymbol,
   };
 
   global.botState.tradeHistory.push(trade);
@@ -813,11 +815,10 @@ async function run() {
         }
       }
 
-      _tickRunning = false;
-
     } catch (err) {
-      _tickRunning = false;
       log("ERROR: " + err.message);
+    } finally {
+      _tickRunning = false;
     }
 
     await sleep(CONFIG.CHECK_INTERVAL);

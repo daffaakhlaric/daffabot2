@@ -175,7 +175,8 @@ function validateSMCChecklist(klines, price) {
     if (klines.length >= 50) {
       const allHighs = klines.map(k => k.high);
       const maxHigh = Math.max(...allHighs.slice(-50));
-      checks.no_htf_resistance = price < maxHigh * 1.01; // Within 1% of recent high
+      const nearResistance = price > maxHigh * 0.99; // Within 1% of recent high
+      checks.no_htf_resistance = !nearResistance; // True when NOT near resistance
     }
 
   } catch (err) {

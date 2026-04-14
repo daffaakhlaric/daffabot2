@@ -698,7 +698,7 @@ async function run() {
           : (pos.entry - price) / pos.entry * 100;
         const pnlUSDT = CONFIG.POSITION_SIZE_USDT * CONFIG.LEVERAGE * (pnlPct / 100);
 
-        global.botState.activePosition = {
+        const updatedPos = {
           side:     pos.side,
           entry:    pos.entry,
           leverage: CONFIG.LEVERAGE,
@@ -710,8 +710,16 @@ async function run() {
           symbol:   currentSymbol,
           pairDisplayName: currentPairConfig?.displayName || currentSymbol,
         };
+        global.botState.activePosition = updatedPos;
+
+        // Debug log on first update after open
+        if (!global._posLogged || global._posLogged !== pos.side) {
+          log(`📊 POSITION TRACKED: ${updatedPos.side} ${(+updatedPos.size).toFixed(4)} ${updatedPos.symbol} | PnL: ${updatedPos.pnlPct.toFixed(2)}%`);
+          global._posLogged = pos.side;
+        }
       } else {
         global.botState.activePosition = null;
+        global._posLogged = null;
       }
 
       if (decision.action === "LONG" || decision.action === "SHORT") {

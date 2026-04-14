@@ -50,7 +50,9 @@
       "Bash(git add:*)",
       "Bash(git commit -m 'Add missing trade history fields: size, leverage, source:*)",
       "Bash(node -c pepe-futures-bot.js)",
-      "Bash(node -c btcStrategy.js)"
+      "Bash(node -c btcStrategy.js)",
+      "Bash(node -e \"const fs=require\\('fs'\\);const html=fs.readFileSync\\('c:/Users/HP/Documents/Daffabot2/dashboard/index.html','utf8'\\);const openTags=html.match\\(/<div/g\\)||[];const closeTags=html.match\\(/<\\\\/div>/g\\)||[];console.log\\('✓ HTML loaded'\\);console.log\\('Open divs:',openTags.length\\);console.log\\('Close divs:',closeTags.length\\);\")",
+      "Bash(git commit -m ':*)"
     ],
     "additionalDirectories": [
       "C:\\Users\\HP\\.claude\\plans"

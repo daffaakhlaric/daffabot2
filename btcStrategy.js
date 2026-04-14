@@ -306,13 +306,13 @@ function analyze({ klines, position, pairConfig }) {
     // even if structure_break/entry_candle fail (helps volatile pairs like PEPE/SOL)
     const hasHighConfluence = confluenceScore >= 55;
     const hasStrongHTF = htf && htf.confidence >= 70;
-    const hasTrendAlignment = htfBias === "BULLISH" || htfBias === "BEARISH";
+    const hasClearTrend = htf && (htf.bias === "BULLISH" || htf.bias === "BEARISH");
 
-    if (hasHighConfluence && hasStrongHTF && hasTrendAlignment) {
-      if (htf.bias === "BULLISH" && current.close > current.open && htfBias !== "BEARISH") {
+    if (hasHighConfluence && hasStrongHTF && hasClearTrend) {
+      if (htf.bias === "BULLISH" && current.close > current.open) {
         return buildEntry("LONG", price, "BTCStrategy_RELAXED", klines);
       }
-      if (htf.bias === "BEARISH" && current.close < current.open && htfBias !== "BULLISH") {
+      if (htf.bias === "BEARISH" && current.close < current.open) {
         return buildEntry("SHORT", price, "BTCStrategy_RELAXED", klines);
       }
     }

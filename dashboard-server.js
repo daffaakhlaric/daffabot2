@@ -218,10 +218,15 @@ async function fetchLiveData() {
 
   // ── BALANCE & EQUITY ────────────────────────────────────────
   if (isDryRun) {
-    // DRY_RUN: Use default balance of $100 for testing
-    liveData.balance       = 100;
-    liveData.equity        = 100;
-    liveData.unrealizedPnL = 0;
+    // DRY_RUN: Calculate equity from trade history
+    const initialEquity = 100;
+    const closedPnL = tradeHistory.reduce((sum, t) => sum + (t.pnlUSDT || 0), 0);
+    const unrealizedPnL = global.botState?.activePosition
+      ? global.botState.activePosition.pnl || 0
+      : 0;
+    liveData.balance       = initialEquity + closedPnL;
+    liveData.equity        = initialEquity + closedPnL + unrealizedPnL;
+    liveData.unrealizedPnL = unrealizedPnL;
   } else {
     // LIVE: Use real balance from Bitget
     accsOk = accsRes?.code === "00000" && Array.isArray(accsRes.data);

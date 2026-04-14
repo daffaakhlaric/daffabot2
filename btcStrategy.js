@@ -301,6 +301,22 @@ function analyze({ klines, position, pairConfig }) {
       }
     }
 
+    // ═══ RELAXED ENTRY (Multi-pair mode) ═══
+    // Allow entry if confluence is very strong (>=55%) + HTF clear (>=70%)
+    // even if structure_break/entry_candle fail (helps volatile pairs like PEPE/SOL)
+    const hasHighConfluence = confluenceScore >= 55;
+    const hasStrongHTF = htf && htf.confidence >= 70;
+    const hasTrendAlignment = htfBias === "BULLISH" || htfBias === "BEARISH";
+
+    if (hasHighConfluence && hasStrongHTF && hasTrendAlignment) {
+      if (htf.bias === "BULLISH" && current.close > current.open && htfBias !== "BEARISH") {
+        return buildEntry("LONG", price, "BTCStrategy_RELAXED", klines);
+      }
+      if (htf.bias === "BEARISH" && current.close < current.open && htfBias !== "BULLISH") {
+        return buildEntry("SHORT", price, "BTCStrategy_RELAXED", klines);
+      }
+    }
+
     // Fallback: detail what checks failed
     const failedChecks = [];
     if (!checks.structure_break) failedChecks.push("no_structure_break");

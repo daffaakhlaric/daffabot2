@@ -1,11 +1,13 @@
 "use strict";
 
 /**
- * ENHANCED BTC STRATEGY — Mirror AI Logic (No Claude)
+ * ENHANCED STRATEGY — Mirror AI Logic (No Claude)
  * Implements SMC checklist via pure technical analysis
+ * Supports multi-pair with dynamic parameters from pairConfig
  */
 
-const CONFIG = {
+// Default CONFIG (BTC-optimized fallback)
+const DEFAULT_CONFIG = {
   // HTF Analysis (4H)
   HTF_EMA_PERIOD: 50,
   HTF_MIN_CONFIDENCE: 50,   // was 55 — lebih permissive
@@ -22,10 +24,26 @@ const CONFIG = {
   // Position Management
   SL_PCT: 1.2,              // was 0.7 — SL harus lebih wide di BTC
   TRAIL_ACTIVATE: 1.0,      // was 1.5 — aktifkan trail lebih awal
-  TRAIL_DROP: 0.5,          // was 0.3 — trail lebih longgar
+  TRAIL_DROP: 0.5,          // was 0.3 — trail lebih longgang
   PYR_1: 1.0,               // was 1.5 — pyramid lebih cepat
   PYR_2: 2.5,               // was 3.0
 };
+
+// Module-level CONFIG — updated by analyze() based on pairConfig
+let CONFIG = { ...DEFAULT_CONFIG };
+
+// Build dynamic config from pairConfig
+function buildConfigFromPair(pairConfig) {
+  if (!pairConfig) return DEFAULT_CONFIG;
+
+  return {
+    ...DEFAULT_CONFIG,
+    HTF_EMA_PERIOD: pairConfig.botEMAPeriod ?? 50,
+    VOLUME_MIN: pairConfig.botVolumeMin ?? 1.05,
+    SL_PCT: pairConfig.botSLPct ?? 1.2,
+    TRAIL_ACTIVATE: pairConfig.botTrailActivate ?? 1.0,
+  };
+}
 
 // ================= HELPERS =================
 function ema(values, period) {
@@ -218,8 +236,11 @@ function calcATRSimple(klines, period = 14) {
 }
 
 // ================= MAIN ANALYZE =================
-function analyze({ klines, position }) {
+function analyze({ klines, position, pairConfig }) {
   try {
+    // Build dynamic config from pairConfig or use defaults (sets module-level CONFIG)
+    CONFIG = buildConfigFromPair(pairConfig);
+
     if (!Array.isArray(klines) || klines.length < 60) {
       return { action: "HOLD" };
     }

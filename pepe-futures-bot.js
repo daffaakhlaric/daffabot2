@@ -611,7 +611,7 @@ async function run() {
         if (!decision || global.botState.aiHealthy === false) {
           // AI gagal/timeout → fallback ke btcStrategy dengan context HTF
           log(`🔄 FALLBACK: AI ${!decision ? 'timeout' : global.botState.aiDownReason} — using btcStrategy`);
-          decision = btcStrategy.analyze({ klines, position: state.activePosition });
+          decision = btcStrategy.analyze({ klines, position: state.activePosition, pairConfig: currentPairConfig });
           decision.source = !decision.source
             ? "BTCSTRATEGY_FALLBACK"
             : decision.source;
@@ -629,7 +629,7 @@ async function run() {
           };
         }
       } else {
-        decision = btcStrategy.analyze({ klines, position: state.activePosition });
+        decision = btcStrategy.analyze({ klines, position: state.activePosition, pairConfig: currentPairConfig });
         decision.source = "BTCSTRATEGY_ONLY";
       }
 

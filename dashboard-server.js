@@ -341,6 +341,15 @@ async function fetchLiveData() {
 
 // ── ANALYTICS PAYLOAD ───────────────────────────────────
 function buildPayload() {
+  // Sync latest bot state to liveData for dashboard
+  if (global.botState) {
+    const s = global.botState;
+    if (s.activePosition !== undefined) liveData.activePosition = s.activePosition;
+    if (s.price !== undefined) liveData.price = s.price;
+    if (s.lastDecision !== undefined) liveData.lastDecision = s.lastDecision;
+    if (s.botStatus !== undefined) liveData.botStatus = s.botStatus;
+  }
+
   const analyticsData = analytics.buildAnalytics(tradeHistory, INITIAL_EQ);
 
   return {

@@ -411,6 +411,9 @@ async function openPosition(side, price, entryConfig, setup = "TREND") {
     side, entry: price, leverage: CONFIG.LEVERAGE, setup, size, sizeUSDT: notional, pnl: 0, pnlPct: 0,
     symbol: currentSymbol, pairDisplayName: currentPairConfig?.displayName || currentSymbol,
   };
+
+  // Debug: confirm position state updated
+  log(`💾 STATE SAVED: activePosition = ${side} ${(+size).toFixed(4)} @ ${(+price).toFixed(2)} on ${currentSymbol}`);
 }
 
 async function closePosition(price, reason = "UNKNOWN") {

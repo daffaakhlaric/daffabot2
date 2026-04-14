@@ -7,3 +7,8 @@ npm-debug.log*
 .vscode
 .kilo
 .claude
+
+# Data files — local state, should not be committed
+trade-history.json
+trade-memory.json
+.claude/settings.local.json

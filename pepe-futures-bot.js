@@ -315,13 +315,13 @@ function calcSizeBTC(price) {
 // Set leverage sebelum open posisi
 async function setLeverage() {
   const res = await request("POST", "/api/v2/mix/account/set-leverage", {
-    symbol:      CONFIG.SYMBOL,
+    symbol:      currentSymbol,
     productType: CONFIG.PRODUCT_TYPE,
     marginCoin:  "USDT",
     leverage:    String(CONFIG.LEVERAGE),
   });
   if (res?.code === "00000") {
-    log(`⚙️ Leverage set: ${CONFIG.LEVERAGE}x`);
+    log(`⚙️ Leverage set: ${CONFIG.LEVERAGE}x on ${currentSymbol}`);
   } else {
     log(`⚠️ Set leverage response: ${res?.msg || JSON.stringify(res)}`);
   }
@@ -332,7 +332,7 @@ async function setLeverage() {
 // side: "buy" | "sell"    tradeSide: "open" | "close"
 async function placeOrder(side, tradeSide, size) {
   const body = {
-    symbol:      CONFIG.SYMBOL,
+    symbol:      currentSymbol,
     productType: CONFIG.PRODUCT_TYPE,
     marginMode:  "isolated",
     marginCoin:  "USDT",
@@ -343,7 +343,7 @@ async function placeOrder(side, tradeSide, size) {
     force:       "gtc",
   };
 
-  log(`📤 ORDER → ${side.toUpperCase()} ${tradeSide.toUpperCase()} ${size} BTC`);
+  log(`📤 ORDER → ${side.toUpperCase()} ${tradeSide.toUpperCase()} ${size} @ ${currentSymbol}`);
   const res = await request("POST", "/api/v2/mix/order/place-order", body);
 
   if (res?.code === "00000") {
@@ -355,10 +355,10 @@ async function placeOrder(side, tradeSide, size) {
 }
 
 // Ambil posisi real dari Bitget (untuk close)
-async function fetchRealPosition() {
+async function fetchRealPosition(symbol = currentSymbol) {
   const res = await request(
     "GET",
-    `/api/v2/mix/position/single-position?symbol=${CONFIG.SYMBOL}&productType=${CONFIG.PRODUCT_TYPE}&marginCoin=USDT`
+    `/api/v2/mix/position/single-position?symbol=${symbol}&productType=${CONFIG.PRODUCT_TYPE}&marginCoin=USDT`
   );
   const pos = Array.isArray(res.data) ? res.data[0] : res.data;
   return (pos && parseFloat(pos.total || 0) > 0) ? pos : null;

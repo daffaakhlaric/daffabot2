@@ -257,23 +257,19 @@ function analyze({ klines, position, pairConfig }) {
 
     // ================= HTF & MOMENTUM ANALYSIS =================
     const htfBias = calcHTFBias(klines);
-    const momScore = calcMomentumScore(klines);
     const checks = validateSMCChecklist(klines, price);
     const confluenceScore = calculateConfluenceScore(checks);
     const htf = calculateHTFConfidence(klines, price);
 
-    // FILTER: jangan masuk kalau HTF ranging + momentum lemah
-    if (htfBias === "RANGING" && momScore < 55) {
-      return { action: "HOLD", reason: "HTF ranging + low momentum", source: "HTF_FILTER" };
-    }
-
-    // Score threshold: relaxed to 37 (4/8 checklist minimal)
+    // Primary filter: SMC checklist score (4-8 checks passing)
+    // Relaxed: allow 3+ checks passing (confluence 37%+) for flexibility in choppy markets
     if (confluenceScore < 37) {
       return { action: "HOLD", reason: `Confluence ${confluenceScore}% < 37`, source: "SMC_FILTER" };
     }
 
-    if (!htf || htf.confidence < CONFIG.HTF_MIN_CONFIDENCE) {
-      return { action: "HOLD", reason: "HTF confidence too low", source: "HTF_FILTER" };
+    // Secondary filter: HTF confidence must exist, but allow low-momentum ranging if SMC score is high
+    if (!htf || (htf.confidence < CONFIG.HTF_MIN_CONFIDENCE && confluenceScore < 50)) {
+      return { action: "HOLD", reason: "HTF confidence + SMC score too low", source: "HTF_FILTER" };
     }
 
     // ================= ENTRY SIGNAL =================

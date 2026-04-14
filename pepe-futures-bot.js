@@ -336,6 +336,14 @@ async function fetchRealPosition(symbol = currentSymbol) {
   return (pos && parseFloat(pos.total || 0) > 0) ? pos : null;
 }
 
+// ================= MAX HOLD TIME HELPER =================
+function getMaxHoldMs(setup, symbol) {
+  if (/SNIPER_KILLER|ULTRA/.test(setup)) return 45 * 60 * 1000;  // 45 min
+  if (/SNIPER/.test(setup))              return 90 * 60 * 1000;  // 90 min
+  if (symbol === "BTCUSDT")              return 240 * 60 * 1000; // 4h BTC trend
+  return 120 * 60 * 1000;                                         // 2h alts
+}
+
 // ================= EXECUTION =================
 async function openPosition(side, price, entryConfig, setup = "TREND") {
   log(`🚀 OPEN ${side} @ ${price} | DRY_RUN: ${CONFIG.DRY_RUN}`);
@@ -355,6 +363,7 @@ async function openPosition(side, price, entryConfig, setup = "TREND") {
     }
   }
 
+  const sl = entryConfig.sl ?? 0.7;
   state.activePosition = {
     side,
     entry: price,
@@ -364,7 +373,15 @@ async function openPosition(side, price, entryConfig, setup = "TREND") {
     symbol: currentSymbol,
     pairDisplayName: currentPairConfig?.displayName || currentSymbol,
     openedAt:      Date.now(),
-    sl:            entryConfig.sl ?? 0.7,
+    sl,
+    slPrice:       entryConfig.sl_price ?? (side === "LONG" ? price*(1-sl/100) : price*(1+sl/100)),
+    tp1Price:      entryConfig.tp1 ?? null,
+    tp2Price:      entryConfig.tp2 ?? null,
+    tp3Price:      entryConfig.tp3 ?? null,
+    tp1Done:       false,
+    tp2Done:       false,
+    peakPnl:       0,
+    maxHoldMs:     entryConfig.maxHoldMs ?? getMaxHoldMs(setup, currentSymbol),
     trailActivate: entryConfig.trailActivate ?? 1.5,
     trailDrop:     entryConfig.trailDrop ?? 0.3,
     pyr1:          entryConfig.pyr1 ?? 1.5,
@@ -458,6 +475,50 @@ async function closePosition(price, reason = "UNKNOWN") {
   global.botState.activePosition = null;
 }
 
+// Partial close for TP levels — doesn't null position (stays open with reduced size)
+async function partialClose(price, pct, reason = "PARTIAL") {
+  const pos = state.activePosition;
+  if (!pos) return;
+
+  const closeFrac = pct / 100;
+  const pnlPct    = pos.side === "LONG"
+    ? (price - pos.entry) / pos.entry * 100
+    : (pos.entry - price) / pos.entry * 100;
+  const pnlUSDT   = +(CONFIG.POSITION_SIZE_USDT * CONFIG.LEVERAGE * (pnlPct / 100) * closeFrac).toFixed(3);
+
+  if (!CONFIG.DRY_RUN) {
+    const realPos = await fetchRealPosition();
+    const total   = parseFloat(realPos?.total || calcSizeBTC(pos.entry));
+    const sz      = Math.floor(total * closeFrac * 100000) / 100000;
+    if (sz > 0) {
+      const closeSide = pos.side === "LONG" ? "sell" : "buy";
+      await placeOrder(closeSide, "close", sz);
+    }
+  }
+
+  const exitTime  = Date.now();
+  const entryTime = pos.openedAt || state.lastTradeTime || Date.now();
+  const trade = {
+    id: `T-${Date.now()}`, side: pos.side, entry: pos.entry, exit: price,
+    pnl: +pnlPct.toFixed(4), pnlUSDT, result: pnlUSDT > 0 ? "WIN" : "LOSS",
+    reason: `${reason} (${pct}%)`, duration: Math.max(0, exitTime - entryTime),
+    timestamp: entryTime, entryTime, exitTime, setup: pos.setup,
+    size: pos.size, sizeUSDT: pos.sizeUSDT, leverage: CONFIG.LEVERAGE,
+    source: global.botState.aiSource || "UNKNOWN",
+    symbol: pos.symbol, pairDisplay: pos.pairDisplayName,
+  };
+  global.botState.tradeHistory.push(trade);
+  tradeMemory.updateSetupStats(trade.setup, trade.pnlUSDT);
+  try { require("./dashboard-server").recordTrade(trade); } catch {}
+
+  // Reduce remaining position (don't null)
+  const remaining = 1 - closeFrac;
+  pos.size    = (parseFloat(pos.size) * remaining).toFixed(5);
+  pos.sizeUSDT = +(pos.sizeUSDT * remaining).toFixed(2);
+  global.botState.activePosition = { ...pos };
+  log(`📉 PARTIAL ${pct}% CLOSE @ ${price} | ${reason} | PnL: ${pnlUSDT > 0 ? "+" : ""}${pnlUSDT} USDT`);
+}
+
 async function addPosition(level) {
   if (level > 2) return;
   log(`🚀 PYRAMID LEVEL ${level}`);
@@ -547,6 +608,86 @@ async function run() {
       // Fetch real-time ticker price (more accurate than candles)
       const tickerPrice = await getTickerPrice(currentSymbol);
       const price = tickerPrice || klines[klines.length - 1].close;
+
+      // ── PRIORITY EXIT CHECKS (per-tick, before decision engine) ──────────────
+      if (state.activePosition) {
+        const pos = state.activePosition;
+        const pnlPct = pos.side === "LONG"
+          ? (price - pos.entry) / pos.entry * 100
+          : (pos.entry - price) / pos.entry * 100;
+
+        // Update peak PnL
+        pos.peakPnl = Math.max(pos.peakPnl || 0, pnlPct);
+        global.botState.activePosition.peakPnl = pos.peakPnl;
+
+        // 1. SL check (absolute price)
+        if (pos.slPrice) {
+          const slHit = pos.side === "LONG" ? price <= pos.slPrice : price >= pos.slPrice;
+          if (slHit) {
+            log(`🔴 SL HIT @ ${price} (SL: ${pos.slPrice})`);
+            await closePosition(price, "STOP_LOSS");
+            _tickRunning = false; continue;
+          }
+        }
+
+        // 2. TP1 → partial 40%
+        if (pos.tp1Price && !pos.tp1Done) {
+          const tp1Hit = pos.side === "LONG" ? price >= pos.tp1Price : price <= pos.tp1Price;
+          if (tp1Hit) {
+            pos.tp1Done = true;
+            await partialClose(price, 40, "TP1_HIT");
+            pos.slPrice = pos.entry;  // move SL to breakeven
+            global.botState.activePosition = { ...pos };
+            _tickRunning = false; continue;
+          }
+        }
+
+        // 3. TP2 → partial 30% (only after TP1)
+        if (pos.tp2Price && !pos.tp2Done && pos.tp1Done) {
+          const tp2Hit = pos.side === "LONG" ? price >= pos.tp2Price : price <= pos.tp2Price;
+          if (tp2Hit) {
+            pos.tp2Done = true;
+            await partialClose(price, 30, "TP2_HIT");
+            global.botState.activePosition = { ...pos };
+            _tickRunning = false; continue;
+          }
+        }
+
+        // 4. TP3 → close runner (only after TP2)
+        if (pos.tp3Price && pos.tp2Done) {
+          const tp3Hit = pos.side === "LONG" ? price >= pos.tp3Price : price <= pos.tp3Price;
+          if (tp3Hit) {
+            await closePosition(price, "TP3_HIT_RUNNER");
+            _tickRunning = false; continue;
+          }
+        }
+
+        // 5. Trailing SL update (step-trail system)
+        if (pos.peakPnl >= 0.3) {
+          const trailPct = pos.peakPnl >= 1.2 ? 0.4 : pos.peakPnl >= 0.7 ? 0.2 : 0;
+          const trailSL  = trailPct === 0
+            ? pos.entry
+            : pos.side === "LONG" ? price * (1 - trailPct / 100) : price * (1 + trailPct / 100);
+          const current  = pos.slPrice || 0;
+          const better   = pos.side === "LONG" ? trailSL > current : trailSL < current;
+          if (better) {
+            pos.slPrice = +trailSL.toFixed(6);
+            global.botState.activePosition = { ...pos };
+            log(`🔒 TRAIL SL → ${pos.slPrice} (peak ${pos.peakPnl.toFixed(2)}%)`);
+          }
+        }
+
+        // 6. Max hold safety (last resort)
+        const holdMs   = Date.now() - (pos.openedAt || Date.now());
+        const maxHold  = pos.maxHoldMs || (2 * 60 * 60 * 1000);
+        global.botState.activePosition.holdMs = holdMs;
+        if (holdMs > maxHold && pnlPct <= 0) {
+          log(`⏰ TIMEOUT_SAFETY — ${Math.round(holdMs/60000)}min held at ${pnlPct.toFixed(2)}%`);
+          await closePosition(price, `TIMEOUT_SAFETY_${Math.round(holdMs/60000)}min`);
+          _tickRunning = false; continue;
+        }
+      }
+      // ── END PRIORITY EXIT CHECKS ──────────────────────────────────────────────
 
       const liveEquity = global.botState?.equity || parseFloat(process.env.INITIAL_EQUITY || "1000");
 
@@ -775,15 +916,16 @@ async function run() {
 
       else if (decision.action === "PARTIAL_CLOSE") {
         if (state.activePosition) {
-          log(`📉 PARTIAL CLOSE ${decision.percentage || 50}% — ${decision.reason || ""}`);
-          await closePosition(price, `PARTIAL ${decision.percentage || 50}%`);
+          await partialClose(price, decision.percentage || 50, decision.reason || "SIGNAL_PARTIAL");
         }
       }
 
       else if (decision.action === "UPDATE_SL") {
         if (state.activePosition && decision.new_sl) {
           log(`🔧 UPDATE SL → ${decision.new_sl} — ${decision.reason || ""}`);
-          state.activePosition.sl = decision.new_sl;
+          state.activePosition.sl      = decision.new_sl;
+          state.activePosition.slPrice = decision.new_sl;  // Also update absolute price
+          global.botState.activePosition = { ...state.activePosition };
         }
       }
 

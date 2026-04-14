@@ -340,6 +340,20 @@ async function fetchLiveData() {
     }
   }
 
+  // ── EXPOSE HOLD TIMER + TP FIELDS ─────────────────────────
+  if (liveData.activePosition && global.botState?.activePosition) {
+    const pos = global.botState.activePosition;
+    liveData.activePosition.slPrice  = pos.slPrice  ?? null;
+    liveData.activePosition.tp1Price = pos.tp1Price ?? null;
+    liveData.activePosition.tp1Done  = pos.tp1Done  ?? false;
+    liveData.activePosition.tp2Price = pos.tp2Price ?? null;
+    liveData.activePosition.tp2Done  = pos.tp2Done  ?? false;
+    liveData.activePosition.tp3Price = pos.tp3Price ?? null;
+    liveData.activePosition.peakPnl  = pos.peakPnl  ?? null;
+    liveData.activePosition.holdMs   = pos.openedAt ? (Date.now() - pos.openedAt) : null;
+    liveData.activePosition.maxHoldMs = pos.maxHoldMs ?? null;
+  }
+
   // ── STATUS KONEKSI ────────────────────────────────────────
   liveData.apiConnected = accsOk || posOk || tickOk;
 

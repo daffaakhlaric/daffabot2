@@ -356,6 +356,13 @@ function analyze({ klines, position, pairConfig }) {
   }
 }
 
+// ================= MAX HOLD TIME LOGIC =================
+function getMaxHoldMs(setup) {
+  if (/SNIPER_KILLER|ULTRA/.test(setup)) return 45 * 60 * 1000;  // 45 min for ultra
+  if (/SNIPER/.test(setup))              return 90 * 60 * 1000;  // 90 min for sniper
+  return 240 * 60 * 1000;                                         // 4 hours default (trend)
+}
+
 // ================= ENTRY BUILDER =================
 function buildEntry(side, price, setup = "SMC", klines = []) {
   // ATR-based SL — lebih adaptif dari % hardcoded
@@ -381,12 +388,17 @@ function buildEntry(side, price, setup = "SMC", klines = []) {
     entry: {
       price,
       sl:            slPct,
+      sl_price:      +sl.toFixed(6),           // absolute SL price
+      tp1:           +tp1.toFixed(6),          // absolute TP prices
+      tp2:           +tp2.toFixed(6),
+      tp3:           +tp3.toFixed(6),
+      maxHoldMs:     getMaxHoldMs(setup),      // max hold time based on setup
       trailActivate: CONFIG.TRAIL_ACTIVATE,
       trailDrop:     CONFIG.TRAIL_DROP,
       pyr1:          CONFIG.PYR_1,
       pyr2:          CONFIG.PYR_2,
     },
-    // Expose levels untuk dashboard
+    // Expose levels untuk dashboard (kept for backward compat)
     sl_price: +sl.toFixed(2),
     tp1:      +tp1.toFixed(2),
     tp2:      +tp2.toFixed(2),
@@ -416,20 +428,31 @@ function managePosition(pos, price) {
       return { action: "CLOSE", reason: "STOP LOSS" };
     }
 
-    // TRAILING
-    if (pnl >= pos.trailActivate) {
-      const drop = pos.peak * pos.trailDrop;
-      if (pnl <= pos.peak - drop) {
-        return { action: "CLOSE", reason: "TRAILING EXIT" };
+    // STEP TRAIL SYSTEM — lock profit at multiple levels
+    pos.peakPnl = Math.max(pos.peakPnl || 0, pnl);
+    if (pos.peakPnl >= 0.3) {
+      const trailPct = pos.peakPnl >= 1.2 ? 0.4 : pos.peakPnl >= 0.7 ? 0.2 : 0;
+      const trailSL  = trailPct === 0
+        ? pos.entry
+        : (pos.side === "LONG" ? price * (1 - trailPct/100) : price * (1 + trailPct/100));
+      const cur    = pos.slPrice || (pos.side === "LONG" ? pos.entry * (1 - pos.sl/100) : pos.entry * (1 + pos.sl/100));
+      const better = pos.side === "LONG" ? trailSL > cur : trailSL < cur;
+      if (better) {
+        return { action: "UPDATE_SL", new_sl: +trailSL.toFixed(6), reason: `TRAIL_${trailPct}% — peak ${pos.peakPnl.toFixed(2)}%` };
       }
     }
 
-    // DEAD TRADE EXIT: jika dalam 30 menit tidak ada progress
-    const holdMinutes = pos.openedAt
-      ? (Date.now() - pos.openedAt) / 60000
-      : 0;
-    if (holdMinutes > 30 && Math.abs(pnl) < 0.3) {
-      return { action: "CLOSE", reason: "DEAD_TRADE_EXIT — no movement 30min" };
+    // MAX HOLD SAFETY — fallback only, not default close
+    const holdMs = pos.openedAt ? (Date.now() - pos.openedAt) : 0;
+    const maxHold = pos.maxHoldMs || (4 * 60 * 60 * 1000);
+    if (holdMs > maxHold) {
+      if (pnl <= 0) {
+        return { action: "CLOSE", reason: `TIMEOUT_SAFETY — ${Math.round(holdMs/60000)}min, no profit` };
+      }
+      // Still in profit — move SL to breakeven instead of force close
+      if (!pos.slPrice || pos.slPrice !== pos.entry) {
+        return { action: "UPDATE_SL", new_sl: pos.entry, reason: `TIMEOUT_TRAIL — ${Math.round(holdMs/60000)}min` };
+      }
     }
 
     // PYRAMID

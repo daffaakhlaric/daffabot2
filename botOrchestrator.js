@@ -315,19 +315,26 @@ function dynamicExit(pos, price, atrPct) {
     const pnlPct = pos.pnlPct || 0;
     const entry  = pos.entry  || price;
 
-    if (pnlPct > 5) {
+    // STEP TRAIL SYSTEM — mirrors btcStrategy
+    pos.peakPnl = Math.max(pos.peakPnl || 0, pnlPct);
+    if (pos.peakPnl >= 0.3) {
+      const trailPct = pos.peakPnl >= 1.2 ? 0.4 : pos.peakPnl >= 0.7 ? 0.2 : 0;
+      const trailSL  = trailPct === 0 ? entry : pos.side === "LONG" ? price*(1-trailPct/100) : price*(1+trailPct/100);
+      const cur = pos.slPrice || 0;
+      const better = pos.side === "LONG" ? trailSL > cur : trailSL < cur;
+      if (better) return { action: "UPDATE_SL", new_sl: +trailSL.toFixed(6), reason: `TRAIL_${trailPct}% — peak ${pos.peakPnl.toFixed(2)}%`, source: "DYNAMIC_EXIT" };
+    }
+
+    // ATR trail for large moves >5%
+    if (pnlPct > 5 && atrPct) {
       const atr       = atrPct || 1.0;
       const trailDist = entry * (atr * 1.2 / 100);
       const new_sl    = pos.side === "LONG" ? price - trailDist : price + trailDist;
-      if (!pos.sl || (pos.side === "LONG" ? new_sl > pos.sl : new_sl < pos.sl)) {
-        return { action: "UPDATE_SL", new_sl: +new_sl.toFixed(2), reason: "Dynamic trail: pnl>5%, SL at ATR*1.2", source: "DYNAMIC_EXIT" };
+      const cur = pos.slPrice || 0;
+      const better = pos.side === "LONG" ? new_sl > cur : new_sl < cur;
+      if (better) {
+        return { action: "UPDATE_SL", new_sl: +new_sl.toFixed(6), reason: "ATR_TRAIL_5%+ — SL at ATR*1.2", source: "DYNAMIC_EXIT" };
       }
-    }
-
-    // Removed early 3% profit taking — let AI/signals decide for maximum profit
-
-    if (pnlPct > 1.5 && pos.sl !== entry) {
-      return { action: "UPDATE_SL", new_sl: entry, reason: "Dynamic exit: pnl>1.5%, move SL to BE", source: "DYNAMIC_EXIT" };
     }
 
     return null;

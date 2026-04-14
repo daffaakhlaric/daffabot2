@@ -122,11 +122,13 @@ function validateSMCChecklist(klines, price) {
     }
 
     // 3. Structure Break (BOS) — gunakan 15 candle + konfirmasi close
+    // Relaxed: allow 0.05% break instead of 0.1% for multi-pair
     const structureCandles = klines.slice(-15);
     const prevHigh = Math.max(...structureCandles.slice(0,-3).map(k => k.high));
     const prevLow  = Math.min(...structureCandles.slice(0,-3).map(k => k.low));
     const lastClose = klines[klines.length - 1].close;
-    checks.structure_break = lastClose > prevHigh * 1.001 || lastClose < prevLow * 0.999;
+    const bosBreakPercent = 0.0005; // was 0.001 (0.1%), now 0.05%
+    checks.structure_break = lastClose > prevHigh * (1 + bosBreakPercent) || lastClose < prevLow * (1 - bosBreakPercent);
 
     // 4. Mitigation Zone (pullback)
     if (htf?.ema) {
@@ -145,7 +147,7 @@ function validateSMCChecklist(klines, price) {
       checks.choch_confirmed = (currLow < prevLow) || (currHigh > prevHigh);
     }
 
-    // 6. Entry Candle Valid (bullish/bearish engulfing or pin bar)
+    // 6. Entry Candle Valid (bullish/bearish engulfing, pin bar, or strong close)
     const curr = klines[klines.length - 1];
     const prev = klines[klines.length - 2];
     if (curr && prev) {
@@ -153,7 +155,12 @@ function validateSMCChecklist(klines, price) {
       const bearishEngulf = curr.open >= prev.close && curr.close < prev.open;
       const pinBar = (curr.close > curr.open && (curr.open - curr.low) > (curr.high - curr.close) * 2) ||
                      (curr.close < curr.open && (curr.high - curr.open) > (curr.low - curr.close) * 2);
-      checks.entry_candle_valid = bullishEngulf || bearishEngulf || pinBar;
+
+      // Relaxed check: also accept if close is far from open (strong candle)
+      const strongBullish = curr.close > curr.open && (curr.close - curr.open) > (prev.high - prev.low) * 0.5;
+      const strongBearish = curr.close < curr.open && (curr.open - curr.close) > (prev.high - prev.low) * 0.5;
+
+      checks.entry_candle_valid = bullishEngulf || bearishEngulf || pinBar || strongBullish || strongBearish;
     }
 
     // 7. RR Minimum (1:2)

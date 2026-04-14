@@ -301,6 +301,7 @@
                 <th data-sort="idx">#</th>
                 <th data-sort="time">Time</th>
                 <th>Side</th>
+                <th>Pair</th>
                 <th>Setup</th>
                 <th data-sort="entry">Entry</th>
                 <th data-sort="exit">Exit</th>
@@ -819,9 +820,11 @@ function updatePosition(live) {
   }
   const isL=pos.side==='LONG';
   const pc=pos.pnl>=0?'var(--green)':'var(--red)';
+  const pairDisplay = pos.symbol || pos.pairDisplayName || 'BTCUSDT';
   card.innerHTML=`
     <div class="pos-header">
       <span class="badge ${isL?'b-green':'b-red'}">${pos.side}</span>
+      <span class="badge b-teal">${pairDisplay}</span>
       <span class="badge b-muted">${pos.leverage||7}x ${pos.marginMode||'ISOLATED'}</span>
     </div>
     <div class="pos-pnl-big" style="color:${pc}">${fmtPct(pos.pnlPct)}</div>
@@ -1201,16 +1204,18 @@ function renderTrades() {
   $('pag-next').disabled=tradePage>=pages;
 
   const body=$('th-tbody'); if(!body) return;
-  if(!slice.length){body.innerHTML=`<tr><td colspan="11" style="text-align:center;padding:24px;color:var(--text-muted)">No trades yet. Bot is waiting for a valid setup.</td></tr>`;return;}
+  if(!slice.length){body.innerHTML=`<tr><td colspan="12" style="text-align:center;padding:24px;color:var(--text-muted)">No trades yet. Bot is waiting for a valid setup.</td></tr>`;return;}
 
   body.innerHTML=slice.map((t,i)=>{
     const pp=t.pnl>0; const idx=start+i+1;
     const sc=t.side==='LONG'?'b-green':'b-red';
     const grade=t.aiReview?.quality_score||t.aiReview?.psych_grade||'—';
+    const pairDisplay = t.symbol || t.pairDisplayName || 'BTCUSDT';
     return `<tr class="${pp?'win':'loss'}" data-idx="${start+i}" onclick="toggleExpand(this,${JSON.stringify(JSON.stringify(t)).slice(1,-1)})">
       <td style="color:var(--text-muted)">${idx}</td>
       <td style="color:var(--text-muted)">${fmtDate(t.exitTime||t.timestamp)} ${fmtTime(t.exitTime||t.timestamp)}</td>
       <td><span class="badge ${sc}">${t.side}</span></td>
+      <td><span class="badge b-teal" style="font-size:10px">${pairDisplay}</span></td>
       <td><span class="badge b-muted">${t.setup||'—'}</span></td>
       <td>${fmtPrice(t.entry)}</td>
       <td>${fmtPrice(t.exit)}</td>

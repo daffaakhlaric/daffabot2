@@ -413,7 +413,13 @@ async function openPosition(side, price, entryConfig, setup = "TREND") {
   };
 
   // Debug: confirm position state updated
-  log(`💾 STATE SAVED: activePosition = ${side} ${(+size).toFixed(4)} @ ${(+price).toFixed(2)} on ${currentSymbol}`);
+  const posObj = global.botState.activePosition;
+  log(`💾 STATE SAVED: ${side} ${(+size).toFixed(4)} @ ${(+price).toFixed(2)} on ${currentSymbol}`);
+  if (posObj) {
+    log(`   ✓ activePosition SET | side=${posObj.side} | symbol=${posObj.symbol} | size=${posObj.size}`);
+  } else {
+    log(`   ✗ ERROR: activePosition is NULL!`);
+  }
 }
 
 async function closePosition(price, reason = "UNKNOWN") {

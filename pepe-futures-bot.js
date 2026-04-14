@@ -72,6 +72,31 @@ let state = {
   lastJudasLevelTime:  0,
 };
 
+// ── LOAD TRADE HISTORY AT STARTUP ──────────────────────────
+function loadTradeHistoryFromDashboard() {
+  try {
+    const dash = require("./dashboard-server");
+    if (dash.tradeHistory && dash.tradeHistory.length > 0) {
+      global.botState.tradeHistory = dash.tradeHistory;
+      const lastTrade = dash.tradeHistory[dash.tradeHistory.length - 1];
+      if (lastTrade) {
+        // Set last trade time from history to prevent instant re-entry
+        state.lastTradeTime = lastTrade.exitTime || lastTrade.timestamp || 0;
+        state.lastTradeCloseTime = state.lastTradeTime;
+        state.lastClosedTradePnL = lastTrade.result || null;
+        log(`📂 LOADED: ${dash.tradeHistory.length} trades from file | last: ${lastTrade.result} @ ${new Date(state.lastTradeCloseTime).toLocaleTimeString()}`);
+      }
+    }
+  } catch (e) {
+    // Ignore if dashboard not ready
+  }
+}
+
+// ── STARTUP COOLDOWN ───────────────────────────────────────
+// Prevent instant trade on bot start (give time to assess market)
+const STARTUP_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes
+const botStartTime = Date.now();
+
 // ── GLOBAL BOT STATE (shared with dashboard) ──────────────
 global.botState = {
   price:          0,
@@ -1021,6 +1046,16 @@ async function run() {
             });
           }
 
+          // ── STARTUP COOLDOWN ──────────────────────────────────────
+          // Prevent instant trade on bot start (give time to assess market)
+          const timeSinceStart = now - botStartTime;
+          if (timeSinceStart < STARTUP_COOLDOWN_MS) {
+            const remainMs = STARTUP_COOLDOWN_MS - timeSinceStart;
+            global.botState.cooldownReason = `STARTUP_COOLDOWN — ${Math.ceil(remainMs/1000)}s remaining`;
+            _tickRunning = false;
+            continue;
+          }
+
           // ── POST-CLOSE COOLDOWN (HIGH PRIORITY) ──────────────
           // After closing: apply longer cooldown, especially after WINS (avoid revenge/FOMO)
           const postCloseCooldown = state.lastClosedTradePnL === "WIN"
@@ -1144,4 +1179,8 @@ try {
   log("⚠️ Dashboard failed to start: " + e.message);
 }
 
+// ── LOAD TRADE HISTORY AT STARTUP ──────────────────────────
+loadTradeHistoryFromDashboard();
+
+// Start the bot
 run();

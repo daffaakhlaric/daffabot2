@@ -521,7 +521,8 @@ let equityRange = '1D';
 let perfRange = '1D';
 let psychCdInterval = null;
 let allLogs = [];
-let startTime = Date.now();
+let startTime = Date.now();  // Fallback; will be overwritten by serverStartTime from server
+let serverStartTime = null;  // Received from server payload
 
 // ══ CHART DEFAULTS ══════════════════════════════════════
 Chart.defaults.color = '#4a5a6a';
@@ -674,8 +675,9 @@ function updateHeader(live) {
     chipSig.className='chip-val'+(d==='LONG'?' bull':d==='SHORT'?' bear':'');
   }
 
-  // Uptime
-  const sec=Math.floor((Date.now()-startTime)/1000);
+  // Uptime — use serverStartTime if available (persists across browser refreshes), fallback to local startTime
+  const uptimeMs = Date.now() - (serverStartTime || startTime);
+  const sec=Math.floor(uptimeMs/1000);
   const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60;
   setTxt('chip-uptime',`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`);
 }
@@ -1398,6 +1400,8 @@ function scheduleRender(data) {
   if(data){
     state.live=data.live||{};
     state.analytics=data.analytics||{};
+    // Update server start time if provided (ensures uptime persists across browser refreshes)
+    if(data.serverStartTime && !serverStartTime) serverStartTime=data.serverStartTime;
   }
   const now=Date.now();
   if(document.hidden) return;

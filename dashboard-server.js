@@ -52,6 +52,9 @@ function saveTrades(trades) {
 let tradeHistory = loadTrades();
 console.log(`[DASHBOARD] 📊 Loaded ${tradeHistory.length} trades from file at startup`);
 
+// Server startup time — used for accurate uptime calculation across browser refreshes
+const SERVER_START_TIME = Date.now();
+
 // Public: bot calls this to record a closed trade
 function recordTrade(trade) {
   if (tradeHistory.some(t => t.id === trade.id)) return; // dedup — prevent double-record
@@ -358,7 +361,7 @@ async function fetchLiveData() {
   }
 
   // ── STATUS KONEKSI ────────────────────────────────────────
-  liveData.apiConnected = accsOk || posOk || tickOk;
+  liveData.apiConnected = (accsOk ?? false) || (posOk ?? false) || (tickOk ?? false);
 
   if (!liveData.apiConnected) {
     console.warn("[DASHBOARD] ⚠️ Semua Bitget API gagal — cek API key / koneksi");
@@ -402,9 +405,10 @@ function buildPayload() {
   const analyticsData = analytics.buildAnalytics(tradeHistory, INITIAL_EQ);
 
   return {
-    timestamp: Date.now(),
-    live:      liveData,
-    analytics: analyticsData,
+    timestamp:      Date.now(),
+    serverStartTime: SERVER_START_TIME,
+    live:           liveData,
+    analytics:      analyticsData,
   };
 }
 

@@ -344,7 +344,27 @@ function buildPayload() {
   // Sync latest bot state to liveData for dashboard
   if (global.botState) {
     const s = global.botState;
-    if (s.activePosition !== undefined) liveData.activePosition = s.activePosition;
+    if (s.activePosition !== undefined) {
+      liveData.activePosition = s.activePosition;
+      // Debug: log position sync
+      if (s.activePosition) {
+        const p = s.activePosition;
+        const logMsg = `[SYNC_POS] ${p.side} ${(+p.size||0).toFixed(4)} @ ${(+p.entry||0).toFixed(2)} ${p.symbol||'?'}`;
+        if (!global._lastPosLog || global._lastPosLog !== logMsg) {
+          console.log(`💾 ${logMsg}`);
+          global._lastPosLog = logMsg;
+        }
+      } else {
+        // Position cleared
+        if (global._lastPosLog) {
+          console.log(`💾 [SYNC_POS] CLOSED`);
+          global._lastPosLog = null;
+        }
+      }
+    } else {
+      // Fallback: explicitly clear if undefined
+      liveData.activePosition = null;
+    }
     if (s.price !== undefined) liveData.price = s.price;
     if (s.lastDecision !== undefined) liveData.lastDecision = s.lastDecision;
     if (s.botStatus !== undefined) liveData.botStatus = s.botStatus;

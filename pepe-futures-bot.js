@@ -176,19 +176,28 @@ async function request(method, path, body = null) {
 }
 
 // ================= MARKET =================
-async function getKlines() {
-  // DRY_RUN mode: generate fake price data for testing
+async function getKlines(symbol = CONFIG.SYMBOL) {
+  // DRY_RUN mode: generate fake price data with pair-specific base prices
   if (CONFIG.DRY_RUN) {
-    const basePrice = 71000;
+    const pairPrices = {
+      "BTCUSDT": 71000,
+      "ETHUSDT": 3900,
+      "SOLUSDT": 210,
+      "PEPEUSDT": 0.000015,
+      "BNBUSDT": 650,
+      "XRPUSDT": 2.5,
+    };
+    const basePrice = pairPrices[symbol] || 100; // Default to 100 if unknown pair
     const now = Date.now();
     const klines = [];
+    const variationFactor = basePrice < 0.01 ? 0.0000005 : basePrice < 100 ? 5 : 100;
     for (let i = 99; i >= 0; i--) {
-      const variation = (Math.random() - 0.5) * 100; // ±50 price variation
+      const variation = (Math.random() - 0.5) * variationFactor;
       const price = basePrice + variation;
       klines.push({
         open: price,
-        high: price + 50,
-        low: price - 50,
+        high: price + variationFactor * 0.5,
+        low: price - variationFactor * 0.5,
         close: price,
         volume: Math.random() * 1000,
       });
@@ -198,7 +207,7 @@ async function getKlines() {
 
   const res = await request(
     "GET",
-    `/api/v2/mix/market/candles?symbol=${CONFIG.SYMBOL}&productType=${CONFIG.PRODUCT_TYPE}&granularity=1m&limit=100`
+    `/api/v2/mix/market/candles?symbol=${symbol}&productType=${CONFIG.PRODUCT_TYPE}&granularity=1m&limit=100`
   );
 
   if (!Array.isArray(res.data)) return [];
@@ -284,17 +293,26 @@ async function fetchAllPairKlines() {
 }
 
 async function getKlinesHTF(granularity, limit, symbol = CONFIG.SYMBOL) {
-  // DRY_RUN mode: generate fake price data for testing
+  // DRY_RUN mode: generate fake price data with pair-specific base prices
   if (CONFIG.DRY_RUN) {
-    const basePrice = 71000;
+    const pairPrices = {
+      "BTCUSDT": 71000,
+      "ETHUSDT": 3900,
+      "SOLUSDT": 210,
+      "PEPEUSDT": 0.000015,
+      "BNBUSDT": 650,
+      "XRPUSDT": 2.5,
+    };
+    const basePrice = pairPrices[symbol] || 100;
     const klines = [];
+    const variationFactor = basePrice < 0.01 ? 0.000001 : basePrice < 100 ? 10 : 500;
     for (let i = limit - 1; i >= 0; i--) {
-      const variation = (Math.random() - 0.5) * 500; // larger variation for HTF
+      const variation = (Math.random() - 0.5) * variationFactor;
       const price = basePrice + variation;
       klines.push({
         open: price,
-        high: price + 200,
-        low: price - 200,
+        high: price + variationFactor * 0.4,
+        low: price - variationFactor * 0.4,
         close: price,
         volume: Math.random() * 5000,
       });
@@ -574,7 +592,7 @@ async function run() {
 
       const klines = CONFIG.MULTI_PAIR_ENABLED
         ? await fetchKlinesForSymbol(currentSymbol, "1m", 100)
-        : await getKlines();
+        : await getKlines(currentSymbol);
       if (!klines || klines.length < 10) {
         log("⚠️ INVALID KLINES");
         _tickRunning = false;

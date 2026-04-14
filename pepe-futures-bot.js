@@ -177,6 +177,27 @@ async function request(method, path, body = null) {
 
 // ================= MARKET =================
 
+// Generate mock candles for DRY_RUN testing
+function generateMockKlines(symbol, basePrice = null, bars = 100) {
+  const prices = { BTCUSDT: 74000, PEPEUSDT: 0.000016, SOLUSDT: 210, DOGEUSDT: 0.35 };
+  let price = basePrice || prices[symbol] || 50000;
+
+  const klines = [];
+  for (let i = 0; i < bars; i++) {
+    // Random walk: ±0.5% per candle
+    const change = (Math.random() - 0.5) * 2 * 0.005;
+    const open = price;
+    price = price * (1 + change);
+    const close = price;
+    const high = Math.max(open, close) * (1 + Math.random() * 0.002);
+    const low = Math.min(open, close) * (1 - Math.random() * 0.002);
+    const volume = Math.random() * 1000000;
+
+    klines.push({ open, high, low, close, volume });
+  }
+  return klines.reverse();
+}
+
 // Fetch real-time ticker price (for display & decisions)
 async function getTickerPrice(symbol = CONFIG.SYMBOL) {
   const res = await request(
@@ -184,47 +205,67 @@ async function getTickerPrice(symbol = CONFIG.SYMBOL) {
     `/api/v2/mix/market/ticker?symbol=${symbol}&productType=${CONFIG.PRODUCT_TYPE}`
   );
 
-  if (!res.data) return null;
+  if (res?.data) {
+    const tick = Array.isArray(res.data) ? res.data[0] : res.data;
+    return parseFloat(tick?.lastPr || tick?.last || tick?.close || 0) || null;
+  }
 
-  const tick = Array.isArray(res.data) ? res.data[0] : res.data;
-  return parseFloat(tick?.lastPr || tick?.last || tick?.close || 0) || null;
+  // Fallback: return mock price for DRY_RUN or when API unavailable
+  if (CONFIG.DRY_RUN) {
+    const mockPrices = { BTCUSDT: 74000, PEPEUSDT: 0.000016, SOLUSDT: 210, DOGEUSDT: 0.35 };
+    return mockPrices[symbol] || 50000;
+  }
+
+  return null;
 }
 
 async function getKlines(symbol = CONFIG.SYMBOL) {
-  // Both DRY_RUN and LIVE: fetch real prices from Bitget
   const res = await request(
     "GET",
     `/api/v2/mix/market/candles?symbol=${symbol}&productType=${CONFIG.PRODUCT_TYPE}&granularity=1m&limit=100`
   );
 
-  if (!Array.isArray(res.data)) return [];
+  if (Array.isArray(res.data) && res.data.length > 0) {
+    return res.data.map(c => ({
+      open: +c[1],
+      high: +c[2],
+      low: +c[3],
+      close: +c[4],
+      volume: +c[5],
+    })).reverse();
+  }
 
-  return res.data.map(c => ({
-    open: +c[1],
-    high: +c[2],
-    low: +c[3],
-    close: +c[4],
-    volume: +c[5],
-  })).reverse();
+  // Fallback: generate mock candles for DRY_RUN or when API unavailable
+  if (CONFIG.DRY_RUN) {
+    return generateMockKlines(symbol);
+  }
+
+  return [];
 }
 
 // Parameterized klines fetch for multi-pair support
 async function fetchKlinesForSymbol(symbol, granularity = "1m", limit = 100) {
-  // Both DRY_RUN and LIVE: fetch real prices from Bitget
   const res = await request(
     "GET",
     `/api/v2/mix/market/candles?symbol=${symbol}&productType=${CONFIG.PRODUCT_TYPE}&granularity=${granularity}&limit=${limit}`
   );
 
-  if (!Array.isArray(res.data)) return [];
+  if (Array.isArray(res.data) && res.data.length > 0) {
+    return res.data.map(c => ({
+      open: +c[1],
+      high: +c[2],
+      low: +c[3],
+      close: +c[4],
+      volume: +c[5],
+    })).reverse();
+  }
 
-  return res.data.map(c => ({
-    open: +c[1],
-    high: +c[2],
-    low: +c[3],
-    close: +c[4],
-    volume: +c[5],
-  })).reverse();
+  // Fallback: generate mock candles for DRY_RUN or when API unavailable
+  if (CONFIG.DRY_RUN) {
+    return generateMockKlines(symbol, null, limit);
+  }
+
+  return [];
 }
 
 // Fetch klines for all enabled pairs (multi-pair support)
@@ -263,15 +304,22 @@ async function fetchAllPairKlines() {
 }
 
 async function getKlinesHTF(granularity, limit, symbol = CONFIG.SYMBOL) {
-  // Both DRY_RUN and LIVE: fetch real prices from Bitget
   const res = await request(
     "GET",
     `/api/v2/mix/market/candles?symbol=${symbol}&productType=${CONFIG.PRODUCT_TYPE}&granularity=${granularity}&limit=${limit}`
   );
-  if (!Array.isArray(res.data)) return [];
-  return res.data.map(c => ({
-    open: +c[1], high: +c[2], low: +c[3], close: +c[4], volume: +c[5],
-  })).reverse();
+  if (Array.isArray(res.data) && res.data.length > 0) {
+    return res.data.map(c => ({
+      open: +c[1], high: +c[2], low: +c[3], close: +c[4], volume: +c[5],
+    })).reverse();
+  }
+
+  // Fallback: generate mock candles for DRY_RUN or when API unavailable
+  if (CONFIG.DRY_RUN) {
+    return generateMockKlines(symbol, null, limit);
+  }
+
+  return [];
 }
 
 // ================= ORDER EXECUTION =================
@@ -618,10 +666,14 @@ async function run() {
 
         // Update peak PnL
         pos.peakPnl = Math.max(pos.peakPnl || 0, pnlPct);
-        global.botState.activePosition.peakPnl = pos.peakPnl;
+        global.botState.activePosition.peakPnL = pos.peakPnl;
 
-        // 1. SL check (absolute price)
-        if (pos.slPrice) {
+        // DEBUG: Log position monitor every tick
+        const holdSec = (Date.now() - pos.openedAt) / 1000;
+        log(`📊 POS MONITOR | ${pos.side} ${pos.symbol} @ ${pos.entry.toFixed(2)} | Price: ${price.toFixed(2)} | PnL: ${pnlPct.toFixed(3)}% | Hold: ${holdSec.toFixed(0)}s | SL: ${pos.slPrice?.toFixed(2) || 'N/A'} | TP1: ${pos.tp1Price?.toFixed(2) || 'N/A'}`);
+
+        // 1. SL check (absolute price) — ONLY if slPrice is valid
+        if (pos.slPrice && pos.slPrice > 0) {
           const slHit = pos.side === "LONG" ? price <= pos.slPrice : price >= pos.slPrice;
           if (slHit) {
             log(`🔴 SL HIT @ ${price} (SL: ${pos.slPrice})`);

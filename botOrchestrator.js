@@ -10,6 +10,7 @@ const btcStrategy   = require("./btcStrategy");
 const featureEngine = require("./featureEngine");
 const riskGuard     = require("./riskGuard");
 const tradeMemory   = require("./tradeMemory");
+const whaleTracker  = require("./whaleTracker");
 
 // ── HELPERS ───────────────────────────────────────────────
 function liveData() {
@@ -105,37 +106,47 @@ function isCounterTrend(signal, htf, regime) {
 
 /**
  * UPGRADE 1 — Adaptive Decision Score.
- * Dynamic weights per regime — no penalty, just smarter weighting.
+ * Dynamic weights per regime — includes whale detection (institutional 25% weight).
  */
-function buildAdaptiveScore({ htf, smc, momentum, judas, regime }) {
+function buildAdaptiveScore({ htf, smc, momentum, judas, whale, regime }) {
   const r = regime?.regime || "";
 
   let weights;
   if (r === "TRENDING_BULL" || r === "TRENDING_BEAR") {
-    weights = { htf: 0.35, smc: 0.25, momentum: 0.30, judas: 0.10 };
+    weights = { htf: 0.25, smc: 0.20, momentum: 0.20, judas: 0.10, whale: 0.25 };
   } else if (r === "RANGING") {
-    weights = { htf: 0.20, smc: 0.40, momentum: 0.20, judas: 0.20 };
+    weights = { htf: 0.15, smc: 0.30, momentum: 0.15, judas: 0.15, whale: 0.25 };
   } else if (r === "VOLATILE_SPIKE") {
-    weights = { htf: 0.30, smc: 0.20, momentum: 0.20, judas: 0.30 };
+    weights = { htf: 0.25, smc: 0.15, momentum: 0.15, judas: 0.20, whale: 0.25 };
   } else {
-    weights = { htf: 0.40, smc: 0.30, momentum: 0.20, judas: 0.10 };
+    weights = { htf: 0.30, smc: 0.20, momentum: 0.15, judas: 0.10, whale: 0.25 };
   }
 
-  const htfScore   = htf?.confidence          || 50;
-  const smcScore   = smc?.confluence_score     || 50;
-  const momScore   = momentum?.ignition_detected ? (momentum.confidence || 70) : 50;
-  const judasScore = judas?.judas_detected      ? (judas.confidence     || 70) : 50;
+  const htfScore    = htf?.confidence          || 50;
+  const smcScore    = smc?.confluence_score     || 50;
+  const momScore    = momentum?.ignition_detected ? (momentum.confidence || 70) : 50;
+  const judasScore  = judas?.judas_detected      ? (judas.confidence     || 70) : 50;
+  const whaleScore  = whale?.whaleScore         || 50;  // Default neutral 50 if whale undefined
 
   const weighted = Math.round(
     htfScore   * weights.htf      +
     smcScore   * weights.smc      +
     momScore   * weights.momentum +
-    judasScore * weights.judas
+    judasScore * weights.judas    +
+    whaleScore * weights.whale
   );
 
   return Math.max(0, Math.min(100, weighted));
 }
 
+/**
+ * WHALE SCORE BOOST — Enhance decision score when whale activity is strong (>75)
+ */
+function boostScore(score, whale) {
+  if (!whale || (whale?.whaleScore || 0) <= 75) return score;
+  const boost = Math.min(100 - score, 15);  // Add up to +15 points
+  return score + boost;
+}
 
 /**
  * UPGRADE 2 — Market State Engine.
@@ -504,6 +515,41 @@ async function orchestrate({
     liquidity = featureEngine.detectLiquidityTrap({ klines: klines_15m || klines_1m });
   } catch {}
 
+  // STEP 4.5 — WHALE DETECTION (TA only, then AI if healthy)
+  let whaleTA = null;
+  try {
+    whaleTA = whaleTracker.detectWhaleActivity({
+      klines: klines_1m || klines_15m || [],
+      price,
+      orderbook: obRaw,
+    });
+  } catch {}
+
+  // AI whale analyzer (async, guarded by aiHealthy)
+  let whaleAI = null;
+  if (global.botState?.aiHealthy !== false && global.botState?.aiMode) {
+    try {
+      whaleAI = await featureEngine.whaleAnalyzer({
+        klines_1m: klines_1m || [],
+        klines_5m: klines_5m || klines_1m || [],
+        price,
+        orderbook: obRaw,
+        fundingRate: (global.botState?.fundingRate || 0),
+        oiChange: (global.botState?.oiChange || 0),
+        taResult: whaleTA,
+      });
+    } catch {}
+  }
+
+  // Merge whale results: AI overrides TA if available
+  const whale = whaleAI || whaleTA || { whaleScore: 50, spoof: { spoofDetected: false } };
+  if (global.botState) global.botState.whaleResult = whale;
+
+  // WHALE SWEEP HOLD GATE — Pause entries if sweep detected and no position
+  if (whale?.sweep?.sweepDetected && !activePosition && !global.botState?.inPosition) {
+    return { action: "HOLD", reason: `Liquidity sweep ${whale.sweep.direction} — waiting for recovery`, setup: "WHALE_SWEEP_HOLD", source: "WHALE_GUARD" };
+  }
+
   // STEP 5: Regime check
   if (regime?.regime === "VOLATILE_SPIKE") {
     return { action: "HOLD", reason: "Volatile spike regime — pausing entries", setup: "REGIME_PAUSE", source: "REGIME_GUARD" };
@@ -611,14 +657,15 @@ async function orchestrate({
       return { action: "HOLD", reason: `Judas in Asian session requires conf>=85, got ${judas.confidence}`, source: "ASIAN_KZ_JUDAS_FILTER" };
     }
 
-    const decisionScore = buildAdaptiveScore({ htf, smc: null, momentum, judas, regime });
+    const decisionScore = buildAdaptiveScore({ htf, smc: null, momentum, judas, whale, regime });
+    const boostedScore = boostScore(decisionScore, whale);
     const ct = isCounterTrend(judas.signal, htf, regime);
     if (ct.isCounter) {
       if (ct.againstRegime) {
         return { action: "HOLD", reason: `Counter-trend blocked — regime ${regime?.regime}`, source: "CT_HARD_BLOCK" };
       }
-      if (decisionScore < 90) {
-        return { action: "HOLD", reason: `Counter-trend blocked — score ${decisionScore} < 90`, source: "CT_SCORE_BLOCK" };
+      if (boostedScore < 90) {
+        return { action: "HOLD", reason: `Counter-trend blocked — score ${boostedScore} < 90`, source: "CT_SCORE_BLOCK" };
       }
     }
 
@@ -637,6 +684,15 @@ async function orchestrate({
     }
     if (obBias === "BULLISH" && obSignal === "BEARISH" && decisionScore < 90) {
       return { action: "HOLD", reason: `Orderbook bullish opposes bearish entry + score ${decisionScore} < 90`, source: "OB_FILTER" };
+    }
+
+    // WHALE SPOOF BLOCK — Don't enter if spoof opposes direction
+    if (whale?.spoof?.spoofDetected && judas.signal) {
+      const isOpposing = (judas.signal === "LONG" && whale.spoof.spoofSide === "ASK") ||
+                         (judas.signal === "SHORT" && whale.spoof.spoofSide === "BID");
+      if (isOpposing) {
+        return { action: "HOLD", reason: `Spoof ${whale.spoof.spoofSide} wall opposes ${judas.signal} entry`, source: "WHALE_SPOOF_BLOCK" };
+      }
     }
 
     if (global.botState) global.botState.decisionScore = decisionScore;
@@ -679,24 +735,34 @@ async function orchestrate({
       return { action: "HOLD", reason: "Anti-FOMO: Momentum entry zone passed", source: "ANTI_FOMO" };
     }
 
-    const decisionScore = buildAdaptiveScore({ htf, smc: null, momentum, judas: null, regime });
+    const decisionScore = buildAdaptiveScore({ htf, smc: null, momentum, judas: null, whale, regime });
+    const boostedScore = boostScore(decisionScore, whale);
     const ct = isCounterTrend(momentum.direction, htf, regime);
     if (ct.isCounter) {
       if (ct.againstRegime) {
         return { action: "HOLD", reason: `Counter-trend blocked — regime ${regime?.regime}`, source: "CT_HARD_BLOCK" };
       }
-      if (decisionScore < 90) {
-        return { action: "HOLD", reason: `Counter-trend blocked — score ${decisionScore} < 90`, source: "CT_SCORE_BLOCK" };
+      if (boostedScore < 90) {
+        return { action: "HOLD", reason: `Counter-trend blocked — score ${boostedScore} < 90`, source: "CT_SCORE_BLOCK" };
       }
     }
 
     // Final decision filter
     // RELAXED: reduced from 75 to 60
-    if (decisionScore < 60) {
-      return { action: "HOLD", reason: `Score ${decisionScore} < 60`, source: "LOW_SCORE" };
+    if (boostedScore < 60) {
+      return { action: "HOLD", reason: `Score ${boostedScore} < 60`, source: "LOW_SCORE" };
     }
     if (obBias !== "NEUTRAL" && obBias !== momentum.direction.replace("LONG", "BULLISH").replace("SHORT", "BEARISH")) {
       return { action: "HOLD", reason: `Orderbook ${obBias} opposes ${momentum.direction} entry`, source: "OB_FILTER" };
+    }
+
+    // WHALE SPOOF BLOCK — Don't enter if spoof opposes direction
+    if (whale?.spoof?.spoofDetected && momentum.direction) {
+      const isOpposing = (momentum.direction === "LONG" && whale.spoof.spoofSide === "ASK") ||
+                         (momentum.direction === "SHORT" && whale.spoof.spoofSide === "BID");
+      if (isOpposing) {
+        return { action: "HOLD", reason: `Spoof ${whale.spoof.spoofSide} wall opposes ${momentum.direction} entry`, source: "WHALE_SPOOF_BLOCK" };
+      }
     }
 
     if (global.botState) global.botState.decisionScore = decisionScore;
@@ -751,27 +817,37 @@ async function orchestrate({
         return { action: "HOLD", reason: "Trend entry disabled in ranging market", source: "MARKET_STATE_GATE" };
       }
 
-      const decisionScore = buildAdaptiveScore({ htf, smc, momentum, judas, regime });
+      const decisionScore = buildAdaptiveScore({ htf, smc, momentum, judas, whale, regime });
+      const boostedScore = boostScore(decisionScore, whale);
       const ct = isCounterTrend(smc.signal, htf, regime);
       if (ct.isCounter) {
         if (ct.againstRegime) {
           return { action: "HOLD", reason: `Counter-trend blocked — regime ${regime?.regime}`, source: "CT_HARD_BLOCK" };
         }
-        if (decisionScore < 90) {
-          return { action: "HOLD", reason: `Counter-trend blocked — score ${decisionScore} < 90`, source: "CT_SCORE_BLOCK" };
+        if (boostedScore < 90) {
+          return { action: "HOLD", reason: `Counter-trend blocked — score ${boostedScore} < 90`, source: "CT_SCORE_BLOCK" };
         }
       }
 
       // Final decision filter (UPGRADE 7+8)
       // RELAXED: reduced from 75 to 60
-      if (decisionScore < 60) {
-        return { action: "HOLD", reason: `Score ${decisionScore} < 60`, source: "LOW_SCORE" };
+      if (boostedScore < 60) {
+        return { action: "HOLD", reason: `Score ${boostedScore} < 60`, source: "LOW_SCORE" };
       }
       if (obBias !== "NEUTRAL" && obBias !== smc.signal.replace("LONG", "BULLISH").replace("SHORT", "BEARISH")) {
         return { action: "HOLD", reason: `Orderbook ${obBias} opposes ${smc.signal} entry`, source: "OB_FILTER" };
       }
 
-      if (global.botState) global.botState.decisionScore = decisionScore;
+      // WHALE SPOOF BLOCK — Don't enter if spoof opposes direction
+      if (whale?.spoof?.spoofDetected && smc.signal) {
+        const isOpposing = (smc.signal === "LONG" && whale.spoof.spoofSide === "ASK") ||
+                           (smc.signal === "SHORT" && whale.spoof.spoofSide === "BID");
+        if (isOpposing) {
+          return { action: "HOLD", reason: `Spoof ${whale.spoof.spoofSide} wall opposes ${smc.signal} entry`, source: "WHALE_SPOOF_BLOCK" };
+        }
+      }
+
+      if (global.botState) global.botState.decisionScore = boostedScore;
 
       // Trade memory gate (UPGRADE 3)
       const smcSetup = smc.setup_type || "SMC";

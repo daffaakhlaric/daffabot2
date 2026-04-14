@@ -115,6 +115,7 @@ let liveData = {
   apiConnected:  false,
   logs:          [],
   scoreBoard:    {},
+  whale:         null,
 };
 
 async function fetchLiveData() {
@@ -160,6 +161,9 @@ async function fetchLiveData() {
         timestamp:            s.scoreBoard.timestamp,
       };
     }
+
+    // Whale tracking data (TA + AI merged result)
+    liveData.whale = s.whaleResult || s.features?.whale || null;
 
     // Multi-pair fund manager data
     if (global.pairManagerState) {
@@ -368,6 +372,9 @@ function buildPayload() {
     if (s.price !== undefined) liveData.price = s.price;
     if (s.lastDecision !== undefined) liveData.lastDecision = s.lastDecision;
     if (s.botStatus !== undefined) liveData.botStatus = s.botStatus;
+    // Sync whale tracking result
+    if (s.whaleResult !== undefined) liveData.whale = s.whaleResult;
+    else if (s.features?.whale !== undefined) liveData.whale = s.features.whale;
   }
 
   const analyticsData = analytics.buildAnalytics(tradeHistory, INITIAL_EQ);

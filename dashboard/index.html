@@ -164,7 +164,13 @@
             <div id="ov-regime-score" class="mono" style="font-size:14px;font-weight:700;color:var(--purple);word-break:break-word">—</div>
             <div style="font-size:8px;color:var(--text-muted)">Market State</div>
           </div>
+          <div style="padding:8px;background:rgba(255,165,0,.1);border-radius:3px;border-left:2px solid var(--orange)">
+            <div style="font-size:9px;color:var(--text-muted)">WHALE</div>
+            <div id="ov-whale-score" class="mono" style="font-size:18px;font-weight:700;color:var(--orange)">—</div>
+            <div style="font-size:8px;color:var(--text-muted)">Institutional</div>
+          </div>
         </div>
+        <div id="ov-whale-alerts" style="margin-top:8px;display:none;font-size:10px;color:var(--text-muted)"></div>
       </div>
 
       <!-- Live Logs -->
@@ -304,7 +310,9 @@
                 <th>Pair</th>
                 <th>Setup</th>
                 <th data-sort="entry">Entry</th>
+                <th data-sort="entryTime">Entry Time</th>
                 <th data-sort="exit">Exit</th>
+                <th data-sort="exitTime">Exit Time</th>
                 <th data-sort="dur">Duration</th>
                 <th data-sort="pnl">PnL</th>
                 <th data-sort="pct">PnL%</th>
@@ -787,6 +795,36 @@ function updateOverviewScores(live) {
     };
     regimeEl.style.color = regimeMap[sb.regime] || 'var(--text-muted)';
   }
+
+  // Whale score
+  const whale = live?.whale || {};
+  const whaleEl = $('ov-whale-score');
+  if (whaleEl) {
+    const score = whale.whaleScore || 0;
+    whaleEl.textContent = Math.round(score);
+    if (score >= 75) {
+      whaleEl.style.color = 'var(--red)';
+    } else if (score >= 50) {
+      whaleEl.style.color = 'var(--amber)';
+    } else {
+      whaleEl.style.color = 'var(--blue)';
+    }
+  }
+
+  // Whale alerts (SPOOF, SWEEP, ABSORB)
+  const whaleAlertsEl = $('ov-whale-alerts');
+  if (whaleAlertsEl) {
+    const alerts = [];
+    if (whale?.spoof?.spoofDetected) alerts.push(`🚨 SPOOF ${whale.spoof.spoofSide}`);
+    if (whale?.sweep?.sweepDetected) alerts.push(`📍 SWEEP ${whale.sweep.direction}`);
+    if (whale?.absorption?.absorbed) alerts.push(`🧲 ABSORB ${whale.absorption.side}`);
+    if (alerts.length > 0) {
+      whaleAlertsEl.innerHTML = alerts.map(a => `<div>${a}</div>`).join('');
+      whaleAlertsEl.style.display = 'block';
+    } else {
+      whaleAlertsEl.style.display = 'none';
+    }
+  }
 }
 
 function updateMetrics(live, a) {
@@ -1210,7 +1248,7 @@ function renderTrades() {
   else if(tradeFilter==='SHORT') trades=trades.filter(t=>t.side==='SHORT');
 
   trades.sort((a,b)=>{
-    const v={time:t=>t.exitTime||t.timestamp||0,pnl:t=>t.pnlUSDT||0,pct:t=>t.pnl||0,entry:t=>t.entry||0,exit:t=>t.exit||0,dur:t=>t.duration||0};
+    const v={time:t=>t.exitTime||t.timestamp||0,pnl:t=>t.pnlUSDT||0,pct:t=>t.pnl||0,entry:t=>t.entry||0,entryTime:t=>t.entryTime||0,exit:t=>t.exit||0,exitTime:t=>t.exitTime||0,dur:t=>t.duration||0};
     const fn=v[tradeSortKey]||v.time;
     return (fn(a)-fn(b))*tradeSortDir;
   });
@@ -1228,7 +1266,7 @@ function renderTrades() {
   $('pag-next').disabled=tradePage>=pages;
 
   const body=$('th-tbody'); if(!body) return;
-  if(!slice.length){body.innerHTML=`<tr><td colspan="12" style="text-align:center;padding:24px;color:var(--text-muted)">No trades yet. Bot is waiting for a valid setup.</td></tr>`;return;}
+  if(!slice.length){body.innerHTML=`<tr><td colspan="14" style="text-align:center;padding:24px;color:var(--text-muted)">No trades yet. Bot is waiting for a valid setup.</td></tr>`;return;}
 
   body.innerHTML=slice.map((t,i)=>{
     const pp=t.pnl>0; const idx=start+i+1;
@@ -1242,7 +1280,9 @@ function renderTrades() {
       <td><span class="badge b-teal" style="font-size:10px">${pairDisplay}</span></td>
       <td><span class="badge b-muted">${t.setup||'—'}</span></td>
       <td>${fmtPrice(t.entry)}</td>
+      <td style="color:var(--text-muted);font-size:10px">${t.entryTime?`${fmtTime(t.entryTime)}`:'—'}</td>
       <td>${fmtPrice(t.exit)}</td>
+      <td style="color:var(--text-muted);font-size:10px">${t.exitTime?`${fmtTime(t.exitTime)}`:'—'}</td>
       <td style="color:var(--text-muted)">${fmtDurMin(t.duration)}</td>
       <td style="color:${pp?'var(--green)':'var(--red)'};font-weight:600">${fmtPnL(t.pnlUSDT)}</td>
       <td style="color:${pp?'var(--green)':'var(--red)'}">${fmtPct(t.pnl)}</td>
@@ -1264,7 +1304,7 @@ function toggleExpand(row, tStr) {
   row.classList.add('th-expanded');
   const div=document.createElement('tr');
   const ar=t.aiReview||{};
-  div.innerHTML=`<td colspan="11" class="th-expand-content">
+  div.innerHTML=`<td colspan="14" class="th-expand-content">
     <div class="ai-review-grid">
       <div><div class="ar-label">Lesson</div><div class="ar-val" style="color:var(--amber)">${ar.lesson||'—'}</div></div>
       <div><div class="ar-label">Behavioral Flag</div><div class="ar-val">${ar.behavioral_flag?`<span class="badge b-amber">${ar.behavioral_flag}</span>`:'—'}</div></div>

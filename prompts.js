@@ -662,11 +662,56 @@ Provide JSON:
 }`,
 };
 
+// ═══ F9: WHALE INSTITUTIONAL ANALYZER ═══════════════════════════════
+const WHALE_ANALYZER = {
+  system: MASTER + `
+Task: Institutional Whale Activity Analyzer.
+Detect institutional order flow, spoofing, absorption, and liquidity sweeps.
+Focus on identifying trap setups and genuine accumulation/distribution patterns.
+Respond ONLY with valid JSON. Max 600 tokens.`,
+  user: `Analyze whale/institutional activity for \${symbol}.
+
+Current price: \${price}
+
+1m klines (last 20): \${klines_1m}
+5m klines (last 10): \${klines_5m}
+
+Funding rate: \${funding_rate}%
+OI change (24h): \${oi_change}%
+
+Orderbook top-5 bids: \${orderbook_bids}
+Orderbook top-5 asks: \${orderbook_asks}
+
+Pure-TA whale score: \${ta_whale_score}/100
+Patterns detected: \${ta_patterns}
+
+Detect and score:
+1. Spoof orders (large walls appearing/disappearing without fill)
+2. Absorption (aggressive volume absorbed at key level, price flat)
+3. Liquidity sweep (equal highs/lows broken then reclaimed)
+4. Trap risk (retail entries likely to be trapped at support/resistance)
+
+Return JSON:
+{
+  "whale_bias": "LONG"|"SHORT"|"NEUTRAL",
+  "whale_confidence": <0-100>,
+  "spoof_detected": true|false,
+  "spoof_side": "BID"|"ASK"|null,
+  "absorption_detected": true|false,
+  "absorption_side": "BUY"|"SELL"|null,
+  "liquidity_sweep": true|false,
+  "sweep_direction": "UP"|"DOWN"|null,
+  "trap_risk": <0-100>,
+  "recommendation": "ENTER"|"WAIT"|"AVOID",
+  "summary": "<max 100 chars>"
+}`,
+};
+
 module.exports = {
   MASTER,
   F1, F2, F3, F4, F5, F7, F8, F10, F12,
   SNIPER, JUDAS, SWEEP, REGIME, KILLZONE, COMPOUNDER,
   MOMENTUM, OB_SCORER, MACRO, EXIT_OPTIMIZER, ORCHESTRATOR, COMMENTARY,
-  SNIPER_KILLER, PAIR_ANALYST,
+  SNIPER_KILLER, PAIR_ANALYST, WHALE_ANALYZER,
   fillTemplate,
 };

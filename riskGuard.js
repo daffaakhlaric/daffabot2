@@ -3,9 +3,17 @@
 /**
  * RISK GUARD — Pure module, zero API calls.
  * Integrates psychGuard for psychological risk checks.
+ * Includes whale trap and spoof detection cooldowns.
  */
 
 const psychGuard = require("./psychGuard");
+
+// ── WHALE TRAP & SPOOF COOLDOWN STATE ─────────────────────
+let _whaleTrapCooldownUntil = 0;
+let _spoofHistory = [];  // [{ side: "BID"|"ASK", ts: number }, ...]
+const WHALE_TRAP_COOLDOWN_MS = 10 * 60 * 1000;   // 10 minutes
+const SPOOF_COOLDOWN_MS      = 15 * 60 * 1000;   // 15 minutes
+const SPOOF_CONSEC_LIMIT     = 2;
 
 // ── DAILY LOSS LIMIT ─────────────────────────────────────
 function checkDailyLossLimit(tradeHistory, equity, limitPct = 0.03) {
@@ -203,6 +211,64 @@ function checkNoRevengeTrade(tradeHistory, cooldownMs = 4 * 60 * 60 * 1000) {
   };
 }
 
+// ── WHALE TRAP DETECTION ─────────────────────────────────
+function checkWhaleTrap(whaleResult, whaleTrapCooldownUntil) {
+  const cooldownUntil = whaleTrapCooldownUntil || _whaleTrapCooldownUntil;
+  const now = Date.now();
+
+  // If cooldown active, block
+  if (now < cooldownUntil) {
+    return {
+      blocked: true,
+      blockMsg: `Whale trap cooldown: ${Math.ceil((cooldownUntil - now) / 60000)}m remaining`,
+      newCooldownUntil: cooldownUntil,
+    };
+  }
+
+  // Check trap risk from AI whale analyzer
+  const trapRisk = whaleResult?.trap_risk || 0;
+  const sweepNoConfirm =
+    whaleResult?.liquidity_sweep === true &&
+    whaleResult?.recommendation !== "ENTER";
+
+  if (trapRisk > 70 || sweepNoConfirm) {
+    const newCooldown = now + WHALE_TRAP_COOLDOWN_MS;
+    _whaleTrapCooldownUntil = newCooldown;
+    return {
+      blocked: true,
+      blockMsg: trapRisk > 70
+        ? `Whale trap risk ${trapRisk}/100 — cooling down 10m`
+        : "Liquidity sweep detected without confirmation — waiting",
+      newCooldownUntil: newCooldown,
+    };
+  }
+
+  return { blocked: false, blockMsg: null, newCooldownUntil: cooldownUntil };
+}
+
+// ── SPOOF CONSECUTIVE CHECK ───────────────────────────────
+function checkSpoofConsecutive(spoofHistory) {
+  const history = spoofHistory || _spoofHistory;
+  if (history.length < SPOOF_CONSEC_LIMIT) {
+    return { blocked: false, blockMsg: null, newCooldownUntil: 0 };
+  }
+
+  const last2 = history.slice(-SPOOF_CONSEC_LIMIT);
+  const sameSide = last2.every(s => s.side === last2[0].side);
+  const recent   = last2.every(s => Date.now() - s.ts < 30 * 60 * 1000); // within 30min
+
+  if (sameSide && recent) {
+    const newCooldown = Date.now() + SPOOF_COOLDOWN_MS;
+    return {
+      blocked: true,
+      blockMsg: `Consecutive spoof on ${last2[0].side} side — cooldown 15m`,
+      newCooldownUntil: newCooldown,
+    };
+  }
+
+  return { blocked: false, blockMsg: null, newCooldownUntil: 0 };
+}
+
 // ── RUN ALL CHECKS ────────────────────────────────────────
 function runAllChecks({
   tradeHistory = [],
@@ -223,6 +289,7 @@ function runAllChecks({
   proposedTrade = null,
   htfBias = "RANGING",
   regime = "RANGING",
+  whaleResult = null,  // ← Optional whale analyzer result
 } = {}) {
   const blocks = [];
   const warnings = [];
@@ -295,6 +362,31 @@ function runAllChecks({
     };
   }
 
+  // 9. Whale guard (optional — only if whaleResult provided)
+  if (whaleResult) {
+    // Check for whale trap or unconfirmed sweep
+    const whaleTrap = checkWhaleTrap(whaleResult);
+    if (whaleTrap.blocked) {
+      blocks.push({ type: "WHALE_TRAP", reason: whaleTrap.blockMsg });
+    }
+
+    // Track spoof detections for consecutive spoof checking
+    if (whaleResult.spoof_detected) {
+      const spoofSide = whaleResult.spoof_side || "UNKNOWN";
+      _spoofHistory.push({ side: spoofSide, ts: Date.now() });
+      // Keep rolling window of last 10 spoofs
+      if (_spoofHistory.length > 10) {
+        _spoofHistory.shift();
+      }
+
+      // Check for consecutive spoofs
+      const spoofCheck = checkSpoofConsecutive(_spoofHistory);
+      if (spoofCheck.blocked) {
+        blocks.push({ type: "SPOOF_CONSEC", reason: spoofCheck.blockMsg });
+      }
+    }
+  }
+
   return {
     approved: blocks.length === 0,
     blocks,
@@ -315,5 +407,7 @@ module.exports = {
   checkFOMO,
   checkLeverageCap,
   checkNoRevengeTrade,
+  checkWhaleTrap,
+  checkSpoofConsecutive,
   runAllChecks,
 };

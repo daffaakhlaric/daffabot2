@@ -24,6 +24,7 @@ const COOLDOWNS = {
   macro:        60 * 60 * 1000,    // skip anyway
   exit:         2 * 60 * 1000,     // 2 min — only on active trades
   orchestrator: 3 * 60 * 1000,     // ↓ 3 min (was 5) — faster meta analysis
+  whale_analyzer: 30 * 1000,        // 30 seconds — whale detection re-evaluation window
 };
 
 function getCached(key) {
@@ -906,6 +907,56 @@ function detectLiquidityTrap({ klines }) {
 }
 
 /**
+ * WHALE ANALYZER (F9) — Institutional whale activity detection via AI
+ * Analyzes orderbook, funding, OI, and pure-TA whale score
+ * 30 second cooldown to avoid excessive API calls
+ */
+async function whaleAnalyzer({ klines_1m, klines_5m, price, orderbook, fundingRate = 0, oiChange = 0, taResult = null }) {
+  const cached = getCached("whale_analyzer");
+  if (cached) return cached;
+
+  const t0 = Date.now();
+
+  // Build orderbook strings — null-safe for DRY_RUN mode
+  const obBids = orderbook?.bids
+    ? JSON.stringify(orderbook.bids.slice(0, 5))
+    : "null (DRY_RUN)";
+  const obAsks = orderbook?.asks
+    ? JSON.stringify(orderbook.asks.slice(0, 5))
+    : "null (DRY_RUN)";
+
+  const vars = {
+    symbol:          process.env.BTC_SYMBOL || "BTCUSDT",
+    price:           price?.toFixed(2) || "0",
+    klines_1m:       formatKlines(klines_1m, 20),
+    klines_5m:       formatKlines(klines_5m || klines_1m, 10),
+    funding_rate:    (fundingRate || 0).toFixed(4),
+    oi_change:       (oiChange || 0).toFixed(2),
+    orderbook_bids:  obBids,
+    orderbook_asks:  obAsks,
+    ta_whale_score:  taResult?.whaleScore ?? "N/A",
+    ta_patterns:     taResult?.patterns?.join(", ") || "none",
+  };
+
+  const userPrompt = PROMPTS.fillTemplate(PROMPTS.WHALE_ANALYZER.user, vars);
+  const result = await claudeCall(PROMPTS.WHALE_ANALYZER.system, userPrompt, 600);
+  const lat = Date.now() - t0;
+
+  if (result) {
+    setCache("whale_analyzer", result);
+    if (global.botState) {
+      global.botState.features = {
+        ...(global.botState.features || {}),
+        whale: result,
+      };
+    }
+    aiLog("WHALE_ANALYZER", lat, `bias=${result.whale_bias} trap=${result.trap_risk} rec=${result.recommendation}`);
+  }
+
+  return result;
+}
+
+/**
  * TEST AI HEALTH — Lightweight Claude call for auto-recovery check
  * Called every 5 minutes when aiHealthy = false to check if API has recovered
  */
@@ -923,7 +974,7 @@ module.exports = {
   callF1, callF2, sniperMode, judasSweepDetector, liquiditySweepEngine,
   volatilityRegime, killZoneTimer, smartCompounder, momentumIgnition,
   obFreshnessScorer, macroCorrelation, exitOptimizer, masterOrchestrator,
-  reviewTrade, runAll, detectLiquidityTrap, testAIHealth,
+  reviewTrade, runAll, detectLiquidityTrap, testAIHealth, whaleAnalyzer,
   // helpers exported for testing
   calcATR, calcEMA, extractSwings, formatKlines,
 };

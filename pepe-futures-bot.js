@@ -309,7 +309,7 @@ function calcSizeBTC(price) {
   const notional = CONFIG.POSITION_SIZE_USDT * CONFIG.LEVERAGE;
   const raw      = notional / price;
   // Minimum 0.00005 BTC (allows smaller positions), floor ke 5 desimal
-  return Math.max(0.00005, Math.floor(raw * 100000) / 100000).toFixed(5);
+  return Math.max(0.00005, Math.floor(raw * 100000) / 100000);
 }
 
 // Set leverage sebelum open posisi

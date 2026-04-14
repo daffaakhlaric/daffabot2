@@ -1,6 +1,8 @@
-# Session Status — Position Lifecycle Refactor
+# Session Status — Bug Fixes & Position Lifecycle Refactor
 
-## 🔴 CRITICAL BUG FIXED ✅
+## 🔴 CRITICAL BUGS FIXED ✅
+
+### 1. AUTO-CLOSE 20 SECONDS (FIXED)
 
 **Issue**: Positions (especially SHORT) auto-closing exactly 20 seconds after opening
 
@@ -114,6 +116,77 @@
 
 ---
 
+### 2. OVERTRADE IMMEDIATELY AFTER CLOSE (FIXED)
+
+**Issue**: After closing a profitable position, bot instantly opened a new position on same/different pair (FOMO/revenge trading)
+
+**Root Cause**:
+- closePosition() cleared activePosition but didn't update lastTradeTime
+- No differentiation between WIN/LOSS cooldowns
+- Multi-pair evaluation could immediately evaluate new pairs
+- No guard against reusing signals from same candle
+
+**Fixes Implemented**:
+1. **Post-Close Cooldown Tracking**
+   - Track `lastTradeCloseTime` when position closes
+   - WIN trades: 5-minute lockout (protect profit)
+   - LOSS trades: 10-minute lockout (avoid revenge)
+   - Cooldown reason sent to dashboard for visibility
+
+2. **Anti Instant-Switch for Multi-Pair**
+   - Skip pairManager evaluation for 3 minutes after close
+   - Prevents rapid pair switching/hopping
+   - Stabilizes bot after exit
+
+3. **Anti Immediate Re-Entry**
+   - `_justClosed` flag skips LONG/SHORT signals for 1 tick after close
+   - Waits for new candle before allowing entry
+   - Prevents stale signal reuse
+
+**Impact**:
+- ✅ No more FOMO entries
+- ✅ Respects win/loss psychology
+- ✅ Cleaner position lifecycle
+- ✅ Dashboard shows cooldown reason and countdown
+
+**Commit**: `402de5b`
+
+---
+
+### 3. DRY_RUN SIZING TOO SMALL (FIXED)
+
+**Issue**: DRY_RUN positions were tiny ($0.4 margin), making PnL audit difficult:
+- BTC: $0.40 margin × 50x = $20 notional (PnL: ±$0.01)
+- SOL: $0.60 margin × 50x = $30 notional (PnL: ±$0.01)
+- Impossible to validate bot logic with such small numbers
+
+**Solution - Realistic Fixed Margins**:
+```
+DRY_RUN_MARGIN:
+  BTCUSDT:  $25  (× 20x leverage = $500 notional)
+  ETHUSDT:  $20  (× 15x leverage = $300 notional)
+  SOLUSDT:  $15  (× 10x leverage = $150 notional)
+  PEPEUSDT: $10  (× 10x leverage = $100 notional)
+```
+
+**Changes**:
+1. Added DRY_RUN_MARGIN and DRY_RUN_LEVERAGE configs
+2. openPosition() now:
+   - In DRY_RUN: uses fixed margin × leverage
+   - In LIVE: uses original CONFIG.LEVERAGE (backward compatible)
+3. PnL calculations now use position's actual leverage (not hardcoded)
+4. Trade history records correct leverage per position
+
+**Impact**:
+- ✅ PnL values meaningful and auditable
+- ✅ Testing position lifecycle is easier
+- ✅ LIVE mode completely unaffected
+- ✅ Full backward compatibility
+
+**Commit**: `402de5b`
+
+---
+
 ## 💾 COMMITS THIS SESSION
 
 | Commit | Message |
@@ -121,9 +194,35 @@
 | `4c87ce1` | Fix: SL price calculation for SHORT positions (critical bug) |
 | `337a48d` | Add: DRY_RUN mock candle generation + enhanced API fallback |
 | `1ef1c80` | Fix: Uptime display now persists across browser refreshes |
+| `402de5b` | Fix: Anti-overtrade + DRY_RUN realistic sizing |
 
 ---
 
-**Session Result**: ✅ **CRITICAL BUG IDENTIFIED & FIXED**
+---
 
-The 20-second auto-close bug was caused by incorrect SHORT SL calculation. The fix has been verified working in DRY_RUN testing. Position lifecycle system is functional with proper SL/trail/max-hold logic.
+## 📊 SUMMARY OF SESSION FIXES
+
+**3 Major Bugs Fixed**:
+1. ✅ **20-second auto-close** — SHORT SL calculation was using LONG logic
+   - Impact: SHORT positions closing immediately
+   - Fix: Made SL calculation side-aware
+   - Verified: DRY_RUN test shows 120+ second holds
+
+2. ✅ **FOMO/Overtrade after close** — No post-close cooldown, no anti-switch
+   - Impact: Bot re-entering immediately after closing (revenge trading)
+   - Fix: WIN (5min) / LOSS (10min) cooldowns + multi-pair anti-switch
+   - Impact: Cleaner position lifecycle, respects win/loss psychology
+
+3. ✅ **DRY_RUN sizing too small** — PnL values unauditable
+   - Impact: $20-30 notional, ±$0.01 PnL swings
+   - Fix: Realistic margins per pair ($100-500 notional)
+   - Impact: Easier debugging and position lifecycle validation
+
+**Session Result**: ✅ **3 CRITICAL BUGS IDENTIFIED & FIXED**
+
+Bot now:
+- ✅ Holds SHORT positions properly (SL correct)
+- ✅ Respects win/loss cooldowns (no FOMO)
+- ✅ Has meaningful DRY_RUN sizing for testing
+- ✅ Position lifecycle fully functional
+- ✅ 100% backward compatible with LIVE mode

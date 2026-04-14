@@ -73,6 +73,7 @@ let state = {
 };
 
 // ── LOAD TRADE HISTORY AT STARTUP ──────────────────────────
+// IMPORTANT: Load history for analytics, but DON'T apply cooldown for old trades
 function loadTradeHistoryFromDashboard() {
   try {
     const dash = require("./dashboard-server");
@@ -80,11 +81,17 @@ function loadTradeHistoryFromDashboard() {
       global.botState.tradeHistory = dash.tradeHistory;
       const lastTrade = dash.tradeHistory[dash.tradeHistory.length - 1];
       if (lastTrade) {
-        // Set last trade time from history to prevent instant re-entry
-        state.lastTradeTime = lastTrade.exitTime || lastTrade.timestamp || 0;
-        state.lastTradeCloseTime = state.lastTradeTime;
-        state.lastClosedTradePnL = lastTrade.result || null;
-        log(`📂 LOADED: ${dash.tradeHistory.length} trades from file | last: ${lastTrade.result} @ ${new Date(state.lastTradeCloseTime).toLocaleTimeString()}`);
+        const lastTradeTime = lastTrade.exitTime || lastTrade.timestamp || 0;
+        // Only apply cooldown if trade was closed AFTER bot started
+        // Otherwise, ignore old trades (they're just for analytics)
+        if (lastTradeTime > botStartTime) {
+          state.lastTradeTime = lastTradeTime;
+          state.lastTradeCloseTime = lastTradeTime;
+          state.lastClosedTradePnL = lastTrade.result || null;
+          log(`📂 LOADED: ${dash.tradeHistory.length} trades | last: ${lastTrade.result} @ ${new Date(lastTradeTime).toISOString()}`);
+        } else {
+          log(`📂 LOADED: ${dash.tradeHistory.length} trades (old trades - cooldown not applied)`);
+        }
       }
     }
   } catch (e) {
@@ -1026,17 +1033,52 @@ async function run() {
               side: decision.action,
               size: CONFIG.POSITION_SIZE_USDT * CONFIG.LEVERAGE,
               confluenceScore: decision.confidence || 65,
+              symbol: currentSymbol, // Pass symbol for pair-aware revenge check
             },
             htfBias: global.botState.marketState || "RANGING",
             regime: global.botState.marketState || "RANGING",
           });
 
-          if (!profitCheckResult.approved) {
-            const blockReasons = profitCheckResult.blocks.map(b => b.reason).join("; ");
-            log(`⛔ PROFIT PROTECTION BLOCKED: ${blockReasons}`);
-            global.botState.cooldownReason = `PROFIT_PROTECTION: ${blockReasons}`;
+          // Check for hard blocks vs soft blocks
+          const hardBlocks = profitCheckResult.blocks.filter(b => 
+            b.type.includes("HARD") || b.type.includes("CONSEC_LOSSES") || b.type.includes("DAILY_LIMIT") || b.type.includes("MAX_DRAWDOWN")
+          );
+          const softBlocks = profitCheckResult.blocks.filter(b => 
+            b.type.includes("SOFT") || b.type.includes("REVENGE") || b.type.includes("EUPHORIA") || b.type.includes("OVERTRADING")
+          );
+
+          if (hardBlocks.length > 0) {
+            const blockReasons = hardBlocks.map(b => b.reason).join("; ");
+            log(`⛔ HARD BLOCK: ${blockReasons}`);
+            global.botState.cooldownReason = `HARD_BLOCK: ${blockReasons}`;
             _tickRunning = false;
+            await sleep(CONFIG.CHECK_INTERVAL);
             continue;
+          }
+
+          // Soft block: raise min score, reduce size instead of hard stop
+          let minScoreOverride = 55;
+          let sizeMultiplier = 1.0;
+          if (softBlocks.length > 0) {
+            const softReasons = softBlocks.map(b => b.reason).join("; ");
+            log(`⚠️ SOFT BLOCK: ${softReasons} — applying restrictions`);
+            minScoreOverride = 70; // Raise min score
+            sizeMultiplier = 0.5;  // Reduce size 50%
+            global.botState.cooldownReason = `SOFT_BLOCK: ${softReasons}`;
+          }
+
+          // Check if setup score meets override
+          const setupScore = decision.confidence || 65;
+          if (setupScore < minScoreOverride) {
+            log(`⛔ SCORE TOO LOW: ${setupScore} < ${minScoreOverride} (soft block override)`);
+            _tickRunning = false;
+            await sleep(CONFIG.CHECK_INTERVAL);
+            continue;
+          }
+
+          // Apply size multiplier for soft block
+          if (sizeMultiplier < 1.0) {
+            log(`⚠️ SIZE REDUCED: ${sizeMultiplier * 100}% (soft block)`);
           }
 
           // Log warnings but allow trade

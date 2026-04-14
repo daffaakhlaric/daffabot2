@@ -133,57 +133,63 @@ function checkRevengeTrade(tradeHistory, proposedTrade) {
   const lastExitTime = lastTrade.exitTime || lastTrade.timestamp || 0;
   const timeSinceLast = Date.now() - lastExitTime;
 
+  const proposedSymbol = proposedTrade?.symbol || "UNKNOWN";
+  const proposedSide = proposedTrade?.side || "UNKNOWN";
+
   const triggers = [];
   let score = 0;
 
-  // Trigger 1: Last was LOSS and < 15 min
-  if (lastIsLoss && timeSinceLast < 15 * 60 * 1000) {
-    triggers.push(`Loss ${Math.round(timeSinceLast / 60000)}min ago, too soon`);
+  // Trigger 1: Same symbol + LOSS + < 15 min
+  const sameSymbol = lastTrade.symbol === proposedSymbol;
+  if (lastIsLoss && sameSymbol && timeSinceLast < 15 * 60 * 1000) {
+    triggers.push(`Loss ${Math.round(timeSinceLast / 60000)}min ago on same pair, too soon`);
     score += 35;
   }
 
-  // Trigger 2: Same direction as losing trade
-  if (lastIsLoss && proposedTrade?.side === lastTrade.side) {
-    triggers.push(`Re-entering ${proposedTrade.side} direction that just lost`);
+  // Trigger 2: Same symbol + same direction as losing trade
+  if (lastIsLoss && sameSymbol && proposedSide === lastTrade.side) {
+    triggers.push(`Re-entering ${proposedSide} direction that just lost on ${proposedSymbol}`);
     score += 25;
   }
 
-  // Trigger 3: 2 consecutive losses + < 5 min from last
+  // Trigger 3: 2 consecutive losses + < 5 min from last (same symbol only)
   const last2 = trades.slice(-2);
   const both_loss = last2.every(t => (t.pnlUSDT || 0) < 0);
-  if (both_loss && timeSinceLast < 5 * 60 * 1000) {
-    triggers.push("2 losses in a row + entry within 5min");
+  if (both_loss && sameSymbol && timeSinceLast < 5 * 60 * 1000) {
+    triggers.push("2 losses in a row + entry within 5min on same pair");
     score += 30;
   }
 
-  // Trigger 4: Size > 1.5x base after loss
-  if (lastIsLoss && proposedTrade?.size && lastTrade.sizeUsdt) {
-    const sizeRatio = proposedTrade.size / lastTrade.sizeUsdt;
+  // Trigger 4: Size > 1.5x base after loss (same symbol)
+  if (lastIsLoss && sameSymbol && proposedTrade?.size && lastTrade.sizeUSdt) {
+    const sizeRatio = proposedTrade.size / lastTrade.sizeUSdt;
     if (sizeRatio > 1.5) {
       triggers.push(`Martingale: size ${sizeRatio.toFixed(1)}x larger after loss`);
       score += 25;
     }
   }
 
-  // Trigger 5: Entry outside kill zone after loss
+  // Trigger 5: Entry outside kill zone after loss - REDUCED penalty (was 15, now 5)
   const hour = new Date().getUTCHours();
   const inKz = (hour >= 7 && hour < 9) || (hour >= 13 && hour < 16) || (hour >= 20 && hour < 22);
-  if (lastIsLoss && !inKz) {
+  if (lastIsLoss && sameSymbol && !inKz) {
     triggers.push("Entry outside Kill Zone after loss (desperation)");
-    score += 15;
+    score += 5; // Reduced from 15
   }
 
   score = Math.min(100, score);
-  const recommendation = score >= 60 ? "BLOCK" : score >= 30 ? "WARN" : "ALLOW";
-  const cooldown_required_ms = score >= 60 ? Math.max(0, 15 * 60 * 1000 - timeSinceLast) : 0;
+  // New thresholds: <70 warn, >=70 soft block, >=85 hard block
+  const recommendation = score >= 85 ? "BLOCK_HARD" : score >= 70 ? "BLOCK_SOFT" : score >= 30 ? "WARN" : "ALLOW";
+  const cooldown_required_ms = score >= 70 ? Math.max(0, 15 * 60 * 1000 - timeSinceLast) : 0;
 
   return {
-    is_revenge: score >= 60,
+    is_revenge: score >= 70,
     revenge_score: score,
     triggers,
     cooldown_required_ms,
     recommendation,
     time_since_last_trade_ms: timeSinceLast,
+    same_symbol: sameSymbol,
   };
 }
 
@@ -470,7 +476,8 @@ function runPsychChecks({
 
   if (euphoria.blocked) {
     blocks.push({ check: "euphoria", reason: euphoria.reason });
-    wait_ms = Math.max(wait_ms, euphoria.min_wait_ms - (now - (euphoria.time_since_last_win_ms ? now - euphoria.time_since_last_win_ms : now)));
+    const waitRemaining = Math.max(0, euphoria.min_wait_ms - (euphoria.time_since_last_win_ms || 0));
+    wait_ms = Math.max(wait_ms, waitRemaining);
   }
 
   if (overtrading.level === "BLOCK") {

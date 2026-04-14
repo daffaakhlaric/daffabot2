@@ -58,10 +58,10 @@ function checkSessionProfitLock(tradeHistory, equity, thresholds = {}) {
 // ── POST-WIN COOLDOWN ────────────────────────────────────────
 /**
  * Implement cooldown after wins to prevent FOMO/impulsive trades
- * Cooldown duration depends on win profit size:
- * - Small win (<0.5%) → 3 min
- * - Medium win (0.5-1%) → 5 min
- * - Large win (>1%) → 10-15 min
+ * More flexible timing:
+ * - Small win (<0.5%) → 1-2 min
+ * - Medium win (0.5-1%) → 3 min
+ * - Large win (>1%) → 5 min
  */
 function checkPostWinCooldown(tradeHistory, currentTime = Date.now()) {
   const trades = tradeHistory || [];
@@ -89,13 +89,13 @@ function checkPostWinCooldown(tradeHistory, currentTime = Date.now()) {
     : 0;
 
   if (winProfitPct < 0.5) {
-    cooldownMs = 3 * 60 * 1000;  // 3 min
+    cooldownMs = 1 * 60 * 1000;  // 1-2 min for small win
     profitReason = "small win";
   } else if (winProfitPct < 1.0) {
-    cooldownMs = 5 * 60 * 1000;  // 5 min
+    cooldownMs = 3 * 60 * 1000;  // 3 min for medium win
     profitReason = "medium win";
   } else {
-    cooldownMs = 15 * 60 * 1000; // 15 min
+    cooldownMs = 5 * 60 * 1000;  // 5 min for large win (not 15!)
     profitReason = "large win";
   }
 

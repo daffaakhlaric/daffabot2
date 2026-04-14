@@ -49,7 +49,8 @@
       "Bash(bash /tmp/env_update.sh)",
       "Bash(git add:*)",
       "Bash(git commit -m 'Add missing trade history fields: size, leverage, source:*)",
-      "Bash(node -c pepe-futures-bot.js)"
+      "Bash(node -c pepe-futures-bot.js)",
+      "Bash(node -c btcStrategy.js)"
     ],
     "additionalDirectories": [
       "C:\\Users\\HP\\.claude\\plans"

@@ -68,7 +68,11 @@
       "Bash(git commit -m 'Fix: Critical bugs in exit caching, resistance check, tick safety, and trade recording:*)",
       "Bash(git commit -m 'fix: Add decimal precision for micro-cap coins \\(PEPE 0.00000345\\):*)",
       "Bash(git commit -m 'fix: Add entryTime capture and increase entry filter strictness:*)",
-      "Bash(git commit -m 'fix: DRY_RUN equity now updates based on trade PnL:*)"
+      "Bash(git commit -m 'fix: DRY_RUN equity now updates based on trade PnL:*)",
+      "Bash(DRY_RUN=true PAIR=SOLUSDT timeout 120 node pepe-futures-bot.js)",
+      "Bash(git commit -m 'Fix: SL price calculation for SHORT positions \\(critical bug\\):*)",
+      "Bash(DRY_RUN=true timeout 120 node pepe-futures-bot.js)",
+      "Bash(DRY_RUN=true timeout 60 node pepe-futures-bot.js)"
     ],
     "additionalDirectories": [
       "C:\\Users\\HP\\.claude\\plans"

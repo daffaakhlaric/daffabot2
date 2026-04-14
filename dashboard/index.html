@@ -825,27 +825,44 @@ function updatePosition(live) {
     card.innerHTML=`<div class="card-title">Active Position</div><div class="pos-empty"><div class="pos-empty-icon">&#9649;</div><div>No open position</div><div style="font-size:11px;margin-top:4px">Last: <strong>${live?.lastDecision||'HOLD'}</strong></div></div>`;
     return;
   }
-  const isL=pos.side==='LONG';
-  const pc=pos.pnl>=0?'var(--green)':'var(--red)';
-  const pairDisplay = pos.symbol || pos.pairDisplayName || 'BTCUSDT';
+
+  // Normalize: convert string numbers to actual numbers
+  const posNorm = {
+    ...pos,
+    size: typeof pos.size === 'string' ? parseFloat(pos.size) : (pos.size || 0),
+    entry: typeof pos.entry === 'string' ? parseFloat(pos.entry) : (pos.entry || 0),
+    leverage: typeof pos.leverage === 'string' ? parseFloat(pos.leverage) : (pos.leverage || 1),
+    pnl: typeof pos.pnl === 'string' ? parseFloat(pos.pnl) : (pos.pnl || 0),
+    pnlPct: typeof pos.pnlPct === 'string' ? parseFloat(pos.pnlPct) : (pos.pnlPct || 0),
+    sizeUSDT: typeof pos.sizeUSDT === 'string' ? parseFloat(pos.sizeUSDT) : (pos.sizeUSDT || 0),
+    markPrice: typeof pos.markPrice === 'string' ? parseFloat(pos.markPrice) : (pos.markPrice || 0),
+    breakEven: typeof pos.breakEven === 'string' ? parseFloat(pos.breakEven) : (pos.breakEven || 0),
+    liquidation: typeof pos.liquidation === 'string' ? parseFloat(pos.liquidation) : (pos.liquidation || 0),
+    realizedPnL: typeof pos.realizedPnL === 'string' ? parseFloat(pos.realizedPnL) : (pos.realizedPnL || 0),
+    margin: typeof pos.margin === 'string' ? parseFloat(pos.margin) : (pos.margin || 0),
+  };
+
+  const isL=posNorm.side==='LONG';
+  const pc=posNorm.pnl>=0?'var(--green)':'var(--red)';
+  const pairDisplay = posNorm.symbol || posNorm.pairDisplayName || 'BTCUSDT';
   card.innerHTML=`
     <div class="pos-header">
-      <span class="badge ${isL?'b-green':'b-red'}">${pos.side}</span>
+      <span class="badge ${isL?'b-green':'b-red'}">${posNorm.side}</span>
       <span class="badge b-teal">${pairDisplay}</span>
-      <span class="badge b-muted">${pos.leverage||7}x ${pos.marginMode||'ISOLATED'}</span>
+      <span class="badge b-muted">${posNorm.leverage||7}x ${posNorm.marginMode||'ISOLATED'}</span>
     </div>
-    <div class="pos-pnl-big" style="color:${pc}">${fmtPct(pos.pnlPct)}</div>
-    <div class="pos-pnl-sub" style="color:${pc}">${fmtPnL(pos.pnl)} USDT</div>
+    <div class="pos-pnl-big" style="color:${pc}">${fmtPct(posNorm.pnlPct)}</div>
+    <div class="pos-pnl-sub" style="color:${pc}">${fmtPnL(posNorm.pnl)} USDT</div>
     <hr class="pos-divider">
-    <div class="pos-row"><span class="pos-key">Entry</span><span class="pos-val">${fmtPrice(pos.entry)}</span></div>
-    <div class="pos-row"><span class="pos-key">Mark</span><span class="pos-val">${fmtPrice(pos.markPrice||live?.price)}</span></div>
-    <div class="pos-row"><span class="pos-key">Size</span><span class="pos-val">${(pos.size||0).toFixed(4)} ${(pos.symbol||'BTC').replace('USDT','')}</span></div>
-    <div class="pos-row"><span class="pos-key">Notional</span><span class="pos-val">${fmtCompact(pos.sizeUSDT)}</span></div>
-    <div class="pos-row"><span class="pos-key">Break Even</span><span class="pos-val">${fmtPrice(pos.breakEven)}</span></div>
-    <div class="pos-row"><span class="pos-key">Liquidation</span><span class="pos-val" style="color:var(--red)">${fmtPrice(pos.liquidation)}</span></div>
-    <div class="pos-row"><span class="pos-key">R.PnL</span><span class="pos-val">${fmtPnL(pos.realizedPnL)}</span></div>
-    <div class="pos-row"><span class="pos-key">Margin</span><span class="pos-val">${pos.margin?pos.margin.toFixed(2)+' USDT':'—'}</span></div>
-    ${pos.setup?`<hr class="pos-divider"><div style="font-size:11px;color:var(--text-muted)">Setup: <strong style="color:var(--amber)">${pos.setup}</strong></div>`:''}
+    <div class="pos-row"><span class="pos-key">Entry</span><span class="pos-val">${fmtPrice(posNorm.entry)}</span></div>
+    <div class="pos-row"><span class="pos-key">Mark</span><span class="pos-val">${fmtPrice(posNorm.markPrice||live?.price)}</span></div>
+    <div class="pos-row"><span class="pos-key">Size</span><span class="pos-val">${posNorm.size.toFixed(4)} ${(posNorm.symbol||'BTC').replace('USDT','')}</span></div>
+    <div class="pos-row"><span class="pos-key">Notional</span><span class="pos-val">${fmtCompact(posNorm.sizeUSDT)}</span></div>
+    <div class="pos-row"><span class="pos-key">Break Even</span><span class="pos-val">${fmtPrice(posNorm.breakEven)}</span></div>
+    <div class="pos-row"><span class="pos-key">Liquidation</span><span class="pos-val" style="color:var(--red)">${fmtPrice(posNorm.liquidation)}</span></div>
+    <div class="pos-row"><span class="pos-key">R.PnL</span><span class="pos-val">${fmtPnL(posNorm.realizedPnL)}</span></div>
+    <div class="pos-row"><span class="pos-key">Margin</span><span class="pos-val">${posNorm.margin?posNorm.margin.toFixed(2)+' USDT':'—'}</span></div>
+    ${posNorm.setup?`<hr class="pos-divider"><div style="font-size:11px;color:var(--text-muted)">Setup: <strong style="color:var(--amber)">${posNorm.setup}</strong></div>`:''}
   `;
 }
 
@@ -1344,12 +1361,12 @@ function scheduleRender(data) {
 function doRender() {
   lastRender=Date.now();
   const L=state.live, A=state.analytics;
-  try { updateHeader(L); } catch(e){}
-  try { updateStatusChips(L); } catch(e){}
-  try { updateMetrics(L,A); } catch(e){}
-  try { updateOverviewScores(L); } catch(e){}
-  try { updateOverviewLogs(L); } catch(e){}
-  try { updatePosition(L); } catch(e){}
+  try { updateHeader(L); } catch(e){console.error('❌ updateHeader error:', e);}
+  try { updateStatusChips(L); } catch(e){console.error('❌ updateStatusChips error:', e);}
+  try { updateMetrics(L,A); } catch(e){console.error('❌ updateMetrics error:', e);}
+  try { updateOverviewScores(L); } catch(e){console.error('❌ updateOverviewScores error:', e);}
+  try { updateOverviewLogs(L); } catch(e){console.error('❌ updateOverviewLogs error:', e);}
+  try { updatePosition(L); } catch(e){console.error('❌ updatePosition error:', e);}
   try { updateAIPanel(L); } catch(e){}
   try { updateEquityChart(A); } catch(e){}
 

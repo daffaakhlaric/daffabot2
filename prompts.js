@@ -634,11 +634,39 @@ Respond with JSON only:
 }`,
 };
 
+// ── PAIR_ANALYST — MULTI-PAIR FUND MANAGER ──────────────
+const PAIR_ANALYST = {
+  system: MASTER + `\nTask: Multi-Pair Fund Manager Analysis.\nAnalyze pair rankings, whale activity, and saturation to recommend which pair to trade next.\nPrioritize fresh, high-confidence signals with low saturation risk.`,
+  user: `Analyze pair scoreboard and recommend next trading pair.
+Scoreboard (ranked by score):
+\${scoreboard_json}
+
+Active pair: \${active_pair}
+Switch cooldown remaining: \${cooldown_remaining_min}min
+Daily switches used: \${switches_used}/\${max_switches_per_day}
+
+Whale alerts (last 5):
+\${whale_alerts_json}
+
+Mode: \${current_mode} (AI|BOT)
+
+Provide JSON:
+{
+  "recommended_pair": "SYMBOL|null",
+  "recommendation_reason": "string (max 100 chars)",
+  "confidence": 0-100,
+  "risk_level": "LOW|MEDIUM|HIGH",
+  "saturation_alert": "string or null",
+  "whale_signal": "LONG|SHORT|NEUTRAL|null",
+  "next_switch_rationale": "string"
+}`,
+};
+
 module.exports = {
   MASTER,
   F1, F2, F3, F4, F5, F7, F8, F10, F12,
   SNIPER, JUDAS, SWEEP, REGIME, KILLZONE, COMPOUNDER,
   MOMENTUM, OB_SCORER, MACRO, EXIT_OPTIMIZER, ORCHESTRATOR, COMMENTARY,
-  SNIPER_KILLER,
+  SNIPER_KILLER, PAIR_ANALYST,
   fillTemplate,
 };

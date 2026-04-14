@@ -10,6 +10,10 @@ const riskGuard    = require("./riskGuard");
 const analytics    = require("./analytics");
 const tradeMemory  = require("./tradeMemory");
 
+// Multi-pair support
+const pairManager = require("./pairManager");
+const { PAIRS, getEnabledPairs, getPairBySymbol } = require("./pairConfig");
+
 // ================= CONFIG =================
 const CONFIG = {
   SYMBOL: "BTCUSDT",
@@ -25,11 +29,13 @@ const CONFIG = {
   TRADE_COOLDOWN_MS: 5 * 60 * 1000,
   CHECK_INTERVAL: 20000,
 
-  DRY_RUN:        process.env.DRY_RUN        !== "false",
-  AI_ENABLED:     process.env.AI_ENABLED     !== "false",
-  SNIPER_MODE:    process.env.SNIPER_MODE    !== "false",
-  SNIPER_ENABLED: process.env.SNIPER_ENABLED !== "false",
-  MODE:           process.env.BOT_MODE       || "SAFE",   // SAFE | FAST
+  DRY_RUN:               process.env.DRY_RUN               !== "false",
+  AI_ENABLED:            process.env.AI_ENABLED            !== "false",
+  SNIPER_MODE:           process.env.SNIPER_MODE           !== "false",
+  SNIPER_ENABLED:        process.env.SNIPER_ENABLED        !== "false",
+  MODE:                  process.env.BOT_MODE              || "SAFE",   // SAFE | FAST
+  MULTI_PAIR_ENABLED:    process.env.MULTI_PAIR_ENABLED    === "true",
+  PAIR_EVAL_INTERVAL_MS: 60 * 1000,  // Evaluate pairs every 60 seconds
   SNIPER_CONFIG: {
     risk:               0.03,
     leverage:           10,
@@ -78,7 +84,19 @@ global.botState = {
     market_state:          "UNKNOWN",
     timestamp:             0,
   },
+  // Multi-pair fund manager state
+  multiPairEnabled:      false,
+  currentPair:           "BTCUSDT",
+  pairScoreboard:        [],
+  pairRecommendation:    "Multi-pair disabled",
+  whaleAlerts:           [],
 };
+
+// ── MULTI-PAIR STATE ──────────────────────────
+let currentSymbol = CONFIG.SYMBOL;
+let currentPairConfig = PAIRS.find(p => p.symbol === CONFIG.SYMBOL) || null;
+let lastPairEvalTime = 0;
+let forceEvalNextTick = false;
 
 // ================= UTIL =================
 function log(msg) {
@@ -194,7 +212,68 @@ async function getKlines() {
   })).reverse();
 }
 
-async function getKlinesHTF(granularity, limit) {
+// Parameterized klines fetch for multi-pair support
+async function fetchKlinesForSymbol(symbol, granularity = "1m", limit = 100) {
+  // DRY_RUN mode: generate fake price data
+  if (CONFIG.DRY_RUN) {
+    const basePrice = symbol === "BTCUSDT" ? 71000 : 3200;
+    const klines = [];
+    for (let i = limit - 1; i >= 0; i--) {
+      const variation = (Math.random() - 0.5) * 100;
+      const price = basePrice + variation;
+      klines.push({
+        open: price,
+        high: price + 50,
+        low: price - 50,
+        close: price,
+        volume: Math.random() * 1000,
+      });
+    }
+    return klines;
+  }
+
+  // LIVE mode: fetch from Bitget
+  const res = await request(
+    "GET",
+    `/api/v2/mix/market/candles?symbol=${symbol}&productType=${CONFIG.PRODUCT_TYPE}&granularity=${granularity}&limit=${limit}`
+  );
+
+  if (!Array.isArray(res.data)) return [];
+
+  return res.data.map(c => ({
+    open: +c[1],
+    high: +c[2],
+    low: +c[3],
+    close: +c[4],
+    volume: +c[5],
+  })).reverse();
+}
+
+// Fetch klines for all enabled pairs (multi-pair support)
+async function fetchAllPairKlines() {
+  const pairs = getEnabledPairs();
+  const klines1mMap = {};
+  const priceMap = {};
+
+  try {
+    const klinesPromises = pairs.map(p => fetchKlinesForSymbol(p.symbol, "1m", 100));
+    const allKlines = await Promise.all(klinesPromises);
+
+    pairs.forEach((p, idx) => {
+      const klines = allKlines[idx] || [];
+      klines1mMap[p.symbol] = klines;
+      if (klines.length > 0) {
+        priceMap[p.symbol] = klines[klines.length - 1].close;
+      }
+    });
+  } catch (err) {
+    log(`⚠️ Multi-pair fetch error: ${err.message}`);
+  }
+
+  return { klines1mMap, priceMap };
+}
+
+async function getKlinesHTF(granularity, limit, symbol = CONFIG.SYMBOL) {
   // DRY_RUN mode: generate fake price data for testing
   if (CONFIG.DRY_RUN) {
     const basePrice = 71000;
@@ -215,7 +294,7 @@ async function getKlinesHTF(granularity, limit) {
 
   const res = await request(
     "GET",
-    `/api/v2/mix/market/candles?symbol=${CONFIG.SYMBOL}&productType=${CONFIG.PRODUCT_TYPE}&granularity=${granularity}&limit=${limit}`
+    `/api/v2/mix/market/candles?symbol=${symbol}&productType=${CONFIG.PRODUCT_TYPE}&granularity=${granularity}&limit=${limit}`
   );
   if (!Array.isArray(res.data)) return [];
   return res.data.map(c => ({
@@ -310,6 +389,8 @@ async function openPosition(side, price, entryConfig, setup = "TREND") {
     setup,
     size,                 // Add size for dashboard display
     sizeUSDT: notional,   // Add notional for dashboard display
+    symbol: currentSymbol,
+    pairDisplayName: currentPairConfig?.displayName || currentSymbol,
     openedAt:      Date.now(),
     sl:            entryConfig.sl ?? 0.7,
     trailActivate: entryConfig.trailActivate ?? 1.5,
@@ -326,7 +407,10 @@ async function openPosition(side, price, entryConfig, setup = "TREND") {
     state.lastJudasLevel     = price;
     state.lastJudasLevelTime = Date.now();
   }
-  global.botState.activePosition = { side, entry: price, leverage: CONFIG.LEVERAGE, setup, size, sizeUSDT: notional, pnl: 0, pnlPct: 0 };
+  global.botState.activePosition = {
+    side, entry: price, leverage: CONFIG.LEVERAGE, setup, size, sizeUSDT: notional, pnl: 0, pnlPct: 0,
+    symbol: currentSymbol, pairDisplayName: currentPairConfig?.displayName || currentSymbol,
+  };
 }
 
 async function closePosition(price, reason = "UNKNOWN") {
@@ -413,7 +497,59 @@ async function run() {
 
       const now = Date.now();
 
-      const klines = await getKlines();
+      // ── MULTI-PAIR EVALUATION ─────────────────────────────
+      if (CONFIG.MULTI_PAIR_ENABLED) {
+        const shouldEval = forceEvalNextTick ||
+          (Date.now() - lastPairEvalTime > CONFIG.PAIR_EVAL_INTERVAL_MS);
+
+        if (shouldEval && !state.activePosition) {
+          forceEvalNextTick = false;
+          lastPairEvalTime = Date.now();
+
+          try {
+            const { klines1mMap, priceMap } = await fetchAllPairKlines();
+
+            const evalResult = await pairManager.evaluateAll({
+              klines1mMap,
+              priceMap,
+              aiEnabled: global.botState.aiMode || false,
+            });
+
+            // Update dashboard state
+            global.botState.pairScoreboard = evalResult.scoreboard;
+            global.botState.pairRecommendation = evalResult.recommendation;
+            global.botState.whaleAlerts = evalResult.whaleAlerts;
+
+            // Handle pair switch
+            if (evalResult.shouldSwitch && evalResult.nextPair) {
+              const prevSymbol = currentSymbol;
+              const newPairCfg = getPairBySymbol(evalResult.nextPair);
+
+              if (newPairCfg) {
+                log(`🔄 PAIR SWITCH: ${prevSymbol} → ${evalResult.nextPair} | Reason: ${evalResult.switchReason}`);
+                pairManager.recordSwitch(prevSymbol, evalResult.nextPair, evalResult.switchReason);
+
+                currentSymbol = evalResult.nextPair;
+                currentPairConfig = newPairCfg;
+
+                // Update CONFIG-like values for current pair
+                CONFIG.LEVERAGE = currentPairConfig.leverage;
+                CONFIG.POSITION_SIZE_USDT = currentPairConfig.positionSizeUSDT;
+
+                global.botState.currentPair = currentSymbol;
+                forceEvalNextTick = true;
+              }
+            }
+          } catch (err) {
+            log(`⚠️ Pair eval error: ${err.message}`);
+          }
+        }
+      }
+      // ── END MULTI-PAIR EVALUATION ─────────────────────────
+
+      const klines = CONFIG.MULTI_PAIR_ENABLED
+        ? await fetchKlinesForSymbol(currentSymbol, "1m", 100)
+        : await getKlines();
       if (!klines || klines.length < 10) {
         log("⚠️ INVALID KLINES");
         _tickRunning = false;
@@ -434,9 +570,9 @@ async function run() {
       // Fetch HTF klines setiap 3 tick (hemat API quota)
       if (tickCount % 3 === 0 || !klines_4h.length) {
         [klines_4h, klines_1h, klines_15m] = await Promise.all([
-          getKlinesHTF("4H", 20),
-          getKlinesHTF("1H", 30),
-          getKlinesHTF("15m", 40),
+          getKlinesHTF("4H", 20, currentSymbol),
+          getKlinesHTF("1H", 30, currentSymbol),
+          getKlinesHTF("15m", 40, currentSymbol),
         ]);
       }
       tickCount++;
@@ -543,6 +679,8 @@ async function run() {
       global.botState.price        = price;
       global.botState.lastDecision = decision.action;
       global.botState.botStatus    = "RUNNING";
+      global.botState.multiPairEnabled = CONFIG.MULTI_PAIR_ENABLED;
+      global.botState.currentPair = currentSymbol;
 
       if (state.activePosition) {
         const pos = state.activePosition;

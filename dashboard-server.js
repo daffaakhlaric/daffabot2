@@ -161,6 +161,19 @@ async function fetchLiveData() {
       };
     }
 
+    // Multi-pair fund manager data
+    if (global.pairManagerState) {
+      const pm = global.pairManagerState;
+      liveData.pairScoreboard       = pm.scoreboard || [];
+      liveData.activePair           = pm.activePair || s.currentPair || null;
+      liveData.pairRecommendation   = pm.recommendation || null;
+      liveData.switchHistory        = (pm.switchHistory || []).slice(-10);
+      liveData.whaleAlerts          = (pm.whaleAlerts || []).slice(-5);
+      liveData.pairSwitchCount      = pm.switchCount || 0;
+      liveData.multiPairEnabled     = s.multiPairEnabled || false;
+      liveData.currentMode          = pm.currentMode || "UNKNOWN";
+    }
+
     try {
       const tm = require("./tradeMemory");
       liveData.tradeMemory = s.tradeMemory || null;
@@ -426,6 +439,20 @@ const server = http.createServer((req, res) => {
       }
     });
     return;
+  }
+
+  // API: Multi-pair data
+  if (url === "/api/pairs") {
+    const pm = global.pairManagerState || {};
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      scoreboard: pm.scoreboard || [],
+      activePair: pm.activePair || null,
+      switchHistory: (pm.switchHistory || []).slice(-10),
+      whaleAlerts: (pm.whaleAlerts || []).slice(-5),
+      recommendation: pm.recommendation || "Multi-pair not initialized",
+      currentMode: pm.currentMode || "UNKNOWN",
+    }));
   }
 
   // Static assets: CSS, source maps, JS

@@ -50,6 +50,7 @@ function saveTrades(trades) {
 }
 
 let tradeHistory = loadTrades();
+console.log(`[DASHBOARD] 📊 Loaded ${tradeHistory.length} trades from file at startup`);
 
 // Public: bot calls this to record a closed trade
 function recordTrade(trade) {
@@ -128,7 +129,8 @@ async function fetchLiveData() {
     if (s.marketState)              liveData.marketState    = s.marketState;
     if (s.lastDecision)             liveData.lastDecision   = s.lastDecision;
     if (s.botStatus)                liveData.botStatus      = s.botStatus;
-    if (s.tradeHistory?.length)     tradeHistory            = s.tradeHistory.slice(); // copy, bukan alias
+    // DONT overwrite tradeHistory from botState — keep file-based history + new trades recorded via recordTrade()
+    // if (s.tradeHistory?.length)     tradeHistory            = s.tradeHistory.slice();
     if (s.logs?.length)             liveData.logs           = s.logs.slice(-200);    // last 200 logs
 
     // Posisi dari bot selalu prioritas — termasuk saat DRY_RUN

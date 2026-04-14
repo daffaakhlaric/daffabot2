@@ -45,12 +45,31 @@ const CONFIG = {
   },
 };
 
+// ── DRY_RUN SIZING (Fixed realistic margin per pair) ──────────────
+// IMPORTANT: Only used when DRY_RUN=true. LIVE mode uses CONFIG.LEVERAGE
+const DRY_RUN_MARGIN = {
+  BTCUSDT:  25,    // $25 margin × 20x lev = $500 notional
+  ETHUSDT:  20,    // $20 margin × 15x lev = $300 notional
+  SOLUSDT:  15,    // $15 margin × 10x lev = $150 notional
+  PEPEUSDT: 10,    // $10 margin × 10x lev = $100 notional
+};
+
+const DRY_RUN_LEVERAGE = {
+  BTCUSDT:  20,    // Conservative 20x (was 50x)
+  ETHUSDT:  15,    // Conservative 15x
+  SOLUSDT:  10,    // Conservative 10x
+  PEPEUSDT: 10,    // Conservative 10x
+};
+
 // ================= STATE =================
 let state = {
-  activePosition:     null,
-  lastTradeTime:      0,
-  lastJudasLevel:     null,
-  lastJudasLevelTime: 0,
+  activePosition:      null,
+  lastTradeTime:       0,
+  lastTradeCloseTime:  0,    // Track when position closed (for cooldown)
+  lastClosedTradePnL:  null, // Track if last trade was WIN or LOSS
+  lastClosedCandleTime: 0,   // Track candle time when position closed
+  lastJudasLevel:      null,
+  lastJudasLevelTime:  0,
 };
 
 // ── GLOBAL BOT STATE (shared with dashboard) ──────────────
@@ -123,6 +142,7 @@ function withTimeout(promise, ms, fallback = null) {
 
 let _tickRunning = false;
 let _openingPosition = false;
+let _justClosed = false;      // Flag to skip decision logic for 1-2 ticks after close
 
 // ================= SAFE REQUEST ==================
 function safeJsonParse(data) {
@@ -396,8 +416,24 @@ function getMaxHoldMs(setup, symbol) {
 async function openPosition(side, price, entryConfig, setup = "TREND") {
   log(`🚀 OPEN ${side} @ ${price} | DRY_RUN: ${CONFIG.DRY_RUN}`);
 
-  const size = calcSizeBTC(price);
-  const notional = parseFloat(size) * price;
+  // ── DRY_RUN REALISTIC SIZING ──────────────────────────────
+  let size, notional, leverage, margin;
+
+  if (CONFIG.DRY_RUN) {
+    // Use fixed realistic margin per pair in DRY_RUN
+    margin = DRY_RUN_MARGIN[currentSymbol] ?? 15;
+    leverage = DRY_RUN_LEVERAGE[currentSymbol] ?? 10;
+    notional = margin * leverage;
+    size = notional / price;
+
+    log(`📊 DRY_RUN SIZING: ${currentSymbol} | Margin: $${margin} | Leverage: ${leverage}x | Notional: $${notional}`);
+  } else {
+    // LIVE mode: use existing sizing logic
+    size = calcSizeBTC(price);
+    notional = parseFloat(size) * price;
+    leverage = CONFIG.LEVERAGE;
+    margin = CONFIG.POSITION_SIZE_USDT;
+  }
 
   if (!CONFIG.DRY_RUN) {
     await setLeverage();
@@ -418,6 +454,8 @@ async function openPosition(side, price, entryConfig, setup = "TREND") {
     setup,
     size,                 // Add size for dashboard display
     sizeUSDT: notional,   // Add notional for dashboard display
+    margin,               // Track actual margin used
+    leverage,             // Track actual leverage used
     symbol: currentSymbol,
     pairDisplayName: currentPairConfig?.displayName || currentSymbol,
     openedAt:      Date.now(),
@@ -445,8 +483,9 @@ async function openPosition(side, price, entryConfig, setup = "TREND") {
     state.lastJudasLevelTime = Date.now();
   }
   global.botState.activePosition = {
-    side, entry: price, leverage: CONFIG.LEVERAGE, setup, size, sizeUSDT: notional, pnl: 0, pnlPct: 0,
+    side, entry: price, leverage, setup, size, sizeUSDT: notional, pnl: 0, pnlPct: 0,
     symbol: currentSymbol, pairDisplayName: currentPairConfig?.displayName || currentSymbol,
+    margin, notional,  // Add margin and notional for dashboard display
   };
 
   // Debug: confirm position state updated
@@ -481,7 +520,10 @@ async function closePosition(price, reason = "UNKNOWN") {
       ? (price - pos.entry) / pos.entry * 100
       : (pos.entry - price) / pos.entry * 100;
 
-  const pnlUSDT = +(CONFIG.POSITION_SIZE_USDT * CONFIG.LEVERAGE * (pnl / 100)).toFixed(3);
+  // Use actual margin and leverage from position (handles both LIVE and DRY_RUN correctly)
+  const posMargin = pos.margin || CONFIG.POSITION_SIZE_USDT;
+  const posLeverage = pos.leverage || CONFIG.LEVERAGE;
+  const pnlUSDT = +(posMargin * posLeverage * (pnl / 100)).toFixed(3);
 
   log(`💰 CLOSE @ ${price} | PnL: ${pnl.toFixed(2)}% (${pnlUSDT > 0 ? "+" : ""}${pnlUSDT} USDT) | ${reason}`);
 
@@ -519,8 +561,17 @@ async function closePosition(price, reason = "UNKNOWN") {
     dash.recordTrade(trade);
   } catch {}
 
+  // ── POST-CLOSE COOLDOWN TRACKING ──────────────
   state.activePosition = null;
   global.botState.activePosition = null;
+
+  // Track close time for post-exit cooldown + differentiate WIN/LOSS cooldown
+  state.lastTradeCloseTime = Date.now();
+  state.lastClosedTradePnL = pnl > 0 ? "WIN" : "LOSS";
+  _justClosed = true;  // Set flag to skip decision logic for next 1-2 ticks
+
+  const cooldownMins = pnl > 0 ? Math.max(5, Math.ceil(CONFIG.TRADE_COOLDOWN_MS / 60000)) : 10;
+  log(`⏱️  POST-${state.lastClosedTradePnL} COOLDOWN: ${cooldownMins}min lockout active`);
 }
 
 // Partial close for TP levels — doesn't null position (stays open with reduced size)
@@ -532,7 +583,11 @@ async function partialClose(price, pct, reason = "PARTIAL") {
   const pnlPct    = pos.side === "LONG"
     ? (price - pos.entry) / pos.entry * 100
     : (pos.entry - price) / pos.entry * 100;
-  const pnlUSDT   = +(CONFIG.POSITION_SIZE_USDT * CONFIG.LEVERAGE * (pnlPct / 100) * closeFrac).toFixed(3);
+
+  // Use actual margin and leverage from position (handles both LIVE and DRY_RUN)
+  const posMargin = pos.margin || CONFIG.POSITION_SIZE_USDT;
+  const posLeverage = pos.leverage || CONFIG.LEVERAGE;
+  const pnlUSDT   = +(posMargin * posLeverage * (pnlPct / 100) * closeFrac).toFixed(3);
 
   if (!CONFIG.DRY_RUN) {
     const realPos = await fetchRealPosition();
@@ -551,7 +606,7 @@ async function partialClose(price, pct, reason = "PARTIAL") {
     pnl: +pnlPct.toFixed(4), pnlUSDT, result: pnlUSDT > 0 ? "WIN" : "LOSS",
     reason: `${reason} (${pct}%)`, duration: Math.max(0, exitTime - entryTime),
     timestamp: entryTime, entryTime, exitTime, setup: pos.setup,
-    size: pos.size, sizeUSDT: pos.sizeUSDT, leverage: CONFIG.LEVERAGE,
+    size: pos.size, sizeUSDT: pos.sizeUSDT, leverage: posLeverage,
     source: global.botState.aiSource || "UNKNOWN",
     symbol: pos.symbol, pairDisplay: pos.pairDisplayName,
   };
@@ -595,8 +650,13 @@ async function run() {
 
       // ── MULTI-PAIR EVALUATION ─────────────────────────────
       if (CONFIG.MULTI_PAIR_ENABLED) {
-        const shouldEval = forceEvalNextTick ||
-          (Date.now() - lastPairEvalTime > CONFIG.PAIR_EVAL_INTERVAL_MS);
+        // ── ANTI INSTANT-SWITCH ──────────────────────────
+        // Skip pair re-eval for N seconds after a position closes (prevent pair hopping)
+        const postCloseSkipMs = 3 * 60 * 1000;  // 3 min skip after close
+        const justClosed = state.lastTradeCloseTime > 0 && (Date.now() - state.lastTradeCloseTime) < postCloseSkipMs;
+
+        const shouldEval = (forceEvalNextTick && !justClosed) ||
+          (Date.now() - lastPairEvalTime > CONFIG.PAIR_EVAL_INTERVAL_MS && !justClosed);
 
         if (shouldEval && !state.activePosition) {
           forceEvalNextTick = false;
@@ -896,6 +956,15 @@ async function run() {
       }
 
       if (decision.action === "LONG" || decision.action === "SHORT") {
+        // ── ANTI IMMEDIATE RE-ENTRY ──────────────────────────
+        // Skip entry signals for 1 tick after closing (prevents FOMO/revenge trading)
+        if (_justClosed) {
+          log(`⏸️  ENTRY SKIPPED — just closed, waiting for new candle`);
+          _justClosed = false;  // Reset flag for next tick
+          _tickRunning = false;
+          continue;
+        }
+
         // Bug 2: gunakan == null agar entry angka valid (termasuk 0) tidak ter-skip
         if (decision.entry == null) { _tickRunning = false; continue; }
 
@@ -921,11 +990,33 @@ async function run() {
           }
         }
 
-        if (!state.activePosition && !_openingPosition && now - state.lastTradeTime > CONFIG.TRADE_COOLDOWN_MS) {
+        if (!state.activePosition && !_openingPosition) {
+          // ── POST-CLOSE COOLDOWN (HIGH PRIORITY) ──────────────
+          // After closing: apply longer cooldown, especially after WINS (avoid revenge/FOMO)
+          const postCloseCooldown = state.lastClosedTradePnL === "WIN"
+            ? 5 * 60 * 1000    // 5 min after WIN (protect profit)
+            : 10 * 60 * 1000;  // 10 min after LOSS (avoid revenge)
+
+          if (state.lastTradeCloseTime > 0 && now - state.lastTradeCloseTime < postCloseCooldown) {
+            const remainMs = postCloseCooldown - (now - state.lastTradeCloseTime);
+            global.botState.cooldownReason = `${state.lastClosedTradePnL}_COOLDOWN — ${Math.ceil(remainMs/1000)}s remaining`;
+            // Skip entry — cooldown active
+            continue;
+          }
+
+          // ── NORMAL TRADE COOLDOWN ──────────────────────────
+          // Between trades: avoid rapid re-entry
+          if (now - state.lastTradeTime <= CONFIG.TRADE_COOLDOWN_MS) {
+            global.botState.cooldownReason = `TRADE_COOLDOWN — ${Math.ceil((CONFIG.TRADE_COOLDOWN_MS - (now - state.lastTradeTime))/1000)}s remaining`;
+            // Skip entry — still in cooldown
+            continue;
+          }
+
           const setup = decision.setup || "TREND";
           _openingPosition = true;
           try {
             await openPosition(decision.action, entryPrice, entryConfig, setup);
+            global.botState.cooldownReason = null;  // Clear cooldown reason on successful entry
           } finally {
             _openingPosition = false;
           }

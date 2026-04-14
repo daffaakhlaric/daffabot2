@@ -176,6 +176,20 @@ async function request(method, path, body = null) {
 }
 
 // ================= MARKET =================
+
+// Fetch real-time ticker price (for display & decisions)
+async function getTickerPrice(symbol = CONFIG.SYMBOL) {
+  const res = await request(
+    "GET",
+    `/api/v2/mix/market/ticker?symbol=${symbol}&productType=${CONFIG.PRODUCT_TYPE}`
+  );
+
+  if (!res.data) return null;
+
+  const tick = Array.isArray(res.data) ? res.data[0] : res.data;
+  return parseFloat(tick?.lastPr || tick?.last || tick?.close || 0) || null;
+}
+
 async function getKlines(symbol = CONFIG.SYMBOL) {
   // Both DRY_RUN and LIVE: fetch real prices from Bitget
   const res = await request(
@@ -220,13 +234,24 @@ async function fetchAllPairKlines() {
   const priceMap = {};
 
   try {
+    // Fetch both klines & ticker prices in parallel for all pairs
     const klinesPromises = pairs.map(p => fetchKlinesForSymbol(p.symbol, "1m", 100));
-    const allKlines = await Promise.all(klinesPromises);
+    const tickerPromises = pairs.map(p => getTickerPrice(p.symbol));
+
+    const [allKlines, allTickers] = await Promise.all([
+      Promise.all(klinesPromises),
+      Promise.all(tickerPromises)
+    ]);
 
     pairs.forEach((p, idx) => {
       const klines = allKlines[idx] || [];
       klines1mMap[p.symbol] = klines;
-      if (klines.length > 0) {
+
+      // Use ticker price (real-time) if available, fallback to klines
+      const tickerPrice = allTickers[idx];
+      if (tickerPrice) {
+        priceMap[p.symbol] = tickerPrice;
+      } else if (klines.length > 0) {
         priceMap[p.symbol] = klines[klines.length - 1].close;
       }
     });
@@ -519,7 +544,9 @@ async function run() {
         continue;
       }
 
-      const price = klines[klines.length - 1].close;
+      // Fetch real-time ticker price (more accurate than candles)
+      const tickerPrice = await getTickerPrice(currentSymbol);
+      const price = tickerPrice || klines[klines.length - 1].close;
 
       const liveEquity = global.botState?.equity || parseFloat(process.env.INITIAL_EQUITY || "1000");
 

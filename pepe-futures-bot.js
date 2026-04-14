@@ -991,6 +991,36 @@ async function run() {
         }
 
         if (!state.activePosition && !_openingPosition) {
+          // ── PROFIT PROTECTION CHECK (NEW) ─────────────────────────
+          // Run profit protection checks BEFORE allowing entry
+          const profitCheckResult = riskGuard.runAllChecks({
+            tradeHistory: global.botState.tradeHistory || [],
+            equity: liveEquity,
+            peakEquity: equityCurve.length > 0 ? equityCurve[equityCurve.length - 1].equity : liveEquity,
+            proposedTrade: {
+              side: decision.action,
+              size: CONFIG.POSITION_SIZE_USDT * CONFIG.LEVERAGE,
+              confluenceScore: decision.confidence || 65,
+            },
+            htfBias: global.botState.marketState || "RANGING",
+            regime: global.botState.marketState || "RANGING",
+          });
+
+          if (!profitCheckResult.approved) {
+            const blockReasons = profitCheckResult.blocks.map(b => b.reason).join("; ");
+            log(`⛔ PROFIT PROTECTION BLOCKED: ${blockReasons}`);
+            global.botState.cooldownReason = `PROFIT_PROTECTION: ${blockReasons}`;
+            _tickRunning = false;
+            continue;
+          }
+
+          // Log warnings but allow trade
+          if (profitCheckResult.warnings.length > 0) {
+            profitCheckResult.warnings.forEach(w => {
+              log(`⚠️ PROFIT WARNING: ${w.message || w.type}`);
+            });
+          }
+
           // ── POST-CLOSE COOLDOWN (HIGH PRIORITY) ──────────────
           // After closing: apply longer cooldown, especially after WINS (avoid revenge/FOMO)
           const postCloseCooldown = state.lastClosedTradePnL === "WIN"

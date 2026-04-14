@@ -7,6 +7,7 @@
  */
 
 const psychGuard = require("./psychGuard");
+const profitProtector = require("./profitProtector");
 
 // ── WHALE TRAP & SPOOF COOLDOWN STATE ─────────────────────
 let _whaleTrapCooldownUntil = 0;
@@ -387,6 +388,33 @@ function runAllChecks({
     }
   }
 
+  // 10. Profit Protector — Session profit lock, win cooldown, trade limits
+  const profitCheck = profitProtector.runProfitProtectionChecks({
+    tradeHistory,
+    equity,
+    proposedScore: proposedTrade?.confluenceScore || 65,
+    currentTime: now,
+    profitThresholds: { green: 1.5, lockout: 2.5 },
+  });
+
+  for (const b of profitCheck.blocks) {
+    blocks.push({ type: "PROFIT_" + b.type, reason: b.reason });
+  }
+  for (const w of profitCheck.warnings) {
+    warnings.push({ type: "PROFIT_" + w.type, message: w.message });
+  }
+
+  // Expose profit protection state to dashboard
+  if (typeof global !== "undefined" && global.botState) {
+    global.botState.profitProtection = {
+      approved: profitCheck.approved,
+      daily_pnl_pct: profitCheck.details?.profitLock?.daily_pnl_pct || 0,
+      win_streak: profitCheck.details?.winStreak?.consecutive_wins || 0,
+      cooldown_remaining_ms: profitCheck.details?.cooldown?.remaining_ms || 0,
+      session_locked: profitCheck.details?.profitLock?.locked || false,
+    };
+  }
+
   return {
     approved: blocks.length === 0,
     blocks,
@@ -394,7 +422,7 @@ function runAllChecks({
     approved_leverage: lev.approved_leverage,
     size_multiplier:   psych.size_multiplier,
     psych_state:       psych.psych_state,
-    checks: { daily, consec, lev, psych },
+    checks: { daily, consec, lev, psych, profitCheck },
   };
 }
 

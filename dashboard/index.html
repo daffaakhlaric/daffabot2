@@ -488,7 +488,14 @@
 <script>
 'use strict';
 // ══ FORMAT HELPERS ══════════════════════════════════════
-const fmtPrice = n => n == null || isNaN(n) ? '—' : '$' + (+n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmtPrice = n => {
+  if (n == null || isNaN(n)) return '—';
+  const num = +n;
+  let decimals = 2;
+  if (num < 0.01) decimals = 8;        // PEPE: 0.00000345
+  else if (num < 100) decimals = 4;    // Mid-range coins
+  return '$' + num.toLocaleString('en-US', {minimumFractionDigits: decimals, maximumFractionDigits: decimals});
+};
 const fmtPct   = n => n == null || isNaN(n) ? '—' : (n >= 0 ? '+' : '') + (+n).toFixed(2) + '%';
 const fmtPnL   = n => n == null || isNaN(n) ? '—' : (n >= 0 ? '+$' : '-$') + Math.abs(+n).toFixed(2);
 const fmtTime  = ts => ts ? new Date(ts).toLocaleTimeString('id-ID',{timeZone:'Asia/Jakarta',hour12:false}) : '—';
@@ -644,7 +651,10 @@ function updateHeader(live) {
   if(priceEl){
     const prev=parseFloat(priceEl.dataset.prev||0);
     if(price&&price!==prev){
-      priceEl.textContent='$'+price.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      let decimals = 2;
+      if (price < 0.01) decimals = 8;     // PEPE: 0.00000345
+      else if (price < 100) decimals = 4; // Mid-range coins
+      priceEl.textContent='$'+price.toLocaleString('en-US',{minimumFractionDigits:decimals,maximumFractionDigits:decimals});
       priceEl.classList.remove('flash-g','flash-r');
       void priceEl.offsetWidth;
       priceEl.classList.add(price>prev?'flash-g':'flash-r');

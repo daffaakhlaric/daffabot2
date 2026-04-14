@@ -57,6 +57,7 @@ function recordTrade(trade) {
   tradeHistory.push(trade);
   if (tradeHistory.length > 5000) tradeHistory = tradeHistory.slice(-5000);
   saveTrades(tradeHistory);
+  console.log(`[DASHBOARD] 💾 Trade recorded — total: ${tradeHistory.length} trades`);
 }
 
 // ── BITGET API ───────────────────────────────────────────
@@ -437,7 +438,7 @@ const server = http.createServer((req, res) => {
 
   if (url === "/api/trades") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    return res.end(JSON.stringify(tradeHistory.slice(-200)));
+    return res.end(JSON.stringify(tradeHistory));  // Return all trades (not just last 200)
   }
 
   if (url === "/api/logs") {

@@ -1616,8 +1616,9 @@ setInterval(()=>updateHeader(state.live), 1000);
 (async()=>{
   connect();
   pollFallback();
-  await pollTrades();
+  await pollTrades();   // Initial load
   await pollLogs();
+  setInterval(pollTrades, 10000);  // Poll trades every 10s (tidak cuma sekali)
   setInterval(pollFallback, 5000);
   setInterval(pollTrades, 10000);
   setInterval(pollLogs, 4000);

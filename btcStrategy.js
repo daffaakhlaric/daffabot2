@@ -302,18 +302,31 @@ function analyze({ klines, position, pairConfig }) {
     }
 
     // ═══ RELAXED ENTRY (Multi-pair mode) ═══
-    // Allow entry if confluence is very strong (>=55%) + HTF clear (>=70%)
-    // even if structure_break/entry_candle fail (helps volatile pairs like PEPE/SOL)
-    const hasHighConfluence = confluenceScore >= 55;
+    // Mode 1: confluence >=55% + HTF >=70% + current candle matches trend
+    const hasGoodConfluence = confluenceScore >= 55;
     const hasStrongHTF = htf && htf.confidence >= 70;
     const hasClearTrend = htf && (htf.bias === "BULLISH" || htf.bias === "BEARISH");
 
-    if (hasHighConfluence && hasStrongHTF && hasClearTrend) {
+    if (hasGoodConfluence && hasStrongHTF && hasClearTrend) {
       if (htf.bias === "BULLISH" && current.close > current.open) {
         return buildEntry("LONG", price, "BTCStrategy_RELAXED", klines);
       }
       if (htf.bias === "BEARISH" && current.close < current.open) {
         return buildEntry("SHORT", price, "BTCStrategy_RELAXED", klines);
+      }
+    }
+
+    // Mode 2: ULTRA-RELAXED — confluence >=60% + HTF >=80% (no candle check needed)
+    // For multi-pair where current candle might not match trend yet
+    const hasVeryHighConfluence = confluenceScore >= 60;
+    const hasExcellentHTF = htf && htf.confidence >= 80;
+
+    if (hasVeryHighConfluence && hasExcellentHTF && hasClearTrend) {
+      if (htf.bias === "BULLISH") {
+        return buildEntry("LONG", price, "BTCStrategy_ULTRA", klines);
+      }
+      if (htf.bias === "BEARISH") {
+        return buildEntry("SHORT", price, "BTCStrategy_ULTRA", klines);
       }
     }
 

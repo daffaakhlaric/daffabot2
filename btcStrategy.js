@@ -242,13 +242,15 @@ function analyze({ klines, position, pairConfig }) {
     CONFIG = buildConfigFromPair(pairConfig);
 
     if (!Array.isArray(klines) || klines.length < 60) {
-      return { action: "HOLD" };
+      return { action: "HOLD", reason: `Insufficient klines (${klines?.length || 0} < 60)`, source: "DATA_CHECK" };
     }
 
     const current = klines[klines.length - 1];
     const price = current?.close;
 
-    if (!price) return { action: "HOLD" };
+    if (!price) {
+      return { action: "HOLD", reason: "No price data", source: "DATA_CHECK" };
+    }
 
     // ================= POSITION MANAGEMENT =================
     if (position) {
@@ -269,7 +271,10 @@ function analyze({ klines, position, pairConfig }) {
 
     // Secondary filter: HTF confidence must exist, but allow low-momentum ranging if SMC score is high
     if (!htf || (htf.confidence < CONFIG.HTF_MIN_CONFIDENCE && confluenceScore < 50)) {
-      return { action: "HOLD", reason: "HTF confidence + SMC score too low", source: "HTF_FILTER" };
+      const reason = !htf
+        ? "No HTF data"
+        : `HTF ${htf.confidence}% < ${CONFIG.HTF_MIN_CONFIDENCE} AND Confluence ${confluenceScore}% < 50`;
+      return { action: "HOLD", reason, source: "HTF_FILTER" };
     }
 
     // ================= ENTRY SIGNAL =================
@@ -289,7 +294,17 @@ function analyze({ klines, position, pairConfig }) {
       }
     }
 
-    return { action: "HOLD" };
+    // Fallback: detail what checks failed
+    const failedChecks = [];
+    if (!checks.structure_break) failedChecks.push("no_structure_break");
+    if (!checks.entry_candle_valid) failedChecks.push("invalid_entry_candle");
+    if (!checks.mitigation_zone) failedChecks.push("no_mitigation_zone");
+    if (htf.bias !== "BULLISH" && htf.bias !== "BEARISH") failedChecks.push("htf_neutral");
+    const reason = failedChecks.length > 0
+      ? `Checks failed: ${failedChecks.join(", ")} | Confluence=${confluenceScore}% HTF=${htf.confidence}%`
+      : "No entry signal";
+
+    return { action: "HOLD", reason, source: "NO_ENTRY_SIGNAL" };
 
   } catch (err) {
     return { action: "HOLD", error: err.message };

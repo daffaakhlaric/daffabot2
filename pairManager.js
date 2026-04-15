@@ -7,8 +7,7 @@
 
 const { getEnabledPairs, getPairBySymbol } = require("./config");
 const { scorePair } = require("./pairScorer");
-const { whaleTracker } = require("./services/whale");
-const { detectWhaleActivity } = whaleTracker;
+const { whaleTracker: { detectWhaleActivity } } = require("./services/whale");
 
 const SWITCH_COOLDOWN_MS = 30 * 60 * 1000;
 const MAX_SWITCHES_PER_DAY = 3;

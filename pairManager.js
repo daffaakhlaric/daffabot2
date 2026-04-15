@@ -5,9 +5,10 @@
  * Evaluates all pairs, manages switches, tracks whale activity
  */
 
-const { getEnabledPairs, getPairBySymbol } = require("./pairConfig");
+const { getEnabledPairs, getPairBySymbol } = require("./config");
 const { scorePair } = require("./pairScorer");
-const { detectWhaleActivity } = require("./whaleTracker");
+const { whaleTracker } = require("./services/whale");
+const { detectWhaleActivity } = whaleTracker;
 
 const SWITCH_COOLDOWN_MS = 30 * 60 * 1000;
 const MAX_SWITCHES_PER_DAY = 3;

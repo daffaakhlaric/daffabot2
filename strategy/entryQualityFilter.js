@@ -12,7 +12,10 @@
  * 5. ATR-BASED SL — More realistic stop losses
  * 6. PAIR PRIORITY — BTC > ETH > SOL > BNB
  * 7. LOSS STREAK DEFENSE — Raise quality after losses
+ * 8. SESSION FILTER — Restrict entries during low-liquidity hours
  */
+
+const sessionFilter = require("./sessionFilter");
 
 // ── STRICT MINIMUM DECISION SCORES ──────────────────────────
 /**
@@ -349,6 +352,20 @@ function runEntryQualityChecks({
     warnings.push({ type: "LOSS_STREAK_BOOST", message: `Min score +${lossDefense.min_score_boost}, sniper disabled` });
   }
   details.lossDefense = lossDefense;
+
+  // 7. SESSION FILTER (New: Reduce entries during low-liquidity hours)
+  const sessionCheck = sessionFilter.checkSessionFilter({
+    score: decisionScore,
+    setupType: setupType,
+    htfClear: btcStatus === "CLEAR",
+    whaleDetected: false,  // Would come from whale detection in actual use
+    atrHigh: atrSL.atr_pct > 0.5,  // ATR > 0.5% is reasonable
+    volumeHigh: true  // Assume true for now; validate in actual usage
+  });
+  if (!sessionCheck.approved) {
+    blocks.push({ type: "SESSION_FILTER", reason: sessionCheck.reason });
+  }
+  details.sessionFilter = sessionCheck;
 
   // Count passing checks
   const checksNeeded = ["minScore", "candleConfirmation"]; // Critical

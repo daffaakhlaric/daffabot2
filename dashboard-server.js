@@ -404,6 +404,10 @@ function buildPayload() {
     if (s.psychState !== undefined) liveData.psychState = s.psychState;
     // Sync profit protection state (session lock, cooldown, etc.)
     if (s.profitProtection !== undefined) liveData.profitProtection = s.profitProtection;
+    // Sync entry quality state (blocks, warnings, etc.)
+    if (s.entryQuality !== undefined) liveData.entryQuality = s.entryQuality;
+    // Sync session info (current session, quality, restrictions)
+    if (s.sessionInfo !== undefined) liveData.sessionInfo = s.sessionInfo;
   }
 
   const analyticsData = analytics.buildAnalytics(tradeHistory, INITIAL_EQ);

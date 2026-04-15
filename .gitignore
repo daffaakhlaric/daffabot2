@@ -12,3 +12,6 @@ npm-debug.log*
 trade-history.json
 trade-memory.json
 .claude/settings.local.json
+
+# Documentation folder
+docs/

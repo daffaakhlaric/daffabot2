@@ -8,11 +8,13 @@
 const riskGuard = require("./riskGuard");
 const psychGuard = require("./psychGuard");
 const profitProtector = require("./profitProtector");
+const riskTuning = require("./riskTuning");
 
 module.exports = {
   riskGuard,
   psychGuard,
   profitProtector,
+  riskTuning,
 
   // For backward compatibility
   ...riskGuard,

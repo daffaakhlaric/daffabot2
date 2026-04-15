@@ -408,6 +408,8 @@ function buildPayload() {
     if (s.entryQuality !== undefined) liveData.entryQuality = s.entryQuality;
     // Sync session info (current session, quality, restrictions)
     if (s.sessionInfo !== undefined) liveData.sessionInfo = s.sessionInfo;
+    // Sync risk tuning state (why blocked, daily loss, loss streak, etc.)
+    if (s.riskTuning !== undefined) liveData.riskTuning = s.riskTuning;
   }
 
   const analyticsData = analytics.buildAnalytics(tradeHistory, INITIAL_EQ);

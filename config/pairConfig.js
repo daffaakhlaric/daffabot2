@@ -22,7 +22,7 @@ const PAIRS = [
     aiMinSMCScore: 60,
     botEMAPeriod: 50,
     botVolumeMin: 1.2,
-    botSLPct: 0.7,
+    botSLPct: 0.5,     // REDUCED: 0.7 → 0.5 (tighter SL = less bleeding on losses)
     botTrailActivate: 1.5,
     priority: 1,       // Highest priority
   },
@@ -42,7 +42,7 @@ const PAIRS = [
     aiMinSMCScore: 60,
     botEMAPeriod: 50,
     botVolumeMin: 1.2,
-    botSLPct: 0.8,
+    botSLPct: 0.6,     // REDUCED: 0.8 → 0.6
     botTrailActivate: 1.5,
     priority: 2,
   },
@@ -62,7 +62,7 @@ const PAIRS = [
     aiMinSMCScore: 55,
     botEMAPeriod: 20,
     botVolumeMin: 1.3,
-    botSLPct: 1.0,
+    botSLPct: 0.7,     // REDUCED: 1.0 → 0.7
     botTrailActivate: 1.8,
     priority: 3,
   },
@@ -82,7 +82,7 @@ const PAIRS = [
     aiMinSMCScore: 65,
     botEMAPeriod: 20,
     botVolumeMin: 1.5,
-    botSLPct: 1.2,
+    botSLPct: 0.8,     // REDUCED: 1.2 → 0.8
     botTrailActivate: 2.0,
     priority: 5,       // Lower priority (high volatility)
   },
@@ -102,7 +102,7 @@ const PAIRS = [
     aiMinSMCScore: 60,
     botEMAPeriod: 50,
     botVolumeMin: 1.2,
-    botSLPct: 0.8,
+    botSLPct: 0.6,     // REDUCED: 0.8 → 0.6
     botTrailActivate: 1.5,
     priority: 4,
   },
@@ -122,7 +122,7 @@ const PAIRS = [
     aiMinSMCScore: 60,
     botEMAPeriod: 20,
     botVolumeMin: 1.3,
-    botSLPct: 1.0,
+    botSLPct: 0.7,     // REDUCED: 1.0 → 0.7
     botTrailActivate: 1.8,
     priority: 4,
   },

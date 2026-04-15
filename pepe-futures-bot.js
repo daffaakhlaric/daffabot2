@@ -9,6 +9,7 @@ const orchestrator = require("./botOrchestrator");
 const { riskGuard } = require("./guards");
 const { analytics } = require("./services/analytics");
 const tradeMemory  = require("./tradeMemory");
+const { tpCalculator } = require("./utils");
 
 // Multi-pair support
 const pairManager = require("./pairManager");
@@ -480,6 +481,14 @@ async function openPosition(side, price, entryConfig, setup = "TREND") {
   }
 
   const sl = entryConfig.sl ?? 0.7;
+
+  // ⭐ NEW: Ensure multi-level TP targets (1.5%, 2.5%, 4%)
+  const tpLevels = tpCalculator.calculateMultiLevelTP(price, side, {
+    tp1_pct: 1.5,  // First target: 1.5% profit
+    tp2_pct: 2.5,  // Second target: 2.5% profit
+    tp3_pct: 4.0,  // Third target: 4.0% profit
+  });
+
   state.activePosition = {
     side,
     entry: price,
@@ -493,9 +502,9 @@ async function openPosition(side, price, entryConfig, setup = "TREND") {
     openedAt:      Date.now(),
     sl,
     slPrice:       entryConfig.sl_price ?? (side === "LONG" ? price*(1-sl/100) : price*(1+sl/100)),
-    tp1Price:      entryConfig.tp1 ?? null,
-    tp2Price:      entryConfig.tp2 ?? null,
-    tp3Price:      entryConfig.tp3 ?? null,
+    tp1Price:      entryConfig.tp1 ?? tpLevels.tp1,      // ⭐ Use calculated TP1
+    tp2Price:      entryConfig.tp2 ?? tpLevels.tp2,      // ⭐ Use calculated TP2
+    tp3Price:      entryConfig.tp3 ?? tpLevels.tp3,      // ⭐ Use calculated TP3
     tp1Done:       false,
     tp2Done:       false,
     peakPnl:       0,
@@ -761,10 +770,13 @@ async function run() {
         global.botState.activePosition.peakPnL = pos.peakPnl;
 
         // DEBUG: Log position monitor every tick
-        const holdSec = (Date.now() - pos.openedAt) / 1000;
-        log(`📊 POS MONITOR | ${pos.side} ${pos.symbol} @ ${pos.entry.toFixed(2)} | Price: ${price.toFixed(2)} | PnL: ${pnlPct.toFixed(3)}% | Hold: ${holdSec.toFixed(0)}s | SL: ${pos.slPrice?.toFixed(2) || 'N/A'} | TP1: ${pos.tp1Price?.toFixed(2) || 'N/A'}`);
+        const holdMs = Date.now() - pos.openedAt;
+        const holdSec = holdMs / 1000;
+        const MIN_HOLD_MS = 2 * 60 * 1000;  // 2 minutes minimum before TP exits
+        const canTakeProfit = holdMs >= MIN_HOLD_MS;
+        log(`📊 POS MONITOR | ${pos.side} ${pos.symbol} @ ${pos.entry.toFixed(2)} | Price: ${price.toFixed(2)} | PnL: ${pnlPct.toFixed(3)}% | Hold: ${holdSec.toFixed(0)}s | TP OK: ${canTakeProfit ? 'YES' : 'NO'} | SL: ${pos.slPrice?.toFixed(2) || 'N/A'} | TP1: ${pos.tp1Price?.toFixed(2) || 'N/A'}`);
 
-        // 1. SL check (absolute price) — ONLY if slPrice is valid
+        // 1. SL check (absolute price) — ONLY if slPrice is valid — IMMEDIATE (no hold time)
         if (pos.slPrice && pos.slPrice > 0) {
           const slHit = pos.side === "LONG" ? price <= pos.slPrice : price >= pos.slPrice;
           if (slHit) {
@@ -774,8 +786,8 @@ async function run() {
           }
         }
 
-        // 2. TP1 → partial 40%
-        if (pos.tp1Price && !pos.tp1Done) {
+        // 2. TP1 → partial 40% (only after 2min hold)
+        if (pos.tp1Price && !pos.tp1Done && canTakeProfit) {
           const tp1Hit = pos.side === "LONG" ? price >= pos.tp1Price : price <= pos.tp1Price;
           if (tp1Hit) {
             pos.tp1Done = true;
@@ -786,8 +798,8 @@ async function run() {
           }
         }
 
-        // 3. TP2 → partial 30% (only after TP1)
-        if (pos.tp2Price && !pos.tp2Done && pos.tp1Done) {
+        // 3. TP2 → partial 30% (only after TP1 + 2min hold)
+        if (pos.tp2Price && !pos.tp2Done && pos.tp1Done && canTakeProfit) {
           const tp2Hit = pos.side === "LONG" ? price >= pos.tp2Price : price <= pos.tp2Price;
           if (tp2Hit) {
             pos.tp2Done = true;
@@ -797,8 +809,8 @@ async function run() {
           }
         }
 
-        // 4. TP3 → close runner (only after TP2)
-        if (pos.tp3Price && pos.tp2Done) {
+        // 4. TP3 → close runner (only after TP2 + 2min hold)
+        if (pos.tp3Price && pos.tp2Done && canTakeProfit) {
           const tp3Hit = pos.side === "LONG" ? price >= pos.tp3Price : price <= pos.tp3Price;
           if (tp3Hit) {
             await closePosition(price, "TP3_HIT_RUNNER");
@@ -822,7 +834,6 @@ async function run() {
         }
 
         // 6. Max hold safety (last resort)
-        const holdMs   = Date.now() - (pos.openedAt || Date.now());
         const maxHold  = pos.maxHoldMs || (2 * 60 * 60 * 1000);
         global.botState.activePosition.holdMs = holdMs;
         if (holdMs > maxHold && pnlPct <= 0) {

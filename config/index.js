@@ -6,6 +6,7 @@
  */
 
 const pairConfig = require("./pairConfig");
+const scoreThresholds = require("./scoreThresholds");  // ⭐ NEW
 
 // Constants for the trading bot
 const CONSTANTS = {
@@ -62,6 +63,7 @@ const CONSTANTS = {
 
 module.exports = {
   pairConfig,
+  scoreThresholds,  // ⭐ NEW EXPORT
   CONSTANTS,
 
   // For backward compatibility

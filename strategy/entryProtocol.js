@@ -92,18 +92,21 @@ function detectTrendStructure(recentCandles) {
 
 /**
  * Check if entry is too tight (not worth trading)
+ * ⭐ FIXED: Uses ATR to estimate realistic hold time, not simple risk %
  * @param {number} entry - Entry price
  * @param {number} sl - Stop loss price
+ * @param {number} tp - Take profit price
  * @param {string} side - LONG or SHORT
+ * @param {Array} klines_5m - Recent 5m candles (for ATR calculation)
  * @param {number} minHoldMinutes - Minimum hold time (default 10)
  * @returns {Object} { valid, estimated_hold_min, reason }
  */
-function checkMinimumHoldTime(entry, sl, side = "LONG", minHoldMinutes = 10) {
-  if (!entry || !sl) {
+function checkMinimumHoldTime(entry, sl, tp, side = "LONG", klines_5m = [], minHoldMinutes = 10) {
+  if (!entry || !sl || !tp) {
     return {
       valid: false,
       estimated_hold_min: 0,
-      reason: "Invalid entry/SL prices",
+      reason: "Invalid entry/SL/TP prices",
     };
   }
 
@@ -111,8 +114,7 @@ function checkMinimumHoldTime(entry, sl, side = "LONG", minHoldMinutes = 10) {
   const riskDistance = side === "LONG" ? entry - sl : sl - entry;
   const riskPercent = (riskDistance / entry) * 100;
 
-  // Rule: SL < 0.1% from entry = micro trade = reject
-  // (assumes 10-min average move is ~0.1-0.2%)
+  // Rule: SL < 0.1% from entry = micro trade = reject (too small)
   if (riskPercent < 0.1) {
     return {
       valid: false,
@@ -122,14 +124,49 @@ function checkMinimumHoldTime(entry, sl, side = "LONG", minHoldMinutes = 10) {
     };
   }
 
-  // Estimate hold time based on risk (rough: 0.1% risk ≈ 5-10 min)
-  const estimatedHoldMin = Math.max(minHoldMinutes, riskPercent * 50);
+  // ⭐ FIXED: Use ATR to estimate realistic hold time
+  let estimatedHoldMin = minHoldMinutes; // Default fallback
+
+  if (klines_5m && klines_5m.length >= 20) {
+    try {
+      // Calculate ATR from recent 5m candles
+      const tr = [];
+      for (let i = 1; i < klines_5m.length; i++) {
+        const h = klines_5m[i].high;
+        const l = klines_5m[i].low;
+        const pc = klines_5m[i - 1].close;
+        tr.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+      }
+      const atrVal = tr.slice(-14).reduce((a, b) => a + b, 0) / Math.min(14, tr.length);
+      const atrPercent = (atrVal / entry) * 100;
+
+      // Estimate: How many 5m candles needed to move from entry to TP?
+      // Assuming average candle move ≈ ATR/2 (realistic)
+      const tpDistance = Math.abs(tp - entry);
+      const tpDistancePercent = (tpDistance / entry) * 100;
+
+      // If ATR is 0.15%, and TP is 0.5% away, need ~3-4 candles (15-20m)
+      if (atrPercent > 0) {
+        const candlesNeeded = Math.ceil(tpDistancePercent / (atrPercent / 2));
+        estimatedHoldMin = candlesNeeded * 5; // Each candle = 5m
+      }
+    } catch {
+      // Fallback to risk-based estimate if ATR calculation fails
+      estimatedHoldMin = Math.max(minHoldMinutes, riskPercent * 50);
+    }
+  } else {
+    // Fallback: No klines available, use risk-based estimate
+    estimatedHoldMin = Math.max(minHoldMinutes, riskPercent * 50);
+  }
 
   return {
     valid: estimatedHoldMin >= minHoldMinutes,
     estimated_hold_min: Math.round(estimatedHoldMin),
     riskPercent: riskPercent.toFixed(4),
-    reason: estimatedHoldMin >= minHoldMinutes ? "Hold time sufficient" : `Estimated hold ${estimatedHoldMin.toFixed(0)}m < ${minHoldMinutes}m`,
+    tpDistancePercent: ((Math.abs(tp - entry) / entry) * 100).toFixed(4),
+    reason: estimatedHoldMin >= minHoldMinutes
+      ? `Hold time sufficient (~${Math.round(estimatedHoldMin)}min)`
+      : `Estimated hold ${estimatedHoldMin.toFixed(0)}m < ${minHoldMinutes}m`,
   };
 }
 
@@ -237,17 +274,40 @@ function checkConsecutiveLossCircuit(tradeHistory = []) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// RULE 5: ENTRY QUALITY SCORING (0-100)
+// RULE 5: ENTRY QUALITY SCORING (0-100) with Fee Adjustment (⭐ FIXED)
 // ═══════════════════════════════════════════════════════════════
 
 /**
+ * Calculate fee-adjusted risk:reward ratio
+ * ⭐ FIXED: Accounts for Bitget maker/taker fees (0.05% each way)
+ * @param {number} entry - Entry price
+ * @param {number} sl - Stop loss price
+ * @param {number} tp - Take profit price
+ * @param {number} makerFeePercent - Maker fee % (default 0.05%)
+ * @returns {number} Fee-adjusted RR
+ */
+function calculateFeeAdjustedRR(entry, sl, tp, makerFeePercent = 0.05) {
+  if (!entry || !sl || !tp) return 0;
+
+  // Add fee to SL distance (makes risk wider), subtract from TP distance (reduces reward)
+  const riskDistance = Math.abs(entry - sl) + (entry * makerFeePercent / 100);
+  const rewardDistance = Math.abs(tp - entry) - (entry * makerFeePercent / 100);
+
+  // Prevent division by zero or negative reward
+  if (riskDistance <= 0 || rewardDistance <= 0) return 0;
+
+  return rewardDistance / riskDistance;
+}
+
+/**
  * Calculate entry quality score (0-100)
+ * ⭐ FIXED: Now uses fee-adjusted RR for more realistic scoring
  * Components:
  *   [+30] HTF trend alignment
  *   [+20] SMC structure valid
  *   [+15] Volume confirmation
  *   [+15] No major news in 30m
- *   [+10] Risk:Reward >= 1:1.5
+ *   [+10] Risk:Reward >= 1:1.5 (fee-adjusted)
  *   [+10] Entry near POI/OB/FVG
  */
 function calculateEntryScore(params = {}) {
@@ -256,7 +316,7 @@ function calculateEntryScore(params = {}) {
     smc_valid = false,
     volume_confirmed = false,
     no_news_30m = true,
-    risk_reward = 1.0,
+    risk_reward = 1.0, // Fee-adjusted RR
     entry_at_poi = false,
   } = params;
 
@@ -295,12 +355,12 @@ function calculateEntryScore(params = {}) {
     components.push({ item: "No news in 30m", points: 0 });
   }
 
-  // [+10] Risk:Reward >= 1:1.5
+  // [+10] Risk:Reward >= 1:1.5 (fee-adjusted)
   if (risk_reward >= 1.5) {
     score += 10;
-    components.push({ item: "RR >= 1.5", points: 10 });
+    components.push({ item: "RR >= 1.5 (fee-adjusted)", points: 10 });
   } else {
-    components.push({ item: "RR >= 1.5", points: 0 });
+    components.push({ item: "RR >= 1.5 (fee-adjusted)", points: 0 });
   }
 
   // [+10] Entry at POI/OB/FVG
@@ -332,6 +392,7 @@ function calculateEntryScore(params = {}) {
 
 /**
  * MASTER: Evaluate entry signal and return structured decision
+ * ⭐ FIXED: Now uses ATR-based hold time, fee-adjusted RR, and klines_5m
  * @returns {Object} Structured decision JSON
  */
 function evaluateEntrySignal(params = {}) {
@@ -343,6 +404,7 @@ function evaluateEntrySignal(params = {}) {
     tp = 0,
     klines_1h = [],
     klines_4h = [],
+    klines_5m = [],  // ⭐ NEW: For ATR-based hold time
     tradeHistory = [],
     smc_valid = false,
     volume_confirmed = false,
@@ -353,8 +415,8 @@ function evaluateEntrySignal(params = {}) {
   // 1. HTF Trend Alignment
   const htf = analyzeHTFTrend(klines_1h, klines_4h);
 
-  // 2. Minimum Hold Time
-  const holdTime = checkMinimumHoldTime(entry, sl, direction, 10);
+  // 2. Minimum Hold Time (⭐ FIXED: Now with ATR-based calculation)
+  const holdTime = checkMinimumHoldTime(entry, sl, tp, direction, klines_5m, 10);
 
   // 3. Pair Concentration
   const concentration = checkPairConcentration(pair, tradeHistory);
@@ -362,14 +424,14 @@ function evaluateEntrySignal(params = {}) {
   // 4. Consecutive Loss Circuit
   const circuit = checkConsecutiveLossCircuit(tradeHistory);
 
-  // 5. Entry Quality Score
-  const riskReward = Math.abs((tp - entry) / (entry - sl));
+  // 5. Entry Quality Score (⭐ FIXED: Now fee-adjusted RR)
+  const feeAdjustedRR = calculateFeeAdjustedRR(entry, sl, tp, 0.05); // 0.05% maker fee
   const scoreResult = calculateEntryScore({
     htf_aligned: htf.aligned,
     smc_valid,
     volume_confirmed,
     no_news_30m,
-    risk_reward: riskReward,
+    risk_reward: feeAdjustedRR,
     entry_at_poi,
   });
 
@@ -413,8 +475,10 @@ function evaluateEntrySignal(params = {}) {
     entry_score: scoreResult.total_score,
     score_components: scoreResult.components,
 
-    // Risk:Reward
-    risk_reward: riskReward.toFixed(2),
+    // Risk:Reward (⭐ FIXED: Fee-adjusted)
+    risk_reward_raw: ((Math.abs((tp - entry) / (entry - sl))).toFixed(2)), // Before fees
+    risk_reward_fee_adjusted: feeAdjustedRR.toFixed(2), // After 0.05% fees
+    used_for_score: feeAdjustedRR.toFixed(2), // Which RR was used for scoring
 
     // FINAL DECISION
     entry_approved,
@@ -434,5 +498,6 @@ module.exports = {
   checkPairConcentration,
   checkConsecutiveLossCircuit,
   calculateEntryScore,
+  calculateFeeAdjustedRR,  // ⭐ NEW EXPORT
   evaluateEntrySignal,
 };

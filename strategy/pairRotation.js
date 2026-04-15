@@ -94,12 +94,43 @@ function getConsecutiveLossesOnPair(tradeHistory = [], currentPair = "BTCUSDT") 
 }
 
 /**
+ * Check if a pair has sufficient liquidity (5m volume check)
+ * ⭐ NEW: Prevents switching to dormant pairs
+ * @param {string} pair - Trading pair
+ * @param {Array} klines_5m - Recent 5m candles for pair
+ * @param {number} minVolume - Minimum volume threshold
+ * @returns {Object} { hasLiquidity, volume, reason }
+ */
+function checkPairLiquidity(pair = "BTCUSDT", klines_5m = [], minVolume = 100000) {
+  try {
+    if (!klines_5m || klines_5m.length < 5) {
+      return { hasLiquidity: false, volume: 0, reason: "Insufficient kline data" };
+    }
+
+    // Get average volume from last 5 candles
+    const recentVolumes = klines_5m.slice(-5).map(k => parseFloat(k.quote_asset_volume || k.volume || 0));
+    const avgVolume = recentVolumes.reduce((a, b) => a + b, 0) / recentVolumes.length;
+
+    const hasLiquidity = avgVolume >= minVolume;
+    return {
+      hasLiquidity,
+      volume: avgVolume,
+      reason: hasLiquidity ? `Good liquidity: ${avgVolume.toFixed(0)}` : `Low liquidity: ${avgVolume.toFixed(0)} < ${minVolume}`,
+    };
+  } catch {
+    return { hasLiquidity: false, volume: 0, reason: "Volume check failed" };
+  }
+}
+
+/**
  * Scan all pairs and find best setup
+ * ⭐ FIXED: Now checks liquidity before recommending switch
  * @param {Array} enabledPairs - List of trading pairs
  * @param {Array} tradeHistory - All trades
+ * @param {Object} klinesByPair - { pairSymbol: klines_5m[] }
  * @returns {Object} { bestPair, bestScore, allScores, recommendation }
  */
-function scanAllPairs(enabledPairs = [], tradeHistory = []) {
+function scanAllPairs(enabledPairs = [], tradeHistory = [], klinesByPair = {}) {
   if (!enabledPairs || enabledPairs.length === 0) {
     return {
       bestPair: null,
@@ -111,8 +142,27 @@ function scanAllPairs(enabledPairs = [], tradeHistory = []) {
 
   // Score all pairs
   const scores = enabledPairs
-    .map(pair => calculatePairScore(tradeHistory, pair))
-    .sort((a, b) => parseFloat(b.score) - parseFloat(a.score));
+    .map(pair => {
+      const scoreData = calculatePairScore(tradeHistory, pair);
+      // Check liquidity
+      const klines = klinesByPair[pair] || [];
+      const liquidityCheck = checkPairLiquidity(pair, klines, 100000);
+      return {
+        ...scoreData,
+        hasLiquidity: liquidityCheck.hasLiquidity,
+        liquidity: liquidityCheck.volume,
+        liquidityReason: liquidityCheck.reason,
+      };
+    })
+    // ⭐ FIXED: Prioritize pairs with good liquidity, then by score
+    .sort((a, b) => {
+      // Prefer liquid pairs first
+      if (a.hasLiquidity !== b.hasLiquidity) {
+        return a.hasLiquidity ? -1 : 1;
+      }
+      // Then by score
+      return parseFloat(b.score) - parseFloat(a.score);
+    });
 
   const bestPair = scores[0]?.pair;
   const bestScore = scores[0]?.score;
@@ -122,14 +172,15 @@ function scanAllPairs(enabledPairs = [], tradeHistory = []) {
     bestScore,
     allScores: scores,
     recommendation: scores.length > 0
-      ? `Switch to ${bestPair} (score ${bestScore})`
+      ? `Switch to ${bestPair} (score ${bestScore}, ${scores[0]?.liquidityReason || ""})`
       : "No recommendation",
   };
 }
 
 /**
  * Check if pair rotation is needed
- * @param {Object} params - { currentPair, tradeHistory, enabledPairs }
+ * ⭐ FIXED: Adjusted thresholds (2 losses scan, 3 mandatory; 20+ pts improvement)
+ * @param {Object} params - { currentPair, tradeHistory, enabledPairs, klinesByPair }
  * @returns {Object} { rotate, lossStreak, newPair, reason }
  */
 function checkPairRotation(params = {}) {
@@ -137,14 +188,15 @@ function checkPairRotation(params = {}) {
     currentPair = "BTCUSDT",
     tradeHistory = [],
     enabledPairs = ["BTCUSDT"],
+    klinesByPair = {},  // ⭐ NEW: For liquidity checks
   } = params;
 
   // Get consecutive losses on current pair
   const lossStreak = getConsecutiveLossesOnPair(tradeHistory, currentPair);
 
-  // After 2 consecutive losses: MANDATORY switch
-  if (lossStreak >= 2) {
-    const scan = scanAllPairs(enabledPairs, tradeHistory);
+  // After 3+ consecutive losses: MANDATORY switch
+  if (lossStreak >= 3) {
+    const scan = scanAllPairs(enabledPairs, tradeHistory, klinesByPair);
     return {
       rotate: true,
       mandatory: true,
@@ -152,18 +204,18 @@ function checkPairRotation(params = {}) {
       currentPair,
       newPair: scan.bestPair,
       newScore: scan.bestScore,
-      reason: `${lossStreak} consecutive losses on ${currentPair}: MANDATORY switch to ${scan.bestPair}`,
+      reason: `⚠️ ${lossStreak} CONSECUTIVE LOSSES on ${currentPair}: MANDATORY switch to ${scan.bestPair} (ACTIVATE CIRCUIT BREAKER)`,
     };
   }
 
-  // After 1 loss: SCAN and switch if significant improvement
-  if (lossStreak === 1) {
-    const scan = scanAllPairs(enabledPairs, tradeHistory);
+  // After 2 consecutive losses: SCAN and switch if >20 pt improvement
+  if (lossStreak === 2) {
+    const scan = scanAllPairs(enabledPairs, tradeHistory, klinesByPair);
     const currentScore = calculatePairScore(tradeHistory, currentPair);
     const improvement = parseFloat(scan.bestScore) - parseFloat(currentScore.score);
 
-    // Switch if new pair is significantly better (>15 points)
-    if (improvement > 15 && scan.bestPair !== currentPair) {
+    // ⭐ FIXED: Require >20 points improvement (was 15, too loose)
+    if (improvement > 20 && scan.bestPair !== currentPair) {
       return {
         rotate: true,
         mandatory: false,
@@ -173,7 +225,7 @@ function checkPairRotation(params = {}) {
         currentScore: currentScore.score,
         newScore: scan.bestScore,
         improvement: improvement.toFixed(1),
-        reason: `1 loss on ${currentPair}: Better pair found (${scan.bestPair}, +${improvement.toFixed(1)} score)`,
+        reason: `2 consecutive losses on ${currentPair}: Better pair found (${scan.bestPair}, +${improvement.toFixed(1)} score)`,
       };
     }
 
@@ -183,7 +235,25 @@ function checkPairRotation(params = {}) {
       mandatory: false,
       lossStreak,
       currentPair,
-      reason: `1 loss on ${currentPair}: Monitoring, no better pair yet`,
+      reason: `2 losses on ${currentPair}: No significantly better pair found (need >20pt improvement)`,
+    };
+  }
+
+  // After 1 loss: Just monitor, don't switch
+  if (lossStreak === 1) {
+    const scan = scanAllPairs(enabledPairs, tradeHistory, klinesByPair);
+    const currentScore = calculatePairScore(tradeHistory, currentPair);
+    const improvement = parseFloat(scan.bestScore) - parseFloat(currentScore.score);
+
+    return {
+      rotate: false,
+      mandatory: false,
+      lossStreak,
+      currentPair,
+      bestAlternative: scan.bestPair,
+      bestAlternativeScore: scan.bestScore,
+      improvement: improvement.toFixed(1),
+      reason: `1 loss on ${currentPair}: Monitoring (best alt: ${scan.bestPair} +${improvement.toFixed(1)}pts)`,
     };
   }
 
@@ -218,6 +288,7 @@ function getPairRotationStatus(currentPair = "BTCUSDT", tradeHistory = []) {
 module.exports = {
   calculatePairScore,
   getConsecutiveLossesOnPair,
+  checkPairLiquidity,        // ⭐ NEW EXPORT
   scanAllPairs,
   checkPairRotation,
   getPairRotationStatus,

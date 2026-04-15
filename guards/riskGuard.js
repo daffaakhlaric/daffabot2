@@ -8,7 +8,7 @@
 
 const psychGuard = require("./psychGuard");
 const profitProtector = require("./profitProtector");
-const entryQualityFilter = require("./entryQualityFilter");
+const { entryQualityFilter } = require("../strategy");
 
 // ── WHALE TRAP & SPOOF COOLDOWN STATE ─────────────────────
 let _whaleTrapCooldownUntil = 0;

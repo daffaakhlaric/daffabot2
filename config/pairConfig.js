@@ -12,7 +12,9 @@ const PAIRS = [
     productType: "usdt-futures",
     leverage: 50,
     positionSizeUSDT: 0.40,
-    minScore: 55,
+    minScore: 70,      // SAFE: 70 (was 55)
+    minScoreTrend: 75, // TREND: 75
+    minScoreSniper: 80, // SNIPER: 80
     atrOptimalMin: 0.3,
     atrOptimalMax: 2.0,
     enabled: true,
@@ -22,6 +24,7 @@ const PAIRS = [
     botVolumeMin: 1.2,
     botSLPct: 0.7,
     botTrailActivate: 1.5,
+    priority: 1,       // Highest priority
   },
   {
     symbol: "ETHUSDT",
@@ -29,7 +32,9 @@ const PAIRS = [
     productType: "usdt-futures",
     leverage: 30,
     positionSizeUSDT: 0.50,
-    minScore: 55,
+    minScore: 70,      // SAFE: 70 (was 55)
+    minScoreTrend: 75,
+    minScoreSniper: 80,
     atrOptimalMin: 0.4,
     atrOptimalMax: 2.5,
     enabled: true,
@@ -39,6 +44,7 @@ const PAIRS = [
     botVolumeMin: 1.2,
     botSLPct: 0.8,
     botTrailActivate: 1.5,
+    priority: 2,
   },
   {
     symbol: "SOLUSDT",
@@ -46,7 +52,9 @@ const PAIRS = [
     productType: "usdt-futures",
     leverage: 20,
     positionSizeUSDT: 0.60,
-    minScore: 55,
+    minScore: 70,      // SAFE: 70 (was 55)
+    minScoreTrend: 75,
+    minScoreSniper: 80,
     atrOptimalMin: 0.6,
     atrOptimalMax: 3.5,
     enabled: true,
@@ -56,6 +64,7 @@ const PAIRS = [
     botVolumeMin: 1.3,
     botSLPct: 1.0,
     botTrailActivate: 1.8,
+    priority: 3,
   },
   {
     symbol: "PEPEUSDT",
@@ -63,7 +72,9 @@ const PAIRS = [
     productType: "usdt-futures",
     leverage: 20,
     positionSizeUSDT: 1.00,
-    minScore: 60,
+    minScore: 75,      // SAFE: 75 (was 60, higher volatility = stricter)
+    minScoreTrend: 80,
+    minScoreSniper: 85,
     atrOptimalMin: 0.8,
     atrOptimalMax: 5.0,
     enabled: true,
@@ -73,6 +84,7 @@ const PAIRS = [
     botVolumeMin: 1.5,
     botSLPct: 1.2,
     botTrailActivate: 2.0,
+    priority: 5,       // Lower priority (high volatility)
   },
   {
     symbol: "BNBUSDT",
@@ -80,7 +92,9 @@ const PAIRS = [
     productType: "usdt-futures",
     leverage: 20,
     positionSizeUSDT: 0.60,
-    minScore: 55,
+    minScore: 70,      // SAFE: 70 (was 55)
+    minScoreTrend: 75,
+    minScoreSniper: 80,
     atrOptimalMin: 0.4,
     atrOptimalMax: 2.5,
     enabled: true,
@@ -90,6 +104,7 @@ const PAIRS = [
     botVolumeMin: 1.2,
     botSLPct: 0.8,
     botTrailActivate: 1.5,
+    priority: 4,
   },
   {
     symbol: "XRPUSDT",
@@ -97,7 +112,9 @@ const PAIRS = [
     productType: "usdt-futures",
     leverage: 20,
     positionSizeUSDT: 0.60,
-    minScore: 55,
+    minScore: 70,      // SAFE: 70 (was 55)
+    minScoreTrend: 75,
+    minScoreSniper: 80,
     atrOptimalMin: 0.4,
     atrOptimalMax: 3.0,
     enabled: true,
@@ -107,6 +124,7 @@ const PAIRS = [
     botVolumeMin: 1.3,
     botSLPct: 1.0,
     botTrailActivate: 1.8,
+    priority: 4,
   },
 ];
 

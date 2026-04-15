@@ -7,7 +7,7 @@
 
 require("dotenv").config();
 const https = require("https");
-const PROMPTS = require("./prompts");
+const { prompts: PROMPTS } = require("./services/ai");
 
 // ── CACHE SYSTEM ──────────────────────────────────────────
 const CACHE = {};

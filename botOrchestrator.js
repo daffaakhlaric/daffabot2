@@ -6,11 +6,11 @@
  */
 
 const https         = require("https");
-const btcStrategy   = require("./btcStrategy");
+const { btcStrategy } = require("./strategy");
 const featureEngine = require("./featureEngine");
-const riskGuard     = require("./riskGuard");
+const { riskGuard } = require("./guards");
 const tradeMemory   = require("./tradeMemory");
-const whaleTracker  = require("./whaleTracker");
+const { whaleTracker } = require("./services/whale");
 
 // ── HELPERS ───────────────────────────────────────────────
 function liveData() {

@@ -12,14 +12,15 @@ const DEFAULT_CONFIG = {
   HTF_EMA_PERIOD: 50,
   HTF_MIN_CONFIDENCE: 65,   // increased from 50 — stricter entry filters
 
-  // Structure Analysis
+  // Structure Analysis (TIGHTENED FOR QUALITY)
   SWING_LOOKBACK: 20,       // was 15 — lebih banyak context
   STRUCTURE_MIN_BARS: 5,    // was 3 — kurangi noise
-  PULLBACK_THRESHOLD: 0.8,  // was 0.5 — zone lebih lebar
+  PULLBACK_THRESHOLD: 0.5,  // was 0.8 — mitigation zone lebih ketat (closer to EMA)
+  BOS_BREAK_PERCENT: 0.0012, // was 0.0005 (0.05%) → now 0.12% (stricter BOS)
 
-  // Entry Validation
-  VOLUME_MIN: 1.05,         // was 1.2 — jangan terlalu ketat
-  MIN_RR_RATIO: 1.5,        // was 2.0 — lebih realistis untuk BTC
+  // Entry Validation (STRICTER)
+  VOLUME_MIN: 1.2,          // was 1.05 → now 1.2 (20% volume increase required)
+  MIN_RR_RATIO: 2.0,        // was 1.5 → now 2.0 (stricter risk:reward)
 
   // Position Management
   SL_PCT: 1.2,              // was 0.7 — SL harus lebih wide di BTC
@@ -122,12 +123,12 @@ function validateSMCChecklist(klines, price) {
     }
 
     // 3. Structure Break (BOS) — gunakan 15 candle + konfirmasi close
-    // Relaxed: allow 0.05% break instead of 0.1% for multi-pair
+    // TIGHTENED: require 0.12% break instead of 0.05% for quality entries
     const structureCandles = klines.slice(-15);
     const prevHigh = Math.max(...structureCandles.slice(0,-3).map(k => k.high));
     const prevLow  = Math.min(...structureCandles.slice(0,-3).map(k => k.low));
     const lastClose = klines[klines.length - 1].close;
-    const bosBreakPercent = 0.0005; // was 0.001 (0.1%), now 0.05%
+    const bosBreakPercent = CONFIG.BOS_BREAK_PERCENT || 0.0012; // was 0.0005 (0.05%), now 0.12%
     checks.structure_break = lastClose > prevHigh * (1 + bosBreakPercent) || lastClose < prevLow * (1 - bosBreakPercent);
 
     // 4. Mitigation Zone (pullback)

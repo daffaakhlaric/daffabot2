@@ -15,7 +15,7 @@ const crypto = require("crypto");
 const https  = require("https");
 const WebSocket = require("ws");
 
-const analytics = require("./analytics");
+const { analytics } = require("./services/analytics");
 
 // ── CONFIG ──────────────────────────────────────────────
 const PORT             = parseInt(process.env.MONITOR_PORT || process.env.DASHBOARD_PORT || "3000", 10);
@@ -400,6 +400,10 @@ function buildPayload() {
     // Sync whale tracking result
     if (s.whaleResult !== undefined) liveData.whale = s.whaleResult;
     else if (s.features?.whale !== undefined) liveData.whale = s.features.whale;
+    // Sync psychological state (tilt, euphoria, etc.)
+    if (s.psychState !== undefined) liveData.psychState = s.psychState;
+    // Sync profit protection state (session lock, cooldown, etc.)
+    if (s.profitProtection !== undefined) liveData.profitProtection = s.profitProtection;
   }
 
   const analyticsData = analytics.buildAnalytics(tradeHistory, INITIAL_EQ);

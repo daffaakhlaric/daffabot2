@@ -258,40 +258,58 @@ function checkPostWinEuphoria(tradeHistory, proposedTrade) {
   let blocked = false;
   let reason = null;
 
+  // AGGRESSIVE BOT_EUPHORIA: 2+ consecutive wins tighten rules
+  if (consecutive_wins >= 2) {
+    euphoria_level = "BOT_EUPHORIA";
+    min_wait_ms = 3 * 60 * 1000;  // 3 min minimum after 2 wins
+    min_confluence_score = 70;     // Score must be 70+
+    size_cap_multiplier = 1.0;    // No compounding
+  }
+
+  if (consecutive_wins >= 3) {
+    euphoria_level = "BOT_EUPHORIA_EXTREME";
+    min_wait_ms = 5 * 60 * 1000;  // 5 min after 3 wins
+    min_confluence_score = 75;
+    size_cap_multiplier = 0.8;    // Reduce size 20%
+  }
+
   if (consecutive_wins >= 5) {
-    euphoria_level = "HIGH";
-    min_wait_ms = 30 * 60 * 1000;
-    min_confluence_score = 78;
-    size_cap_multiplier = 1.0;
-  } else if (consecutive_wins >= 3) {
-    euphoria_level = "WARNING";
-    min_wait_ms = 10 * 60 * 1000;
-    min_confluence_score = 72;
-    size_cap_multiplier = 1.2;
+    euphoria_level = "EUPHORIA_LOCK";
+    min_wait_ms = 15 * 60 * 1000; // 15 min after 5 wins (protect big streak)
+    min_confluence_score = 85;
+    size_cap_multiplier = 0.5;    // Reduce size 50%
+    blocked = true;
+    reason = `🚫 EUPHORIA_LOCK: ${consecutive_wins} wins — wait 15min before next`;
   }
 
-  // Impulsive flag
-  if (lastWinTime && timeSinceLastWin < 5 * 60 * 1000) {
-    flags.push("IMPULSIVE_FLAG");
-    if (min_wait_ms < 10 * 60 * 1000) min_wait_ms = 10 * 60 * 1000;
+  // Impulsive flag (within 1 min of last win)
+  if (lastWinTime && timeSinceLastWin < 1 * 60 * 1000) {
+    flags.push("IMPULSIVE_HOTKEY");
+    if (consecutive_wins >= 2) {
+      blocked = true;
+      reason = `⚠️ IMPULSIVE ENTRY: Win ${Math.round(timeSinceLastWin / 1000)}s ago + ${consecutive_wins} streak`;
+    }
   }
 
-  // Aggression flag
-  if (proposedTrade?.size && trades.length >= 3) {
-    const baseSize = trades.slice(-5).reduce((s, t) => s + (t.sizeUsdt || 15), 0) / 5;
-    if (proposedTrade.size > baseSize * 1.3 && consecutive_wins >= 3) {
-      flags.push("AGGRESSION_FLAG");
+  // Aggression flag: size up after wins
+  if (proposedTrade?.size && trades.length >= 2) {
+    const baseSize = trades.slice(-3).reduce((s, t) => s + (t.sizeUsdt || 15), 0) / 3;
+    if (proposedTrade.size > baseSize * 1.2 && consecutive_wins >= 2) {
+      flags.push("AGGRESSION_COMPOUNDING");
+      if (consecutive_wins >= 3) {
+        reason = `⚠️ AGGRESSION: Size ${(proposedTrade.size / baseSize).toFixed(1)}x base after ${consecutive_wins} wins`;
+      }
     }
   }
 
   // Determine blocked
   const waitRemaining = lastWinTime ? Math.max(0, min_wait_ms - timeSinceLastWin) : 0;
-  if (euphoria_level === "HIGH" && waitRemaining > 0) {
+  if (!blocked && euphoria_level === "BOT_EUPHORIA_EXTREME" && waitRemaining > 0) {
     blocked = true;
-    reason = `Euphoria HIGH: wait ${Math.ceil(waitRemaining / 60000)}min after win streak of ${consecutive_wins}`;
-  } else if (flags.includes("IMPULSIVE_FLAG") && waitRemaining > 0) {
+    reason = `⚠️ BOT_EUPHORIA_EXTREME: ${consecutive_wins} wins — wait ${Math.ceil(waitRemaining / 60000)}min`;
+  } else if (!blocked && euphoria_level === "BOT_EUPHORIA" && flags.includes("IMPULSIVE_HOTKEY")) {
     blocked = true;
-    reason = `Impulsive entry: wait ${Math.ceil(waitRemaining / 60000)}min after win`;
+    reason = `⚠️ IMPULSIVE + EUPHORIA: Cool down ${Math.ceil(min_wait_ms / 60000)}min`;
   }
 
   return {

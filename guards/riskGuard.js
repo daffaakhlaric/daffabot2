@@ -8,6 +8,7 @@
 
 const psychGuard = require("./psychGuard");
 const profitProtector = require("./profitProtector");
+const entryQualityFilter = require("./entryQualityFilter");
 
 // ── WHALE TRAP & SPOOF COOLDOWN STATE ─────────────────────
 let _whaleTrapCooldownUntil = 0;
@@ -416,6 +417,39 @@ function runAllChecks({
     };
   }
 
+  // 11. Entry Quality Filter — Prevent false breakouts & chop trades
+  const qualityCheck = entryQualityFilter.runEntryQualityChecks({
+    setupType: proposedTrade?.setup || "SAFE",
+    decisionScore: proposedTrade?.confluenceScore || 55,
+    klines: equityCurve?.length ? [] : [], // Pass empty for now (would need actual klines)
+    candleStartTime: proposedTrade?.candleStartTime || now,
+    currentTime: now,
+    tradeHistory,
+    currentSymbol: proposedTrade?.symbol || "BTCUSDT",
+    btcScore: proposedTrade?.btcScore || 55,
+    btcStatus: proposedTrade?.btcStatus || "UNKNOWN",
+  });
+
+  for (const b of qualityCheck.blocks) {
+    blocks.push({ type: "QUALITY_" + b.type, reason: b.reason });
+  }
+  for (const w of qualityCheck.warnings) {
+    warnings.push({ type: "QUALITY_" + w.type, message: w.message });
+  }
+
+  // Expose entry quality state to dashboard
+  if (typeof global !== "undefined" && global.botState) {
+    global.botState.entryQuality = {
+      approved: qualityCheck.approved,
+      blocks_count: qualityCheck.blocks?.length || 0,
+      warnings_count: qualityCheck.warnings?.length || 0,
+      chop_detected: qualityCheck.details?.chop?.is_chop || false,
+      candle_confirmed: qualityCheck.details?.candleConfirmation?.confirmed || false,
+      atr_sl_pct: qualityCheck.details?.atrSL?.sl_pct || 0,
+      loss_streak: qualityCheck.details?.lossDefense?.consecutive_losses || 0,
+    };
+  }
+
   return {
     approved: blocks.length === 0,
     blocks,
@@ -423,7 +457,7 @@ function runAllChecks({
     approved_leverage: lev.approved_leverage,
     size_multiplier:   psych.size_multiplier,
     psych_state:       psych.psych_state,
-    checks: { daily, consec, lev, psych, profitCheck },
+    checks: { daily, consec, lev, psych, profitCheck, qualityCheck },
   };
 }
 

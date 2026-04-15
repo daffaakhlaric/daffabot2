@@ -4,15 +4,15 @@ require("dotenv").config();
 const https = require("https");
 const crypto = require("crypto");
 
-const btcStrategy  = require("./btcStrategy");
+const { btcStrategy } = require("./strategy");
 const orchestrator = require("./botOrchestrator");
-const riskGuard    = require("./riskGuard");
-const analytics    = require("./analytics");
+const { riskGuard } = require("./guards");
+const { analytics } = require("./services/analytics");
 const tradeMemory  = require("./tradeMemory");
 
 // Multi-pair support
 const pairManager = require("./pairManager");
-const { PAIRS, getEnabledPairs, getPairBySymbol } = require("./pairConfig");
+const { PAIRS, getEnabledPairs, getPairBySymbol } = require("./config");
 
 // ================= CONFIG =================
 const CONFIG = {

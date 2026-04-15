@@ -15,7 +15,7 @@ const crypto = require("crypto");
 const https  = require("https");
 const WebSocket = require("ws");
 
-const { analytics } = require("./services/analytics");
+const { analytics, auditAnalytics } = require("./services/analytics");
 
 // ── CONFIG ──────────────────────────────────────────────
 const PORT             = parseInt(process.env.MONITOR_PORT || process.env.DASHBOARD_PORT || "3000", 10);
@@ -461,6 +461,14 @@ const server = http.createServer((req, res) => {
     const logs = global.botState?.logs || [];
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify(logs));
+  }
+
+  if (url.startsWith("/api/audit")) {
+    const params = new URL(`http://localhost${req.url}`).searchParams;
+    const n = parseInt(params.get("n")) || 50;
+    const report = auditAnalytics.buildAuditReport(tradeHistory, n);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(report, null, 2));
   }
 
   if (url === "/health") {

@@ -8,6 +8,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/css/main.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
 <body>
 <div id="app">
@@ -54,6 +56,10 @@
     <div class="nav-item" data-sec="whales">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 8 Q4 6 6 8 Q8 10 10 8 Q12 6 14 8" fill="none"/><circle cx="3" cy="4" r="1"/><circle cx="13" cy="4" r="1"/></svg>
       Whale Tracker
+    </div>
+    <div class="nav-item" data-sec="audit">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1"/><line x1="6" y1="6" x2="10" y2="6"/><line x1="6" y1="8.5" x2="14" y2="8.5"/><line x1="6" y1="11" x2="10" y2="11"/></svg>
+      Audit Report
     </div>
   </div>
   <div class="sb-bottom">
@@ -464,6 +470,152 @@
       <div class="card" style="margin-top:10px">
         <div class="card-title">Whale Alert History (Last 20)</div>
         <div id="whale-history" style="font-size:11px"></div>
+      </div>
+    </div>
+
+    <!-- ─── AUDIT SECTION ─────────────────────────────── -->
+    <div id="sec-audit" class="section">
+      <!-- Control Bar -->
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:15px;flex-wrap:wrap">
+          <div style="flex:1;min-width:200px">
+            <label style="font-size:11px;color:var(--text-secondary);display:block;margin-bottom:5px">Trade Count</label>
+            <select id="audit-n-select" style="padding:6px 8px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);font-size:12px;cursor:pointer;width:100%;max-width:120px">
+              <option value="25">Last 25</option>
+              <option value="50" selected>Last 50</option>
+              <option value="100">Last 100</option>
+              <option value="0">All Trades</option>
+            </select>
+          </div>
+          <div style="flex:1;min-width:200px">
+            <div style="font-size:11px;color:var(--text-secondary);margin-bottom:5px">Period</div>
+            <div id="audit-period" style="font-size:12px;color:var(--text-primary)">—</div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button id="audit-export-pdf" style="padding:6px 12px;background:var(--accent);border:none;border-radius:4px;color:white;cursor:pointer;font-size:12px;font-weight:500">📄 PDF</button>
+            <button id="audit-export-json" style="padding:6px 12px;background:var(--teal);border:none;border-radius:4px;color:white;cursor:pointer;font-size:12px;font-weight:500">📊 JSON</button>
+            <button id="audit-refresh" style="padding:6px 12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);cursor:pointer;font-size:12px;font-weight:500">🔄 Refresh</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Summary Metrics -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:10px">
+        <div class="mc">
+          <div class="mc-label">Win Rate</div>
+          <div class="mc-value" id="audit-win-rate">—</div>
+        </div>
+        <div class="mc">
+          <div class="mc-label">Expectancy</div>
+          <div class="mc-value" id="audit-expectancy">—</div>
+        </div>
+        <div class="mc">
+          <div class="mc-label">Profit Factor</div>
+          <div class="mc-value" id="audit-pf">—</div>
+        </div>
+        <div class="mc">
+          <div class="mc-label">Avg RR</div>
+          <div class="mc-value" id="audit-rr">—</div>
+        </div>
+        <div class="mc">
+          <div class="mc-label">Total P&L</div>
+          <div class="mc-value" id="audit-pnl">—</div>
+        </div>
+        <div class="mc">
+          <div class="mc-label">Avg Hold</div>
+          <div class="mc-value" id="audit-hold">—</div>
+        </div>
+        <div class="mc">
+          <div class="mc-label">Best Setup</div>
+          <div class="mc-value" id="audit-best-setup" style="font-size:11px">—</div>
+        </div>
+      </div>
+
+      <!-- 3-Column Analysis Grid -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px;margin-top:10px">
+        <!-- Exit Breakdown -->
+        <div class="card">
+          <div class="card-title">Exit Breakdown</div>
+          <div style="height:200px;position:relative"><canvas id="audit-exit-chart"></canvas></div>
+          <div id="audit-exit-stats" style="font-size:11px;color:var(--text-secondary);margin-top:8px"></div>
+        </div>
+
+        <!-- Hold Time Distribution -->
+        <div class="card">
+          <div class="card-title">Hold Time Distribution</div>
+          <div style="height:200px;position:relative"><canvas id="audit-holdtime-chart"></canvas></div>
+        </div>
+
+        <!-- Side Split -->
+        <div class="card">
+          <div class="card-title">Long vs Short</div>
+          <div id="audit-side-split" style="font-size:12px;display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px"></div>
+          <div id="audit-side-bias" style="font-size:11px;color:var(--text-secondary);margin-top:8px;padding:8px;background:var(--bg-overlay);border-radius:4px">—</div>
+        </div>
+      </div>
+
+      <!-- Setup & Pair Performance -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+        <!-- Setup Performance Table -->
+        <div class="card">
+          <div class="card-title">Setup Performance</div>
+          <div style="overflow-x:auto;margin-top:8px">
+            <table style="width:100%;font-size:11px;border-collapse:collapse">
+              <thead style="border-bottom:1px solid var(--border)">
+                <tr style="color:var(--text-secondary)">
+                  <th style="text-align:left;padding:6px">Setup</th>
+                  <th style="text-align:right;padding:6px">WR%</th>
+                  <th style="text-align:right;padding:6px">Trades</th>
+                  <th style="text-align:right;padding:6px">P&L</th>
+                </tr>
+              </thead>
+              <tbody id="audit-setup-table"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Pair Performance Table -->
+        <div class="card">
+          <div class="card-title">Pair Performance</div>
+          <div style="overflow-x:auto;margin-top:8px">
+            <table style="width:100%;font-size:11px;border-collapse:collapse">
+              <thead style="border-bottom:1px solid var(--border)">
+                <tr style="color:var(--text-secondary)">
+                  <th style="text-align:left;padding:6px">Pair</th>
+                  <th style="text-align:right;padding:6px">WR%</th>
+                  <th style="text-align:right;padding:6px">Trades</th>
+                  <th style="text-align:right;padding:6px">P&L</th>
+                </tr>
+              </thead>
+              <tbody id="audit-pair-table"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Daily Breakdown -->
+      <div class="card" style="margin-top:10px">
+        <div class="card-title">Daily P&L Breakdown</div>
+        <div style="overflow-x:auto;margin-top:8px">
+          <table style="width:100%;font-size:11px;border-collapse:collapse">
+            <thead style="border-bottom:1px solid var(--border)">
+              <tr style="color:var(--text-secondary)">
+                <th style="text-align:left;padding:6px">Date</th>
+                <th style="text-align:center;padding:6px">Trades</th>
+                <th style="text-align:center;padding:6px">Wins</th>
+                <th style="text-align:center;padding:6px">WR%</th>
+                <th style="text-align:right;padding:6px">P&L</th>
+              </tr>
+            </thead>
+            <tbody id="audit-daily-table"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Tuning Recommendations -->
+      <div class="card" style="margin-top:10px">
+        <div class="card-title">📋 Tuning Recommendations</div>
+        <div id="audit-recommendations" style="margin-top:10px"></div>
       </div>
     </div>
 
@@ -1668,6 +1820,308 @@ async function toggleAIMode() {
     showToast("Failed to change mode: " + e.message, "error");
   }
 }
+
+// ══ AUDIT SECTION ════════════════════════════════════════
+let auditCharts = {};
+let auditData = null;
+
+async function loadAuditReport() {
+  try {
+    const n = $('audit-n-select')?.value || '50';
+    const nVal = n === '0' ? undefined : parseInt(n);
+    const url = nVal ? `/api/audit?n=${nVal}` : '/api/audit';
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('Failed to load audit report');
+    auditData = await r.json();
+    renderAuditReport();
+  } catch (e) {
+    showToast('Audit load failed: ' + e.message, 'error');
+  }
+}
+
+function renderAuditReport() {
+  if (!auditData || auditData.error) {
+    $('audit-period').textContent = 'No data';
+    return;
+  }
+
+  const m = auditData.meta;
+  const s = auditData.summary || {};
+  const e = auditData.exitAnalysis || {};
+  const h = auditData.holdTimeDistribution || [];
+  const sp = auditData.setupPerformance || {};
+  const pa = auditData.pairAnalysis || {};
+  const sd = auditData.sideSplit || {};
+  const d = auditData.dailyBreakdown || [];
+  const recs = auditData.tuningRecommendations || [];
+
+  // Update period
+  $('audit-period').textContent = m.period.from && m.period.to
+    ? `${m.period.from} to ${m.period.to} (${m.n} trades)`
+    : `${m.n} trades`;
+
+  // Summary metrics
+  $('audit-win-rate').textContent = (s.winRate || 0).toFixed(1) + '%';
+  $('audit-expectancy').textContent = (s.expectancy || 0).toFixed(2);
+  $('audit-pf').textContent = (s.profitFactor || 0).toFixed(2);
+  $('audit-rr').textContent = (s.avgRR || 0).toFixed(2);
+  $('audit-pnl').textContent = '$' + (s.totalPnLUSDT || 0).toFixed(2);
+  $('audit-hold').textContent = (s.avgHoldMin || 0).toFixed(0) + 'min';
+  $('audit-best-setup').textContent = s.bestSetup + ' (' + (s.bestSetupWR || 0).toFixed(0) + '%)';
+
+  // Exit breakdown chart
+  const exitReasons = Object.entries(e.byReason || {}).map(([r, d]) => ({
+    reason: r,
+    count: d.count,
+    pct: parseFloat(d.pct),
+  }));
+  renderExitChart(exitReasons);
+
+  // Hold time distribution chart
+  renderHoldTimeChart(h);
+
+  // Side split
+  renderSideSplit(sd);
+
+  // Setup table
+  renderSetupTable(sp);
+
+  // Pair table
+  renderPairTable(pa);
+
+  // Daily breakdown
+  renderDailyTable(d);
+
+  // Recommendations
+  renderRecommendations(recs);
+}
+
+function renderExitChart(reasons) {
+  const ctx = $('audit-exit-chart');
+  if (!ctx) return;
+
+  if (auditCharts.exitChart) auditCharts.exitChart.destroy();
+
+  const labels = reasons.map(r => r.reason);
+  const data = reasons.map(r => r.count);
+  const colors = [
+    'rgba(255,77,106,0.6)',   // SL - red
+    'rgba(0,214,143,0.6)',    // TP1 - green
+    'rgba(0,201,201,0.6)',    // TP2 - teal
+    'rgba(96,165,250,0.6)',   // TP3 - blue
+    'rgba(245,158,11,0.6)',   // Others - amber
+  ];
+
+  auditCharts.exitChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{
+        data,
+        backgroundColor: colors.slice(0, labels.length),
+        borderColor: 'var(--bg-base)',
+        borderWidth: 2,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom', labels: { font: { size: 10 }, color: 'var(--text-secondary)' } } },
+    },
+  });
+
+  // Stats
+  const stats = reasons.map(r => `${r.reason}: ${r.count} (${r.pct}%)`).join(' | ');
+  $('audit-exit-stats').textContent = stats;
+}
+
+function renderHoldTimeChart(buckets) {
+  const ctx = $('audit-holdtime-chart');
+  if (!ctx) return;
+
+  if (auditCharts.holdTimeChart) auditCharts.holdTimeChart.destroy();
+
+  const labels = buckets.map(b => b.bucket);
+  const data = buckets.map(b => b.count);
+
+  auditCharts.holdTimeChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Count',
+        data,
+        backgroundColor: 'rgba(96,165,250,0.6)',
+        borderColor: 'var(--accent)',
+        borderWidth: 1,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: { y: { beginAtZero: true, ticks: { font: { size: 10 }, color: 'var(--text-secondary)' } } },
+    },
+  });
+}
+
+function renderSideSplit(sd) {
+  const html = (sd.long || {}).count > 0 || (sd.short || {}).count > 0 ? `
+    <div style="padding:10px;background:var(--bg-elevated);border-radius:4px">
+      <div style="color:var(--text-secondary);font-size:10px;margin-bottom:3px">LONG</div>
+      <div style="font-weight:500">${(sd.long?.winRate || 0).toFixed(1)}%</div>
+      <div style="font-size:10px;color:var(--text-muted)">${sd.long?.count} trades</div>
+    </div>
+    <div style="padding:10px;background:var(--bg-elevated);border-radius:4px">
+      <div style="color:var(--text-secondary);font-size:10px;margin-bottom:3px">SHORT</div>
+      <div style="font-weight:500">${(sd.short?.winRate || 0).toFixed(1)}%</div>
+      <div style="font-size:10px;color:var(--text-muted)">${sd.short?.count} trades</div>
+    </div>
+  ` : '<div style="color:var(--text-muted)">No trade data</div>';
+
+  $('audit-side-split').innerHTML = html;
+  $('audit-side-bias').textContent = sd.bias || '—';
+}
+
+function renderSetupTable(sp) {
+  const rows = Object.entries(sp).sort((a, b) => (b[1].winRate || 0) - (a[1].winRate || 0));
+  const html = rows.map(([name, data]) => {
+    const wr = (data.winRate || 0).toFixed(0);
+    const wrColor = wr >= 45 ? 'var(--green)' : wr >= 35 ? 'var(--amber)' : 'var(--red)';
+    return `
+      <tr>
+        <td style="padding:6px;border-bottom:1px solid var(--border)">${name}</td>
+        <td style="padding:6px;border-bottom:1px solid var(--border);text-align:right;color:${wrColor}">${wr}%</td>
+        <td style="padding:6px;border-bottom:1px solid var(--border);text-align:right">${data.count}</td>
+        <td style="padding:6px;border-bottom:1px solid var(--border);text-align:right;color:${(data.totalPnLUSDT || 0) >= 0 ? 'var(--green)' : 'var(--red)'}">${(data.totalPnLUSDT || 0).toFixed(2)}</td>
+      </tr>
+    `;
+  }).join('');
+  $('audit-setup-table').innerHTML = html || '<tr><td colspan="4" style="padding:10px;text-align:center;color:var(--text-muted)">No setup data</td></tr>';
+}
+
+function renderPairTable(pa) {
+  const rows = Object.entries(pa).sort((a, b) => (b[1].count || 0) - (a[1].count || 0));
+  const html = rows.map(([pair, data]) => {
+    const wr = (data.winRate || 0).toFixed(0);
+    const wrColor = wr >= 45 ? 'var(--green)' : wr >= 35 ? 'var(--amber)' : 'var(--red)';
+    return `
+      <tr>
+        <td style="padding:6px;border-bottom:1px solid var(--border)">${pair}</td>
+        <td style="padding:6px;border-bottom:1px solid var(--border);text-align:right;color:${wrColor}">${wr}%</td>
+        <td style="padding:6px;border-bottom:1px solid var(--border);text-align:right">${data.count}</td>
+        <td style="padding:6px;border-bottom:1px solid var(--border);text-align:right;color:${(data.totalPnLUSDT || 0) >= 0 ? 'var(--green)' : 'var(--red)'}">${(data.totalPnLUSDT || 0).toFixed(2)}</td>
+      </tr>
+    `;
+  }).join('');
+  $('audit-pair-table').innerHTML = html || '<tr><td colspan="4" style="padding:10px;text-align:center;color:var(--text-muted)">No pair data</td></tr>';
+}
+
+function renderDailyTable(daily) {
+  const html = daily.slice(-31).reverse().map(d => {
+    const wrColor = (d.winRate || 0) >= 45 ? 'var(--green)' : (d.winRate || 0) >= 35 ? 'var(--amber)' : 'var(--red)';
+    return `
+      <tr>
+        <td style="padding:6px;border-bottom:1px solid var(--border)">${d.date}</td>
+        <td style="padding:6px;border-bottom:1px solid var(--border);text-align:center">${d.trades}</td>
+        <td style="padding:6px;border-bottom:1px solid var(--border);text-align:center;color:var(--green)">${d.wins}</td>
+        <td style="padding:6px;border-bottom:1px solid var(--border);text-align:center;color:${wrColor}">${(d.winRate || 0).toFixed(0)}%</td>
+        <td style="padding:6px;border-bottom:1px solid var(--border);text-align:right;color:${(d.pnlUSDT || 0) >= 0 ? 'var(--green)' : 'var(--red)'}">${(d.pnlUSDT || 0).toFixed(2)}</td>
+      </tr>
+    `;
+  }).join('');
+  $('audit-daily-table').innerHTML = html || '<tr><td colspan="5" style="padding:10px;text-align:center;color:var(--text-muted)">No daily data</td></tr>';
+}
+
+function renderRecommendations(recs) {
+  const html = recs.map(r => {
+    const bgColor = r.priority === 'CRITICAL' ? 'var(--red-glow)' : r.priority === 'HIGH' ? 'var(--amber-dim)' : r.priority === 'GREEN' ? 'var(--green-dim)' : 'var(--bg-elevated)';
+    const borderColor = r.priority === 'CRITICAL' ? 'var(--red)' : r.priority === 'HIGH' ? 'var(--amber)' : r.priority === 'GREEN' ? 'var(--green)' : 'var(--border)';
+    return `
+      <div style="padding:10px;margin-bottom:8px;background:${bgColor};border-left:3px solid ${borderColor};border-radius:4px">
+        <div style="font-weight:500;color:var(--text-primary)">${r.issue}</div>
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">${r.detail}</div>
+        <div style="font-size:11px;color:var(--teal);margin-top:4px">→ ${r.action}</div>
+      </div>
+    `;
+  }).join('');
+  $('audit-recommendations').innerHTML = html || '<div style="color:var(--text-muted)">No recommendations at this time</div>';
+}
+
+// Export handlers
+$('audit-n-select')?.addEventListener('change', loadAuditReport);
+$('audit-refresh')?.addEventListener('click', loadAuditReport);
+
+$('audit-export-pdf')?.addEventListener('click', async () => {
+  if (!auditData) return showToast('No audit data loaded', 'error');
+  try {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    const n = auditData.meta.n;
+    const date = new Date().toISOString().split('T')[0];
+    doc.setFontSize(16);
+    doc.text(`Audit Report - ${n} Trades`, 10, 10);
+    doc.setFontSize(10);
+    doc.text(`Generated: ${date}`, 10, 18);
+
+    let yPos = 25;
+    doc.setFontSize(12);
+    doc.text('Summary Metrics', 10, yPos);
+    yPos += 8;
+    doc.setFontSize(10);
+    const s = auditData.summary || {};
+    const summaryText = [
+      `Win Rate: ${(s.winRate || 0).toFixed(1)}%`,
+      `Expectancy: ${(s.expectancy || 0).toFixed(2)}`,
+      `Profit Factor: ${(s.profitFactor || 0).toFixed(2)}`,
+      `Total P&L: $${(s.totalPnLUSDT || 0).toFixed(2)}`,
+    ];
+    summaryText.forEach(line => {
+      doc.text(line, 10, yPos);
+      yPos += 6;
+    });
+
+    doc.addPage();
+    yPos = 10;
+    doc.setFontSize(12);
+    doc.text('Tuning Recommendations', 10, yPos);
+    yPos += 8;
+    doc.setFontSize(9);
+    (auditData.tuningRecommendations || []).forEach(r => {
+      doc.text(`• ${r.issue}`, 10, yPos);
+      yPos += 5;
+      if (yPos > 280) {
+        doc.addPage();
+        yPos = 10;
+      }
+    });
+
+    doc.save(`daffabot-audit-${n}trades-${date}.pdf`);
+    showToast('PDF exported successfully', 'info');
+  } catch (e) {
+    showToast('PDF export failed: ' + e.message, 'error');
+  }
+});
+
+$('audit-export-json')?.addEventListener('click', () => {
+  if (!auditData) return showToast('No audit data loaded', 'error');
+  try {
+    const json = JSON.stringify(auditData, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `daffabot-audit-${auditData.meta.n}trades-${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('JSON exported successfully', 'info');
+  } catch (e) {
+    showToast('JSON export failed: ' + e.message, 'error');
+  }
+});
+
+// Load initial audit on page load
+setTimeout(() => loadAuditReport(), 500);
 
 // Toast notification helper
 function showToast(msg, type = "info") {

@@ -5,7 +5,9 @@
  */
 
 const analytics = require("./analytics");
+const auditAnalytics = require("./auditAnalytics");
 
 module.exports = {
   analytics,
+  auditAnalytics,
 };

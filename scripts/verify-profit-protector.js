@@ -14,7 +14,7 @@ console.log("\n🔍 PROFIT PROTECTOR INTEGRATION VERIFICATION\n");
 const checks = [];
 
 // ── CHECK 1: profitProtector.js exists
-const profitProtectorPath = path.join(__dirname, "profitProtector.js");
+const profitProtectorPath = path.join(__dirname, "../guards/profitProtector.js");
 const check1 = fs.existsSync(profitProtectorPath);
 checks.push({
   name: "profitProtector.js module exists",
@@ -25,7 +25,7 @@ checks.push({
 // ── CHECK 2: profitProtector exports correct functions
 if (check1) {
   try {
-    const pp = require("./profitProtector");
+    const pp = require("../guards/profitProtector");
     const requiredExports = [
       "checkSessionProfitLock",
       "checkPostWinCooldown",
@@ -56,7 +56,7 @@ if (check1) {
 const riskGuardPath = path.join(__dirname, "riskGuard.js");
 try {
   const riskGuardContent = fs.readFileSync(riskGuardPath, "utf8");
-  const hasImport = riskGuardContent.includes('require("./profitProtector")');
+  const hasImport = riskGuardContent.includes('require("../guards/profitProtector")');
   const hasCalls = riskGuardContent.includes("profitProtector.runProfitProtectionChecks");
   checks.push({
     name: "riskGuard.js imports profitProtector",

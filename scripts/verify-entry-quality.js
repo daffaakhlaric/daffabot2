@@ -14,7 +14,7 @@ console.log("\n🔍 ENTRY QUALITY FILTER VERIFICATION\n");
 const checks = [];
 
 // ── CHECK 1: entryQualityFilter.js exists
-const qualityFilterPath = path.join(__dirname, "entryQualityFilter.js");
+const qualityFilterPath = path.join(__dirname, "../strategy/entryQualityFilter.js");
 const check1 = fs.existsSync(qualityFilterPath);
 checks.push({
   name: "entryQualityFilter.js module exists",
@@ -25,7 +25,7 @@ checks.push({
 // ── CHECK 2: entryQualityFilter exports correct functions
 if (check1) {
   try {
-    const eqf = require("./entryQualityFilter");
+    const eqf = require("../strategy/entryQualityFilter");
     const requiredExports = [
       "getMinimumDecisionScore",
       "checkChopConditions",
@@ -125,7 +125,7 @@ try {
 const riskGuardPath = path.join(__dirname, "riskGuard.js");
 try {
   const riskGuardContent = fs.readFileSync(riskGuardPath, "utf8");
-  const hasImport = riskGuardContent.includes('require("./entryQualityFilter")');
+  const hasImport = riskGuardContent.includes('require("../strategy/entryQualityFilter")');
   const hasCalls = riskGuardContent.includes("entryQualityFilter.runEntryQualityChecks");
   const hasDashboard = riskGuardContent.includes("global.botState.entryQuality");
 

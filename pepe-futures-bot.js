@@ -883,10 +883,15 @@ async function run() {
       tickCount++;
 
       // === AI ENABLED CHECK ===
-      // Simple check: AI is disabled if no API key
-      const hasAIKey = !!process.env.ANTHROPIC_API_KEY;
-      const isAIMode = global.botState?.aiMode !== false && hasAIKey;
+      // Check both: API key exists AND AI_ENABLED env is true
+      const hasAIKey = !!(process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.length > 10);
+      const isAIMode = hasAIKey && CONFIG.AI_ENABLED !== false && (global.botState?.aiMode !== false);
       const aiEnabled = isAIMode && global.botState?.aiHealthy !== false;
+      
+      // Debug log
+      if (global.botState.debugMode) {
+        log(`[DEBUG] AI check: hasAIKey=${hasAIKey}, AI_ENABLED=${CONFIG.AI_ENABLED}, isAIMode=${isAIMode}, aiEnabled=${aiEnabled}`);
+      }
 
       // === MULTI-PAIR STRATEGY ===
       // Primary: multiPairStrategy (pair-specific regime detection)

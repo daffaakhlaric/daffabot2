@@ -18,6 +18,7 @@ const pairRegimeDetector = require("./pairRegimeDetector");
 const antiFakeout = require("./antiFakeout");
 const tpExitManager = require("./tpExitManager");
 const pairScorer = require("./pairScorer");
+const entryQualityFilter = require("./entryQualityFilter");
 
 module.exports = {
   // Primary strategy
@@ -31,6 +32,7 @@ module.exports = {
   antiFakeout,
   tpExitManager,
   pairScorer,
+  entryQualityFilter,
   
   // Legacy exports
   analyze: multiPairStrategy.analyze,

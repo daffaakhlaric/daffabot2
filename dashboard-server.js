@@ -64,6 +64,62 @@ function recordTrade(trade) {
   console.log(`[DASHBOARD] 💾 Trade recorded — total: ${tradeHistory.length} trades`);
 }
 
+// ── SESSION COUNTDOWN TIMER ──────────────────────────────
+function calculateSessionCountdown() {
+  const now = new Date();
+  const utcHours = now.getUTCHours();
+  const utcMins = now.getUTCMinutes();
+  const utcSecs = now.getUTCSeconds();
+  const totalSecNow = utcHours * 3600 + utcMins * 60 + utcSecs;
+
+  const sessions = [
+    { name: "LONDON_OPEN", start: 7 * 3600, end: 11 * 3600, utcLabel: "07:00-11:00 UTC", wibLabel: "14:00-18:00 WIB" },
+    { name: "NY_OPEN", start: 13 * 3600, end: 17 * 3600, utcLabel: "13:00-17:00 UTC", wibLabel: "20:00-00:00 WIB" }
+  ];
+
+  let nextSession = null;
+  let secondsUntilNext = 0;
+  let currentSession = null;
+
+  // Find current session
+  for (const sess of sessions) {
+    if (totalSecNow >= sess.start && totalSecNow < sess.end) {
+      currentSession = { ...sess, timeRemaining: sess.end - totalSecNow };
+      break;
+    }
+  }
+
+  // Find next session
+  for (const sess of sessions) {
+    if (sess.start > totalSecNow) {
+      secondsUntilNext = sess.start - totalSecNow;
+      nextSession = { ...sess, secondsUntilStart: secondsUntilNext };
+      break;
+    }
+  }
+
+  // If no session found today, next is London tomorrow
+  if (!nextSession) {
+    const tomorrowLondondStart = (7 * 3600) + (24 * 3600);
+    secondsUntilNext = tomorrowLondondStart - totalSecNow;
+    nextSession = {
+      name: "LONDON_OPEN",
+      start: 7 * 3600,
+      end: 11 * 3600,
+      utcLabel: "07:00-11:00 UTC",
+      wibLabel: "14:00-18:00 WIB",
+      secondsUntilStart: secondsUntilNext,
+      isTomorrow: true
+    };
+  }
+
+  return {
+    current: currentSession,
+    next: nextSession,
+    timestamp: now.toISOString()
+  };
+}
+
 // ── BITGET API ───────────────────────────────────────────
 function bitgetSign(ts, method, path, body = "") {
   return crypto
@@ -413,12 +469,14 @@ function buildPayload() {
   }
 
   const analyticsData = analytics.buildAnalytics(tradeHistory, INITIAL_EQ);
+  const sessionCountdown = calculateSessionCountdown();
 
   return {
     timestamp:      Date.now(),
     serverStartTime: SERVER_START_TIME,
     live:           liveData,
     analytics:      analyticsData,
+    sessionCountdown: sessionCountdown,  // ⭐ NEW: Session timer for dashboard
   };
 }
 

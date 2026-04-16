@@ -133,6 +133,25 @@
         </div>
       </div>
 
+      <!-- ⭐ SESSION COUNTDOWN TIMER -->
+      <div style="margin-bottom:16px;padding:14px;background:linear-gradient(135deg,rgba(255,180,0,.15),rgba(255,100,0,.15));border-radius:6px;border-left:4px solid var(--orange);border-top:2px solid var(--orange)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <div style="font-size:12px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--orange)">📅 Next Session Countdown</div>
+          <div id="session-status" style="font-size:10px;color:var(--text-muted);background:rgba(100,100,100,.3);padding:4px 8px;border-radius:3px">—</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div style="padding:10px;background:rgba(0,0,0,.2);border-radius:4px;border-left:2px solid var(--teal)">
+            <div style="font-size:9px;color:var(--text-muted);margin-bottom:4px">⏱️ TIME UNTIL NEXT</div>
+            <div id="countdown-time" class="mono" style="font-size:24px;font-weight:700;color:var(--orange)">--:--:--</div>
+            <div id="countdown-next-session" style="font-size:10px;color:var(--text-muted);margin-top:4px">—</div>
+          </div>
+          <div style="padding:10px;background:rgba(0,0,0,.2);border-radius:4px;border-left:2px solid var(--green)">
+            <div style="font-size:9px;color:var(--text-muted);margin-bottom:4px">📍 SESSION DETAILS</div>
+            <div id="next-session-info" style="font-size:11px;line-height:1.4;color:var(--text-light)">—</div>
+          </div>
+        </div>
+      </div>
+
       <!-- AI Confidence Scores (Overview) -->
       <div style="margin-bottom:16px;padding:12px;background:var(--bg-secondary);border-radius:6px;border-left:4px solid var(--blue)">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
@@ -1765,8 +1784,51 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){document.querySelectorAll('.th-expand-content').forEach(el=>el.remove());document.querySelectorAll('.th-expanded').forEach(el=>el.classList.remove('th-expanded'));}
 });
 
+// ⭐ SESSION COUNTDOWN TIMER
+function updateSessionCountdown() {
+  if (!state.sessionCountdown) return;
+
+  const countdown = state.sessionCountdown;
+  const next = countdown.next;
+
+  if (!next) return;
+
+  // Calculate remaining seconds
+  const remaining = next.secondsUntilStart || 0;
+  const hours = Math.floor(remaining / 3600);
+  const mins = Math.floor((remaining % 3600) / 60);
+  const secs = remaining % 60;
+
+  const timeStr = `${String(hours).padStart(2,'0')}:${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}`;
+
+  const el = document.getElementById('countdown-time');
+  if (el) el.textContent = timeStr;
+
+  const nextSessionEl = document.getElementById('countdown-next-session');
+  if (nextSessionEl) {
+    const label = next.isTomorrow ? '(Tomorrow)' : '(Today)';
+    nextSessionEl.textContent = `${next.name} ${label}`;
+  }
+
+  const infoEl = document.getElementById('next-session-info');
+  if (infoEl) {
+    infoEl.innerHTML = `<strong>${next.name}</strong><br>${next.utcLabel}<br>${next.wibLabel}`;
+  }
+
+  const statusEl = document.getElementById('session-status');
+  if (statusEl) {
+    if (countdown.current) {
+      statusEl.textContent = `🟢 ${countdown.current.session}`;
+    } else {
+      statusEl.textContent = '🔴 ASIA BLOCKED';
+    }
+  }
+}
+
 // Uptime clock
 setInterval(()=>updateHeader(state.live), 1000);
+// Session countdown timer
+setInterval(()=>updateSessionCountdown(), 1000);
 
 // ══ BOOT ════════════════════════════════════════════════
 (async()=>{

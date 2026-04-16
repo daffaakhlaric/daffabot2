@@ -63,11 +63,11 @@ function getCurrentSession() {
       quality: "POOR",
       minScore: 80,  // Require A+ setups
       whaleMustConfirm: true,
-      allowedSetups: ["SNIPER"],  // Only sniper mode
+      allowedSetups: [],  // No setups allowed
       volatility: "LOW",
       liquidity: "LOW",
-      blocked: false,
-      reason: "Asia morning — low liquidity, require A+ setup + whale confirm"
+      blocked: true,  // ⭐ BLOCKED — Asia session disabled
+      reason: "Asia morning — BLOCKED (low liquidity, poor trade quality)"
     };
   }
 

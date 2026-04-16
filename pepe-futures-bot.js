@@ -36,8 +36,8 @@ const CONFIG = {
   AI_ENABLED:            process.env.AI_ENABLED            !== "false",
   SNIPER_MODE:           process.env.SNIPER_MODE           !== "false",
   SNIPER_ENABLED:        process.env.SNIPER_ENABLED        !== "false",
-  MODE:                  process.env.BOT_MODE              || "SAFE",   // SAFE | FAST
-  MULTI_PAIR_ENABLED:    process.env.MULTI_PAIR_ENABLED    === "true",
+  MODE:                  process.env.BOT_MODE              || "SAFE",
+  MULTI_PAIR_ENABLED:    process.env.MULTI_PAIR_ENABLED === "true" || process.env.MULTI_PAIR_ENABLED === true,
   PAIR_EVAL_INTERVAL_MS: 60 * 1000,  // Evaluate pairs every 60 seconds
   SNIPER_CONFIG: {
     risk:               0.03,
@@ -965,7 +965,7 @@ async function run() {
       // Track AI mode status (show if using AI or btcStrategy fallback)
       global.botState.aiMode = aiEnabled;
       global.botState.aiSource = aiEnabled ? "ORCHESTRATOR" : "MULTIPAIR";
-      global.botState.aiForced = forceMode !== null;
+      global.botState.aiForced = global.botState.forceMode !== null;
       global.botState.aiDownReason = global.botState.aiHealthy === false ? global.botState.aiDownReason : null;
 
       // Add pair-specific regime info to botState

@@ -453,7 +453,7 @@ function runAllChecks({
     approved_leverage: lev.approved_leverage,
     size_multiplier:   psych.size_multiplier,
     psych_state:       psych.psych_state,
-    checks: { daily, consec, lev, psych, profitCheck, qualityCheck },
+    checks: { daily, consec, lev, psych, profitCheck, smcCheck, sessionCheck },
   };
 }
 

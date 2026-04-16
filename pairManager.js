@@ -6,7 +6,7 @@
  */
 
 const { getEnabledPairs, getPairBySymbol } = require("./config");
-const { scorePair } = require("./pairScorer");
+const { scorePair } = require("./strategy/pairScorer");
 const { whaleTracker: { detectWhaleActivity } } = require("./services/whale");
 
 const SWITCH_COOLDOWN_MS = 30 * 60 * 1000;

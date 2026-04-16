@@ -11,7 +11,7 @@ const featureEngine = require("./featureEngine");
 const { riskGuard } = require("./guards");
 const tradeMemory   = require("./tradeMemory");
 const { whaleTracker } = require("./services/whale");
-const { marketRegimeDetector } = require("./utils");
+const { detectPairRegime: marketRegimeDetector } = require("./strategy/enhancedRegimeDetector");
 
 // ── HELPERS ───────────────────────────────────────────────
 function liveData() {

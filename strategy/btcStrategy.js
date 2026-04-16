@@ -295,10 +295,15 @@ function analyze({ klines, position, pairConfig }) {
       return buildEntry("SHORT", price, "BTCStrategy_TREND", klines);
     }
     if (checks.mitigation_zone && checks.entry_candle_valid) {
-      if (htf.bias === "BULLISH" && current.close > current.open) {
+      const momentumScore = calcMomentumScore(klines);
+      const hasPositiveMomentum = momentumScore >= 55;
+      const hasNegativeMomentum = momentumScore <= 45;
+
+      if (htf.bias === "BULLISH" && current.close > current.open && hasPositiveMomentum) {
         return buildEntry("LONG", price, "BTCStrategy_SNIPER", klines);
       }
-      if (htf.bias === "BEARISH" && current.close < current.open) {
+      // ⭐ FIX: SHORT requires HTF 70%+ + neutral/negative momentum (prevents weak counter-trend shorts)
+      if (htf.bias === "BEARISH" && htf.confidence >= 70 && (hasNegativeMomentum || momentumScore < 55)) {
         return buildEntry("SHORT", price, "BTCStrategy_SNIPER", klines);
       }
     }
@@ -309,12 +314,17 @@ function analyze({ klines, position, pairConfig }) {
     const hasGoodConfluence = confluenceScore >= 60;
     const hasStrongHTF = htf && htf.confidence >= 75;
     const hasClearTrend = htf && (htf.bias === "BULLISH" || htf.bias === "BEARISH");
+    // ⭐ NEW: Momentum confirmation to prevent weak SHORT entries
+    const momentumScore = calcMomentumScore(klines);
+    const hasPositiveMomentum = momentumScore >= 55;
+    const hasNegativeMomentum = momentumScore <= 45;
 
     if (hasGoodConfluence && hasStrongHTF && hasClearTrend) {
-      if (htf.bias === "BULLISH" && current.close > current.open) {
+      if (htf.bias === "BULLISH" && current.close > current.open && hasPositiveMomentum) {
         return buildEntry("LONG", price, "BTCStrategy_RELAXED", klines);
       }
-      if (htf.bias === "BEARISH" && current.close < current.open) {
+      // ⭐ FIX: SHORT requires HTF 75%+ + negative/neutral momentum (prevents counter-trend shorts)
+      if (htf.bias === "BEARISH" && htf.confidence >= 75 && (hasNegativeMomentum || momentumScore < 60)) {
         return buildEntry("SHORT", price, "BTCStrategy_RELAXED", klines);
       }
     }

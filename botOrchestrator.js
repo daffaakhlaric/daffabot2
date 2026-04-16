@@ -11,6 +11,7 @@ const featureEngine = require("./featureEngine");
 const { riskGuard } = require("./guards");
 const tradeMemory   = require("./tradeMemory");
 const { whaleTracker } = require("./services/whale");
+const { marketRegimeDetector } = require("./utils");
 
 // ── HELPERS ───────────────────────────────────────────────
 function liveData() {
@@ -380,6 +381,24 @@ async function orchestrate({
   // if (kz.kz_quality === "AVOID") {
   //   return { action: "HOLD", reason: `Off-hours (${kz.current_kill_zone})`, setup: "KZ_AVOID", source: "KILLZONE" };
   // }
+
+  // STEP 2.5: Market Regime Detection (⭐ NEW)
+  const marketRegime = marketRegimeDetector.detectMarketRegime(klines_1h || klines_4h || []);
+  // Log regime for monitoring
+  if (marketRegime && marketRegime.regime !== "UNKNOWN") {
+    global.botState.marketRegime = marketRegime.regime;
+    global.botState.regimeConfidence = marketRegime.confidence;
+  }
+  // Block entries during strong RANGING markets (unless already in position)
+  if (!activePosition && marketRegime.regime === "RANGING" && marketRegime.confidence >= 70) {
+    return {
+      action: "HOLD",
+      reason: `Ranging market detected (${marketRegime.confidence}% confidence) — awaiting trend`,
+      setup: "MARKET_RANGING",
+      source: "REGIME_DETECTOR",
+      regime: marketRegime.regime,
+    };
+  }
 
   // STEP 3: Active position → exit management first
   if (activePosition) {

@@ -10,7 +10,7 @@ const { scorePair } = require("./pairScorer");
 const { whaleTracker: { detectWhaleActivity } } = require("./services/whale");
 
 const SWITCH_COOLDOWN_MS = 30 * 60 * 1000;
-const MAX_SWITCHES_PER_DAY = 3;
+const MAX_SWITCHES_PER_DAY = Infinity;  // ⭐ UNLIMITED (was 3)
 const MIN_SCORE_GAP_TO_SWITCH = 20;
 const SCORE_DROP_TRIGGER = 15;
 const MAX_WHALE_ALERTS = 20;

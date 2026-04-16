@@ -4,7 +4,9 @@ require("dotenv").config();
 const https = require("https");
 const crypto = require("crypto");
 
-const { btcStrategy } = require("./strategy");
+const { multiPairStrategy, btcStrategy } = require("./strategy");
+const { getBTCSentiment, getPairCategory } = require("./strategy/pairRegimeDetector");
+const { recordExit } = require("./strategy/antiFakeout");
 const orchestrator = require("./botOrchestrator");
 const { riskGuard } = require("./guards");
 const { analytics } = require("./services/analytics");
@@ -611,6 +613,11 @@ async function closePosition(price, reason = "UNKNOWN") {
   state.lastClosedTradePnL = pnl > 0 ? "WIN" : "LOSS";
   _justClosed = true;  // Set flag to skip decision logic for next 1-2 ticks
 
+  // Record exit for anti-fakeout cooldown
+  try {
+    recordExit(pos.symbol || currentSymbol, reason, pnlUSDT, pos.side);
+  } catch (e) {}
+
   const cooldownMins = pnl > 0 ? Math.max(5, Math.ceil(CONFIG.TRADE_COOLDOWN_MS / 60000)) : 10;
   log(`⏱️  POST-${state.lastClosedTradePnL} COOLDOWN: ${cooldownMins}min lockout active`);
 
@@ -875,20 +882,17 @@ async function run() {
       }
       tickCount++;
 
-      // Hanya SATU otak yang aktif — tidak ada voting/gabungan
-      // Kondisi 1: AI_ENABLED=true DAN ANTHROPIC_API_KEY ada → orchestrator saja
-      // Kondisi 2: salah satu tidak ada → btcStrategy saja
-      // NEW: Respect forceMode override (manual toggle from dashboard)
-      const forceMode = global.botState.forceMode;
-      const keyAvailable = process.env.AI_ENABLED !== "false"
-                        && !!process.env.ANTHROPIC_API_KEY;
-      const aiEnabled = forceMode === "BOT" ? false
-                      : forceMode === "AI"  ? keyAvailable
-                      : keyAvailable && global.botState.aiHealthy !== false;
+      // === MULTI-PAIR STRATEGY ===
+      // Primary: multiPairStrategy (pair-specific regime detection)
+      // Fallback: btcStrategy (legacy)
+      // BTC klines passed for sentiment filter on altcoins
+      const btcKlines = currentSymbol !== "BTCUSDT" 
+        ? await fetchKlinesForSymbol("BTCUSDT", "1m", 100)
+        : klines;
 
       let decision;
       if (aiEnabled) {
-        // Bug 5: wrap dengan 12s timeout agar loop tidak hang
+        // AI Orchestrator - still uses its own logic but with pair context
         decision = await withTimeout(
           orchestrator.orchestrate({
             klines_1m:      klines,
@@ -901,34 +905,32 @@ async function run() {
             equityCurve,
             equity:         liveEquity,
             mode:           CONFIG.MODE,
+            pairConfig:     currentPairConfig,  // Pass pair config
           }),
           12000,
-          null  // Return null on timeout instead of HOLD
+          null
         );
 
         if (!decision || global.botState.aiHealthy === false) {
-          // AI gagal/timeout → fallback ke btcStrategy dengan context HTF
-          log(`🔄 FALLBACK: AI ${!decision ? 'timeout' : global.botState.aiDownReason} — using btcStrategy`);
-          decision = btcStrategy.analyze({ klines, position: state.activePosition, pairConfig: currentPairConfig });
-          decision.source = !decision.source
-            ? "BTCSTRATEGY_FALLBACK"
-            : decision.source;
-
-          // Jangan blokir entry saat fallback — reset scoreBoard agar tidak confusing
-          global.botState.scoreBoard = {
-            htf_confidence: null,
-            smc_confluence_score: null,
-            decision_score: null,
-            momentum_confidence: null,
-            judas_confidence: null,
-            regime: "FALLBACK_MODE",
-            market_state: "UNKNOWN",
-            timestamp: Date.now(),
-          };
+          // AI failed → use multiPairStrategy as primary fallback
+          log(`🔄 FALLBACK: AI ${!decision ? 'timeout' : global.botState.aiDownReason} — using multiPairStrategy`);
+          decision = multiPairStrategy.analyze({ 
+            klines, 
+            position: state.activePosition, 
+            pairConfig: currentPairConfig,
+            btcKlines: btcKlines,
+          });
+          decision.source = !decision.source ? "MULTIPAIR_FALLBACK" : decision.source;
         }
       } else {
-        decision = btcStrategy.analyze({ klines, position: state.activePosition, pairConfig: currentPairConfig });
-        decision.source = "BTCSTRATEGY_ONLY";
+        // No AI - use multiPairStrategy as primary strategy
+        decision = multiPairStrategy.analyze({ 
+          klines, 
+          position: state.activePosition, 
+          pairConfig: currentPairConfig,
+          btcKlines: btcKlines,
+        });
+        decision.source = "MULTIPAIR_ONLY";
       }
 
       // Pastikan decision selalu ada
@@ -956,9 +958,14 @@ async function run() {
 
       // Track AI mode status (show if using AI or btcStrategy fallback)
       global.botState.aiMode = aiEnabled;
-      global.botState.aiSource = aiEnabled ? "ORCHESTRATOR" : "BTCSTRATEGY";
+      global.botState.aiSource = aiEnabled ? "ORCHESTRATOR" : "MULTIPAIR";
       global.botState.aiForced = forceMode !== null;
       global.botState.aiDownReason = global.botState.aiHealthy === false ? global.botState.aiDownReason : null;
+
+      // Add pair-specific regime info to botState
+      if (decision.regime) {
+        global.botState.pairRegime = decision.regime;
+      }
 
       // ⭐ Check if ASIA session is blocked (00:00-06:00 UTC = 07:00-13:00 WIB)
       const utcNow = new Date().getUTCHours();

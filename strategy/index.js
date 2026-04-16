@@ -3,22 +3,35 @@
 /**
  * STRATEGY MODULE — Entry/Exit decision logic
  * Central export point for all strategy modules
+ * 
+ * Multi-pair system:
+ * - multiPairStrategy: Primary strategy (pair-specific regime detection)
+ * - btcStrategy: Fallback/legacy strategy
+ * - pairRegimeDetector: Regime detection per pair category
+ * - antiFakeout: Anti-whipsaw protection
+ * - tpExitManager: Pair-specific TP/Exit logic
  */
 
+const multiPairStrategy = require("./multiPairStrategy");
 const btcStrategy = require("./btcStrategy");
-const entryQualityFilter = require("./entryQualityFilter");
-const sessionFilter = require("./sessionFilter");
-const pairRotation = require("./pairRotation");
-const entryProtocol = require("./entryProtocol");
+const pairRegimeDetector = require("./pairRegimeDetector");
+const antiFakeout = require("./antiFakeout");
+const tpExitManager = require("./tpExitManager");
+const pairScorer = require("./pairScorer");
 
 module.exports = {
+  // Primary strategy
+  multiPairStrategy,
+  
+  // Fallback strategy
   btcStrategy,
-  entryQualityFilter,
-  sessionFilter,
-  pairRotation,
-  entryProtocol,
-
-  // For backward compatibility
-  ...btcStrategy,
-  ...entryQualityFilter,
+  
+  // Utilities
+  pairRegimeDetector,
+  antiFakeout,
+  tpExitManager,
+  pairScorer,
+  
+  // Legacy exports
+  analyze: multiPairStrategy.analyze,
 };

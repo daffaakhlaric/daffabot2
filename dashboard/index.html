@@ -1571,6 +1571,7 @@ function scheduleRender(data) {
   if(data){
     state.live=data.live||{};
     state.analytics=data.analytics||{};
+    state.sessionCountdown=data.sessionCountdown||{};  // ⭐ Add session countdown to state
     // Update server start time if provided (ensures uptime persists across browser refreshes)
     if(data.serverStartTime && !serverStartTime) serverStartTime=data.serverStartTime;
   }
@@ -1594,6 +1595,7 @@ function doRender() {
   try { updatePosition(L); } catch(e){console.error('❌ updatePosition error:', e);}
   try { updateAIPanel(L); } catch(e){}
   try { updateEquityChart(A); } catch(e){}
+  try { updateSessionCountdown(); } catch(e){console.error('❌ updateSessionCountdown error:', e);}  // ⭐ Add countdown update
 
   const activeSection=document.querySelector('.nav-item.active')?.dataset.sec||'overview';
   if(activeSection==='performance') try{updatePerformance(A);}catch(e){}

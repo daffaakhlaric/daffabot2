@@ -283,6 +283,93 @@ function getActivePairConfig() {
   return pairCfg || getPairBySymbol("BTCUSDT");
 }
 
+async function initializeStartupPair({ klines1mMap, priceMap, aiEnabled }) {
+  initState();
+  const state = global.pairManagerState;
+
+  const pairs = getEnabledPairs();
+  const scored = [];
+
+  // Score each pair
+  for (const pair of pairs) {
+    const klines = klines1mMap[pair.symbol];
+    const price = priceMap[pair.symbol];
+
+    if (!klines || klines.length < 50 || !price) {
+      continue;
+    }
+
+    // Get whale signal
+    const whaleSignal = detectWhaleActivity({ klines, price });
+
+    // Score pair
+    const pairScore = scorePair({ klines, price, pairConfig: pair, whaleSignal });
+
+    // Store score
+    state.pairScores[pair.symbol] = { ...pairScore, whaleSignal };
+
+    // Build scoreboard entry
+    scored.push({
+      symbol: pair.symbol,
+      displayName: pair.displayName,
+      score: pairScore.score,
+      recommendation: pairScore.recommendation,
+      trendDirection: pairScore.trend_direction,
+      isSaturated: pairScore.isSaturated,
+      whaleDetected: whaleSignal.whaleDetected,
+      whaleSignal: whaleSignal.signal,
+      whaleConfidence: whaleSignal.confidence,
+      atrQuality: pairScore.breakdown.atr,
+      volumeAnomaly: pairScore.breakdown.volume,
+      trendStrength: pairScore.breakdown.trend,
+      notes: pairScore.notes,
+    });
+  }
+
+  // Sort by score (highest first)
+  scored.sort((a, b) => b.score - a.score);
+  state.scoreboard = scored;
+  state.lastEvalTime = Date.now();
+  state.currentMode = aiEnabled ? "AI" : "BOT";
+
+  // Select best pair that meets minimum score requirement
+  let selectedPair = null;
+  for (const pair of scored) {
+    const pairCfg = getPairBySymbol(pair.symbol);
+    if (pairCfg && pair.score >= pairCfg.minScore && !pair.isSaturated) {
+      selectedPair = pair.symbol;
+      break;
+    }
+  }
+
+  // Fallback to highest scoring pair if no pair meets minimum requirement
+  if (!selectedPair && scored.length > 0) {
+    selectedPair = scored[0].symbol;
+  }
+
+  // If we found a pair, set it as active
+  if (selectedPair) {
+    state.activePair = selectedPair;
+    state.activePairSetAt = Date.now();
+    state.activePairPeakScore = state.pairScores[selectedPair]?.score || 0;
+    state.recommendation = buildRecommendation(scored, aiEnabled);
+    state.initialized = true;
+    return {
+      selectedPair,
+      score: state.pairScores[selectedPair]?.score || 0,
+      scoreboard: scored,
+      recommendation: state.recommendation,
+    };
+  }
+
+  return {
+    selectedPair: "BTCUSDT", // Ultimate fallback
+    score: 0,
+    scoreboard: scored,
+    recommendation: "No suitable pair found, using BTC",
+  };
+}
+
 module.exports = {
   evaluateAll,
   shouldSwitchPair,
@@ -291,4 +378,5 @@ module.exports = {
   buildRecommendation,
   getActivePairConfig,
   initState,
+  initializeStartupPair,
 };

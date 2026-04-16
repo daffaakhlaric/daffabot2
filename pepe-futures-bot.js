@@ -1254,5 +1254,51 @@ try {
 // ── LOAD TRADE HISTORY AT STARTUP ──────────────────────────
 loadTradeHistoryFromDashboard();
 
-// Start the bot
-run();
+// ── INITIALIZE STARTUP PAIR ──────────────────────────────────────
+async function initializeBotStartup() {
+  log("🚀 STARTUP: Evaluating pairs to select the best one...");
+
+  try {
+    // Fetch klines for all enabled pairs
+    const { klines1mMap, priceMap } = await fetchAllPairKlines();
+
+    // Initialize pair and select best one
+    const initResult = await pairManager.initializeStartupPair({
+      klines1mMap,
+      priceMap,
+      aiEnabled: global.botState.aiMode || false,
+    });
+
+    if (initResult.selectedPair) {
+      const newPairCfg = getPairBySymbol(initResult.selectedPair);
+      if (newPairCfg) {
+        currentSymbol = initResult.selectedPair;
+        currentPairConfig = newPairCfg;
+
+        // Update CONFIG-like values for current pair
+        CONFIG.LEVERAGE = currentPairConfig.leverage;
+        CONFIG.POSITION_SIZE_USDT = currentPairConfig.positionSizeUSDT;
+
+        global.botState.currentPair = currentSymbol;
+
+        log(`✅ STARTUP PAIR SELECTED: ${initResult.selectedPair} (Score: ${initResult.score})`);
+        log(`📊 Top 5 Pairs Scoreboard:`);
+        initResult.scoreboard.slice(0, 5).forEach((p, idx) => {
+          log(`   ${idx + 1}. ${p.displayName}: ${p.score}pts (${p.trendDirection}) ${p.isSaturated ? '⚠️ SATURATED' : '✅ OK'}`);
+        });
+        log(`💡 Recommendation: ${initResult.recommendation}`);
+      }
+    }
+  } catch (err) {
+    log(`⚠️ Startup pair initialization error: ${err.message}`);
+    log(`⚠️ Falling back to BTC`);
+    currentSymbol = CONFIG.SYMBOL;
+    currentPairConfig = getPairBySymbol(CONFIG.SYMBOL);
+  }
+}
+
+// Start bot with pair initialization
+(async () => {
+  await initializeBotStartup();
+  run();
+})();

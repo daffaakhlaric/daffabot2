@@ -613,6 +613,11 @@ async function closePosition(price, reason = "UNKNOWN") {
 
   const cooldownMins = pnl > 0 ? Math.max(5, Math.ceil(CONFIG.TRADE_COOLDOWN_MS / 60000)) : 10;
   log(`⏱️  POST-${state.lastClosedTradePnL} COOLDOWN: ${cooldownMins}min lockout active`);
+
+  // ── FORCE PAIR RE-EVALUATION AFTER CLOSE ──────────────────────────
+  // Re-evaluate pairs immediately after exit to select best pair for next entry
+  forceEvalNextTick = true;
+  log(`🔄 Pair re-evaluation triggered — will select best pair for next entry`);
 }
 
 // Partial close for TP levels — doesn't null position (stays open with reduced size)
@@ -693,10 +698,11 @@ async function run() {
       if (CONFIG.MULTI_PAIR_ENABLED) {
         // ── ANTI INSTANT-SWITCH ──────────────────────────
         // Skip pair re-eval for N seconds after a position closes (prevent pair hopping)
+        // BUT: Allow immediate re-eval if forceEvalNextTick is set (after close)
         const postCloseSkipMs = 3 * 60 * 1000;  // 3 min skip after close
-        const justClosed = state.lastTradeCloseTime > 0 && (Date.now() - state.lastTradeCloseTime) < postCloseSkipMs;
+        const justClosed = !forceEvalNextTick && state.lastTradeCloseTime > 0 && (Date.now() - state.lastTradeCloseTime) < postCloseSkipMs;
 
-        const shouldEval = (forceEvalNextTick && !justClosed) ||
+        const shouldEval = (forceEvalNextTick) ||
           (Date.now() - lastPairEvalTime > CONFIG.PAIR_EVAL_INTERVAL_MS && !justClosed);
 
         if (shouldEval && !state.activePosition) {
@@ -723,7 +729,8 @@ async function run() {
               const newPairCfg = getPairBySymbol(evalResult.nextPair);
 
               if (newPairCfg) {
-                log(`🔄 PAIR SWITCH: ${prevSymbol} → ${evalResult.nextPair} | Reason: ${evalResult.switchReason}`);
+                const switchContext = forceEvalNextTick ? " [POST-EXIT]" : "";
+                log(`🔄 PAIR SWITCH${switchContext}: ${prevSymbol} → ${evalResult.nextPair} | Reason: ${evalResult.switchReason}`);
                 pairManager.recordSwitch(prevSymbol, evalResult.nextPair, evalResult.switchReason);
 
                 currentSymbol = evalResult.nextPair;
@@ -735,6 +742,12 @@ async function run() {
 
                 global.botState.currentPair = currentSymbol;
                 forceEvalNextTick = true;
+              }
+            } else if (forceEvalNextTick) {
+              // Pair re-evaluation after close found current pair is still best
+              const currentScore = evalResult.scoreboard.find(p => p.symbol === currentSymbol);
+              if (currentScore) {
+                log(`✅ POST-EXIT PAIR CHECK: ${currentSymbol} still best (${currentScore.score}pts)`);
               }
             }
           } catch (err) {

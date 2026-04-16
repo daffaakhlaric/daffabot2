@@ -11,7 +11,12 @@ const featureEngine = require("./featureEngine");
 const { riskGuard } = require("./guards");
 const tradeMemory   = require("./tradeMemory");
 const { whaleTracker } = require("./services/whale");
-const { detectPairRegime: marketRegimeDetector } = require("./strategy/enhancedRegimeDetector");
+const { detectPairRegime } = require("./strategy/enhancedRegimeDetector");
+
+// Wrapper for backward compatibility
+const marketRegimeDetector = {
+  detectMarketRegime: (klines) => detectPairRegime(klines, "BTCUSDT")
+};
 
 // ── HELPERS ───────────────────────────────────────────────
 function liveData() {

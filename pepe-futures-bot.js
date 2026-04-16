@@ -883,11 +883,10 @@ async function run() {
       tickCount++;
 
       // === AI ENABLED CHECK ===
-      const forceMode = global.botState.forceMode;
-      const keyAvailable = process.env.AI_ENABLED !== "false" && !!process.env.ANTHROPIC_API_KEY;
-      const aiEnabled = forceMode === "BOT" ? false
-                      : forceMode === "AI"  ? keyAvailable
-                      : keyAvailable && global.botState.aiHealthy !== false;
+      // Simple check: AI is disabled if no API key
+      const hasAIKey = !!process.env.ANTHROPIC_API_KEY;
+      const isAIMode = global.botState?.aiMode !== false && hasAIKey;
+      const aiEnabled = isAIMode && global.botState?.aiHealthy !== false;
 
       // === MULTI-PAIR STRATEGY ===
       // Primary: multiPairStrategy (pair-specific regime detection)

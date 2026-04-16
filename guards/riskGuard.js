@@ -8,7 +8,7 @@
 
 const psychGuard = require("./psychGuard");
 const profitProtector = require("./profitProtector");
-const { entryQualityFilter } = require("../strategy");
+const { smcValidator, enhancedSessionFilter } = require("../strategy");
 
 // ── WHALE TRAP & SPOOF COOLDOWN STATE ─────────────────────
 let _whaleTrapCooldownUntil = 0;
@@ -418,35 +418,31 @@ function runAllChecks({
   }
 
   // 11. Entry Quality Filter — Prevent false breakouts & chop trades
-  const qualityCheck = entryQualityFilter.runEntryQualityChecks({
-    setupType: proposedTrade?.setup || "SAFE",
-    decisionScore: proposedTrade?.confluenceScore || 55,
-    klines: equityCurve?.length ? [] : [], // Pass empty for now (would need actual klines)
-    candleStartTime: proposedTrade?.candleStartTime || now,
-    currentTime: now,
-    tradeHistory,
-    currentSymbol: proposedTrade?.symbol || "BTCUSDT",
-    btcScore: proposedTrade?.btcScore || 55,
-    btcStatus: proposedTrade?.btcStatus || "UNKNOWN",
-  });
+  // Using new SMC validator and session filter
+  const smcCheck = smcValidator.validateEntry(
+    proposedTrade?.klines || [],
+    proposedTrade?.side === "LONG" ? "LONG" : "SHORT",
+    proposedTrade?.symbol || "BTCUSDT"
+  );
+  const sessionCheck = enhancedSessionFilter.checkSession(
+    proposedTrade?.symbol || "BTCUSDT",
+    proposedTrade?.confluenceScore || 50
+  );
 
-  for (const b of qualityCheck.blocks) {
-    blocks.push({ type: "QUALITY_" + b.type, reason: b.reason });
+  if (!smcCheck.canEnter) {
+    blocks.push({ type: "SMC_VALIDATION", reason: smcCheck.failed?.join("; ") || "SMC checks failed" });
   }
-  for (const w of qualityCheck.warnings) {
-    warnings.push({ type: "QUALITY_" + w.type, message: w.message });
+  if (!sessionCheck.canTrade) {
+    blocks.push({ type: "SESSION_FILTER", reason: sessionCheck.reasons?.join("; ") || "Session blocked" });
   }
 
   // Expose entry quality state to dashboard
   if (typeof global !== "undefined" && global.botState) {
     global.botState.entryQuality = {
-      approved: qualityCheck.approved,
-      blocks_count: qualityCheck.blocks?.length || 0,
-      warnings_count: qualityCheck.warnings?.length || 0,
-      chop_detected: qualityCheck.details?.chop?.is_chop || false,
-      candle_confirmed: qualityCheck.details?.candleConfirmation?.confirmed || false,
-      atr_sl_pct: qualityCheck.details?.atrSL?.sl_pct || 0,
-      loss_streak: qualityCheck.details?.lossDefense?.consecutive_losses || 0,
+      approved: smcCheck.canEnter && sessionCheck.canTrade,
+      smcScore: smcCheck.score,
+      smcGrade: smcCheck.grade,
+      sessionQuality: sessionCheck.quality,
     };
   }
 

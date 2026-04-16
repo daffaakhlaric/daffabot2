@@ -2,10 +2,15 @@
 
 /**
  * Enhanced Pair Scorer with Pair-Specific Regime Detection
- * Uses pairRegimeDetector for category-aware scoring
+ * Uses enhancedRegimeDetector for category-aware scoring
  */
 
-const { detectPairRegime, getBTCSentiment, adjustForBTCSentiment } = require("./pairRegimeDetector");
+const { detectPairRegime, getBTCSentiment, adjustForBTCSentiment, getPairCategory: getCategory } = require("./enhancedRegimeDetector");
+
+function getPairCategory(symbol) {
+  return getCategory(symbol);
+}
+
 const PAIR_CATEGORIES = {
   MAJOR: ["BTCUSDT", "ETHUSDT"],
   MID: ["SOLUSDT", "BNBUSDT", "XRPUSDT", "LINKUSDT", "ADAUSDT"],

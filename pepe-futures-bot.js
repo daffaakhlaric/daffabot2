@@ -5,8 +5,8 @@ const https = require("https");
 const crypto = require("crypto");
 
 const { multiPairStrategy, btcStrategy } = require("./strategy");
-const { getBTCSentiment, getPairCategory } = require("./strategy/pairRegimeDetector");
-const { recordExit } = require("./strategy/antiFakeout");
+const { getBTCSentiment, getPairCategory, getCurrentSession } = require("./strategy/enhancedRegimeDetector");
+const { recordExit } = require("./strategy/cooldownManager");
 const orchestrator = require("./botOrchestrator");
 const { riskGuard } = require("./guards");
 const { analytics } = require("./services/analytics");
@@ -1047,52 +1047,41 @@ async function run() {
 
         // ── ANTI-FAKEOUT: MINIMUM HOLD TIME CHECK ──────────────────────────
         // Prevent entries immediately after position close (even if cooldown passed)
-        const antiFakeout = require("./strategy/antiFakeout");
-        const { getPairCategory } = require("./strategy/pairRegimeDetector");
+        const fastTradeFix = require("./strategy/fastTradeFix");
+        const cooldownMgr = require("./strategy/cooldownManager");
+        const { getPairCategory } = require("./strategy/enhancedRegimeDetector");
         const pairCategory = getPairCategory(currentSymbol);
         
         // Check recent exit for fast-loss cooldown
-        const recentExitCheck = antiFakeout.checkReentryCooldown(currentSymbol, decision.action);
-        if (recentExitCheck.blocked) {
-          log(`⛔ ${recentExitCheck.reason}`);
-          global.botState.cooldownReason = recentExitCheck.reason;
+        const recentExitCheck = cooldownMgr.checkCooldown(currentSymbol, decision.action);
+        if (!recentExitCheck.allowed) {
+          log(`⛔ ${recentExitCheck.blocks?.[0]?.reason || "Cooldown active"}`);
+          global.botState.cooldownReason = recentExitCheck.blocks?.[0]?.reason || "Cooldown";
           _tickRunning = false;
           continue;
         }
 
         // Check for micro-chop before entry
-        const chopCheck = antiFakeout.checkMicroChop(klines);
-        if (chopCheck.isChop) {
+        const chopCheck = fastTradeFix.checkMicroRange(klines, currentSymbol);
+        if (!chopCheck.allowed) {
           log(`⛔ MICRO CHOP BLOCK — ${chopCheck.reason}`);
           global.botState.cooldownReason = `MICRO_CHOP: ${chopCheck.reason}`;
           _tickRunning = false;
           continue;
         }
 
-        // Check for tick noise
-        const noiseCheck = antiFakeout.checkTickNoise(klines);
-        if (noiseCheck.isNoise) {
-          log(`⛔ TICK NOISE BLOCK — ${noiseCheck.reason}`);
-          global.botState.cooldownReason = `NOISE: ${noiseCheck.reason}`;
-          _tickRunning = false;
-          continue;
-        }
-
         // Require minimum signal score (A/A+ only)
-        const htfCheck = require("./strategy/pairRegimeDetector");
-        const regime = htfCheck.detectPairRegime(klines, currentSymbol);
-        const signalScore = antiFakeout.scoreSignal(
-          klines,
-          regime.trendDirection,
-          null,
-          null,
-          klines.slice(-5).reduce((s,k)=>s+k.volume,0) > klines.slice(-20).reduce((s,k)=>s+k.volume,0)/20 * 1.2,
-          regime.session
-        );
-        const minScore = pairCategory === "MEME" ? 80 : pairCategory === "MID" ? 70 : 65;
-        if (signalScore.score < minScore) {
-          log(`⛔ SIGNAL WEAK — score ${signalScore.score} < ${minScore} (${signalScore.grade})`);
-          global.botState.cooldownReason = `WEAK_SIGNAL: ${signalScore.score}`;
+        const signalScorer = require("./strategy/signalScoringEngine");
+        const scoreResult = signalScorer.calculateSignalScore({
+          klinesHTF: klines_1h || klines,
+          klinesLTF: klines,
+          symbol: currentSymbol,
+          direction: decision.action,
+        });
+        const minScore = signalScorer.getMinScore(currentSymbol);
+        if (!scoreResult.canTrade) {
+          log(`⛔ SIGNAL WEAK — ${scoreResult.failedChecks?.[0] || "below threshold"}`);
+          global.botState.cooldownReason = `WEAK_SIGNAL: ${scoreResult.percentageScore}`;
           _tickRunning = false;
           continue;
         }

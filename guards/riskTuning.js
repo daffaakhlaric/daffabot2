@@ -15,7 +15,7 @@
  * 8. Dashboard: why blocked, session, score, daily DD
  */
 
-const { sessionFilter } = require("../strategy");
+const { getEnhancedSession: sessionFilter } = require("../strategy");
 const { getSessionByUTCHour } = require("../utils/time");
 
 /**

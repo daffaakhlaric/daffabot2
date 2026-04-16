@@ -4,36 +4,46 @@
  * STRATEGY MODULE — Entry/Exit decision logic
  * Central export point for all strategy modules
  * 
- * Multi-pair system:
- * - multiPairStrategy: Primary strategy (pair-specific regime detection)
- * - btcStrategy: Fallback/legacy strategy
- * - pairRegimeDetector: Regime detection per pair category
- * - antiFakeout: Anti-whipsaw protection
- * - tpExitManager: Pair-specific TP/Exit logic
+ * Multi-pair system (v2.0):
+ * - multiPairStrategy: Primary strategy
+ * - enhancedRegimeDetector: Pair-specific regime detection (NEW)
+ * - smcValidator: SMC validation (NEW)
+ * - signalScoringEngine: A/A+ scoring (NEW)
+ * - fastTradeFix: Min hold enforcement (NEW)
+ * - cooldownManager: Reentry protection (NEW)
+ * - enhancedSessionFilter: Session optimization (NEW)
+ * - mtfEngine: Multi-timeframe analysis (NEW)
  */
 
 const multiPairStrategy = require("./multiPairStrategy");
 const btcStrategy = require("./btcStrategy");
-const pairRegimeDetector = require("./pairRegimeDetector");
-const antiFakeout = require("./antiFakeout");
+const enhancedRegimeDetector = require("./enhancedRegimeDetector");
+const smcValidator = require("./smcValidator");
+const signalScoringEngine = require("./signalScoringEngine");
+const fastTradeFix = require("./fastTradeFix");
+const cooldownManager = require("./cooldownManager");
+const enhancedSessionFilter = require("./enhancedSessionFilter");
+const mtfEngine = require("./mtfEngine");
 const tpExitManager = require("./tpExitManager");
 const pairScorer = require("./pairScorer");
-const entryQualityFilter = require("./entryQualityFilter");
 
 module.exports = {
-  // Primary strategy
   multiPairStrategy,
-  
-  // Fallback strategy
   btcStrategy,
   
+  // New modules (v2.0)
+  enhancedRegimeDetector,
+  smcValidator,
+  signalScoringEngine,
+  fastTradeFix,
+  cooldownManager,
+  enhancedSessionFilter,
+  mtfEngine,
+  
   // Utilities
-  pairRegimeDetector,
-  antiFakeout,
   tpExitManager,
   pairScorer,
-  entryQualityFilter,
   
-  // Legacy exports
+  // Legacy export
   analyze: multiPairStrategy.analyze,
 };

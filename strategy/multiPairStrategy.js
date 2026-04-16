@@ -12,8 +12,9 @@
  * - BTC sentiment as secondary filter only
  */
 
-const { detectPairRegime, getBTCSentiment, adjustForBTCSentiment, getCurrentSession, getPairCategory } = require("./pairRegimeDetector");
-const { validateEntry, checkMicroChop, checkTickNoise } = require("./antiFakeout");
+const { detectPairRegime, getBTCSentiment, adjustForBTCSentiment, getCurrentSession, getPairCategory } = require("./enhancedRegimeDetector");
+const { validateEntry: validateSMC } = require("./smcValidator");
+const { checkMicroRange, checkATRThreshold } = require("./fastTradeFix");
 const { getTPConfig } = require("./tpExitManager");
 const { getPairBySymbol } = require("../config");
 
@@ -246,22 +247,24 @@ function analyze({ klines, position, pairConfig, btcKlines }) {
 
     // === ANTI-FAKEOUT CHECK ===
     const signal = htf?.bias === "BULLISH" ? "LONG" : htf?.bias === "BEARISH" ? "SHORT" : "HOLD";
-    const antiFakeout = validateEntry({
-      symbol: pairCfg.symbol || "BTCUSDT",
-      klines,
-      signal,
-      htfBias: htf?.bias,
-      smcChecks: checks,
-      momentum: null,
-      session,
-      positionOpenedAt: null,
-    });
+    const smcCheck = validateSMC(klines, signal, pairCfg.symbol || "BTCUSDT");
 
-    if (!antiFakeout.allowed) {
+    if (!smcCheck.canEnter) {
       return {
         action: "HOLD",
-        reason: antiFakeout.reasons.join("; "),
-        source: "ANTI_FAKEOUT",
+        reason: smcCheck.failed?.join("; ") || "SMC validation failed",
+        source: "SMC_FILTER",
+        regime,
+      };
+    }
+
+    // Additional micro range check
+    const microRangeCheck = checkMicroRange(klines, pairCfg.symbol || "BTCUSDT");
+    if (!microRangeCheck.allowed) {
+      return {
+        action: "HOLD",
+        reason: microRangeCheck.reason,
+        source: "MICRO_RANGE",
         regime,
       };
     }
@@ -332,9 +335,9 @@ function analyze({ klines, position, pairConfig, btcKlines }) {
     }
 
     if (entrySignal) {
-      // Add anti-fakeout score to entry
-      entrySignal.antiFakeoutScore = antiFakeout.score;
-      entrySignal.antiFakeoutGrade = antiFakeout.grade;
+      // Add SMC score to entry
+      entrySignal.antiFakeoutScore = smcCheck.score;
+      entrySignal.antiFakeoutGrade = smcCheck.grade;
       entrySignal.regime = regime;
       return entrySignal;
     }

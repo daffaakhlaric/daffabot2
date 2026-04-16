@@ -947,9 +947,9 @@ async function run() {
       global.botState.aiForced = forceMode !== null;
       global.botState.aiDownReason = global.botState.aiHealthy === false ? global.botState.aiDownReason : null;
 
-      // ⭐ Check if ASIA session is blocked (extended: 00:00-05:00 UTC = 07:00-12:00 WIB)
+      // ⭐ Check if ASIA session is blocked (00:00-06:00 UTC = 07:00-13:00 WIB)
       const utcNow = new Date().getUTCHours();
-      const isAsiaPeriod = utcNow >= 0 && utcNow < 5;  // 00:00-04:59 UTC = 07:00-11:59 WIB (extended)
+      const isAsiaPeriod = utcNow >= 0 && utcNow < 6;  // 00:00-05:59 UTC = 07:00-12:59 WIB
 
       // Enhanced logging with confidence scores + AI mode
       const scoreStr = [
@@ -963,7 +963,7 @@ async function run() {
       let logMsg;
       if (isAsiaPeriod && decision.action !== "HOLD") {
         // ⭐ If ASIA and trying to enter, show BLOCKED message instead
-        logMsg = `🔴 ASIA SESSION BLOCKED — ${decision.action} setup rejected (low liquidity period 07:00-12:00 WIB)`;
+        logMsg = `🔴 ASIA SESSION BLOCKED — ${decision.action} setup rejected (low liquidity period 07:00-13:00 WIB)`;
       } else {
         const modeTag = aiEnabled ? "🤖" : "🔴";
         logMsg = `${modeTag} ${decision.action} [${decision.source || "UNKNOWN"}]${scoreStr ? " | " + scoreStr : ""}${decision.reason ? " — " + decision.reason : ""}`;
@@ -1141,10 +1141,10 @@ async function run() {
             continue;
           }
 
-          // ⭐ ASIA SESSION BLOCK — NO ENTRIES ALLOWED (Extended: 00:00-05:00 UTC = 07:00-12:00 WIB)
+          // ⭐ ASIA SESSION BLOCK — NO ENTRIES ALLOWED (00:00-06:00 UTC = 07:00-13:00 WIB)
           const utcHour = new Date().getUTCHours();
-          if (utcHour >= 0 && utcHour < 5) {  // 00:00-04:59 UTC = 07:00-11:59 WIB (extended for safety)
-            log(`🔴 ENTRY BLOCKED: ASIA SESSION (${utcHour.toString().padStart(2,'0')}:00 UTC) — no trading 07:00-12:00 WIB`);
+          if (utcHour >= 0 && utcHour < 6) {  // 00:00-05:59 UTC = 07:00-12:59 WIB (fully safe until LONDON)
+            log(`🔴 ENTRY BLOCKED: ASIA SESSION (${utcHour.toString().padStart(2,'0')}:00 UTC) — no trading 07:00-13:00 WIB`);
             global.botState.cooldownReason = `ASIA_BLOCKED — ${new Date().toLocaleTimeString()}`;
             continue;
           }

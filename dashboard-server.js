@@ -81,8 +81,8 @@ function calculateSessionCountdown() {
   let secondsUntilNext = 0;
   let currentSession = null;
 
-  // Find current session (ASIA block: 0-5 hours UTC = 7:00-12:00 WIB)
-  if (totalSecNow >= 0 && totalSecNow < 5 * 3600) {
+  // Find current session (ASIA block: 0-6 hours UTC = 7:00-13:00 WIB)
+  if (totalSecNow >= 0 && totalSecNow < 6 * 3600) {
     // Currently in ASIA blocked period
     currentSession = null;  // ASIA is blocked, no trading
   } else {

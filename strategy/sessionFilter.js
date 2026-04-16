@@ -54,8 +54,8 @@ function getCurrentSession() {
     };
   }
 
-  // Asia Morning: 00:00-05:00 UTC (extended for safety — covers 07:00-12:00 WIB)
-  if (utcNow >= 0 && utcNow < 5) {
+  // Asia Morning: 00:00-06:00 UTC (extended for safety — covers 07:00-13:00 WIB until London opens)
+  if (utcNow >= 0 && utcNow < 6) {
     return {
       session: "ASIA_MORNING",
       utcRange: "00:00-04:00",

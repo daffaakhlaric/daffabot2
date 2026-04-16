@@ -302,8 +302,8 @@ function analyze({ klines, position, pairConfig }) {
       if (htf.bias === "BULLISH" && current.close > current.open && hasPositiveMomentum) {
         return buildEntry("LONG", price, "BTCStrategy_SNIPER", klines);
       }
-      // ⭐ FIX: SHORT requires HTF 70%+ + neutral/negative momentum (prevents weak counter-trend shorts)
-      if (htf.bias === "BEARISH" && htf.confidence >= 70 && (hasNegativeMomentum || momentumScore < 55)) {
+      // ⭐ FIXED: SHORT now requires SAME checks as LONG — HTF 70%+ + bearish candle + negative momentum
+      if (htf.bias === "BEARISH" && htf.confidence >= 70 && current.close < current.open && hasNegativeMomentum) {
         return buildEntry("SHORT", price, "BTCStrategy_SNIPER", klines);
       }
     }
@@ -323,8 +323,8 @@ function analyze({ klines, position, pairConfig }) {
       if (htf.bias === "BULLISH" && current.close > current.open && hasPositiveMomentum) {
         return buildEntry("LONG", price, "BTCStrategy_RELAXED", klines);
       }
-      // ⭐ FIX: SHORT requires HTF 75%+ + negative/neutral momentum (prevents counter-trend shorts)
-      if (htf.bias === "BEARISH" && htf.confidence >= 75 && (hasNegativeMomentum || momentumScore < 60)) {
+      // ⭐ FIXED: SHORT now requires SAME checks as LONG — HTF 75%+ + bearish candle + negative momentum
+      if (htf.bias === "BEARISH" && htf.confidence >= 75 && current.close < current.open && hasNegativeMomentum) {
         return buildEntry("SHORT", price, "BTCStrategy_RELAXED", klines);
       }
     }
@@ -392,6 +392,20 @@ function buildEntry(side, price, setup = "SMC", klines = []) {
   const tp1 = side === "LONG" ? price + risk * 3   : price - risk * 3;   // 3:1 RR ratio
   const tp2 = side === "LONG" ? price + risk * 5   : price - risk * 5;   // 5:1 RR ratio
   const tp3 = side === "LONG" ? price + risk * 8   : price - risk * 8;   // 8:1 RR ratio
+
+  // ⭐ MINIMUM PROFIT CHECK — reject if TP1 doesn't cover fees (0.1% round-trip)
+  const minProfitPct = 0.15;  // Need at least 0.15% to clear 0.1% fees + buffer
+  const tp1ProfitPct = side === "LONG"
+    ? (tp1 - price) / price * 100
+    : (price - tp1) / price * 100;
+
+  if (tp1ProfitPct < minProfitPct) {
+    return {
+      action: "HOLD",
+      reason: `TP1 profit ${tp1ProfitPct.toFixed(3)}% < ${minProfitPct}% (below fee threshold)`,
+      source: "BTCSTRATEGY",
+    };
+  }
 
   return {
     action: side,

@@ -419,21 +419,31 @@ function runAllChecks({
 
   // 11. Entry Quality Filter — Prevent false breakouts & chop trades
   // Using new SMC validator and session filter
-  const smcCheck = smcValidator.validateEntry(
-    proposedTrade?.klines || [],
-    proposedTrade?.side === "LONG" ? "LONG" : "SHORT",
-    proposedTrade?.symbol || "BTCUSDT"
-  );
-  const sessionCheck = enhancedSessionFilter.checkSession(
-    proposedTrade?.symbol || "BTCUSDT",
-    proposedTrade?.confluenceScore || 50
-  );
+  const klinesForCheck = proposedTrade?.klines || [];
+  const hasEnoughKlines = klinesForCheck.length >= 20;
 
-  if (!smcCheck.canEnter) {
-    blocks.push({ type: "SMC_VALIDATION", reason: smcCheck.failed?.join("; ") || "SMC checks failed" });
-  }
-  if (!sessionCheck.canTrade) {
-    blocks.push({ type: "SESSION_FILTER", reason: sessionCheck.reasons?.join("; ") || "Session blocked" });
+  let smcCheck = { canEnter: true, score: 0, grade: "N/A", failed: [] };
+  let sessionCheck = { canTrade: true, quality: "LOADING", reasons: [] };
+
+  if (hasEnoughKlines) {
+    smcCheck = smcValidator.validateEntry(
+      klinesForCheck,
+      proposedTrade?.side === "LONG" ? "LONG" : "SHORT",
+      proposedTrade?.symbol || "BTCUSDT"
+    );
+    sessionCheck = enhancedSessionFilter.checkSession(
+      proposedTrade?.symbol || "BTCUSDT",
+      proposedTrade?.confluenceScore || 50
+    );
+
+    if (!smcCheck.canEnter) {
+      blocks.push({ type: "SMC_VALIDATION", reason: smcCheck.failed?.join("; ") || "SMC checks failed" });
+    }
+    if (!sessionCheck.canTrade) {
+      blocks.push({ type: "SESSION_FILTER", reason: sessionCheck.reasons?.join("; ") || "Session blocked" });
+    }
+  } else {
+    warnings.push({ type: "SMC_LOADING", message: "Waiting for klines data..." });
   }
 
   // Expose entry quality state to dashboard

@@ -26,15 +26,15 @@ const PAIR_CATEGORIES = {
 const PAIR_THRESHOLDS = {
   MAJOR: {
     emaPeriods: [20, 50, 200],
-    minTrendStrength: 0.5,
-    minATR: 0.15,  // Lowered from 0.3 - BTC typically moves 0.1-0.2%
-    maxATR: 3.0,   // Increased from 2.0
-    minADX: 15,    // Lowered from 20 - allow more trades
-    chopThreshold: 0.4,
+    minTrendStrength: 0.45,
+    minATR: 0.08,  // Lowered from 0.15 - allow micro-trends
+    maxATR: 3.0,
+    minADX: 12,    // Lowered from 15 - reduced ADX requirement
+    chopThreshold: 0.5,  // Raised from 0.4 - less aggressive
     volatilityLookback: 50,
-    volatilityPercentileLow: 10,  // Lowered from 20
-    volatilityPercentileHigh: 90, // Increased from 80
-    minVolumeSpike: 1.2,
+    volatilityPercentileLow: 5,   // Lowered from 10 - don't block on vol alone
+    volatilityPercentileHigh: 90,
+    minVolumeSpike: 1.1,
     minHoldSeconds: 120,
     allowedSessions: ["LONDON", "NY", "OVERLAP", "ASIAN"],
     leverage: 50,
@@ -42,15 +42,15 @@ const PAIR_THRESHOLDS = {
   },
   MID: {
     emaPeriods: [20, 50, 100],
-    minTrendStrength: 0.55,
-    minATR: 0.25,  // Lowered from 0.5
-    maxATR: 5.0,   // Increased from 3.0
-    minADX: 18,    // Lowered from 25
-    chopThreshold: 0.45,
+    minTrendStrength: 0.50,
+    minATR: 0.12,  // Lowered from 0.25
+    maxATR: 5.0,
+    minADX: 14,    // Lowered from 18
+    chopThreshold: 0.55,  // Raised from 0.45
     volatilityLookback: 40,
-    volatilityPercentileLow: 15,
+    volatilityPercentileLow: 5,   // Lowered from 15
     volatilityPercentileHigh: 85,
-    minVolumeSpike: 1.3,
+    minVolumeSpike: 1.2,
     minHoldSeconds: 150,
     allowedSessions: ["NY", "OVERLAP", "LONDON", "ASIAN"],
     leverage: 20,
@@ -58,22 +58,17 @@ const PAIR_THRESHOLDS = {
   },
   MEME: {
     emaPeriods: [20, 50, 100],
-    minTrendStrength: 0.6,
-    minATR: 0.4,   // Lowered from 0.8
-    maxATR: 8.0,   // Increased from 5.0
-    minADX: 20,    // Lowered from 30
-    chopThreshold: 0.5,
+    minTrendStrength: 0.55,
+    minATR: 0.15,  // Lowered from 0.4 - allow smaller moves
+    maxATR: 8.0,
+    minADX: 16,    // Lowered from 20
+    chopThreshold: 0.60,  // Raised from 0.5 - less choppy detection
     volatilityLookback: 30,
-    volatilityPercentileLow: 20,
+    volatilityPercentileLow: 5,   // Lowered from 20
     volatilityPercentileHigh: 80,
-    minVolumeSpike: 1.5,
+    minVolumeSpike: 1.2,  // Lowered from 1.5
     minHoldSeconds: 180,
-    allowedSessions: ["NY", "OVERLAP", "LONDON"],
-    leverage: 15,
-    sizeMultiplier: 0.3,
-  },
-    minHoldSeconds: 180,
-    allowedSessions: ["NY"],
+    allowedSessions: ["NY", "OVERLAP", "LONDON", "ASIAN"],
     leverage: 15,
     sizeMultiplier: 0.3,
   },
@@ -293,7 +288,7 @@ function detectPairRegime(klines, symbol) {
   const atrTooLow = atr < thresholds.minATR;
   const atrTooHigh = atr > thresholds.maxATR;
   const adxWeak = adx < thresholds.minADX;
-  const isChoppy = chop.isChoppy;
+  const isChoppy = chop.isChoppy && chop.chopIndex > thresholds.chopThreshold;
 
   let regime = "UNKNOWN";
   let confidence = 0;
@@ -303,15 +298,15 @@ function detectPairRegime(klines, symbol) {
     regime = "HIGH_VOL";
     confidence = Math.min(100, Math.round((atr / thresholds.maxATR) * 80));
     recommendations.push("BLOCK: Volatility spike - reduce position or disable entries");
-  } else if (isChoppy || (atrTooLow && volPct < thresholds.volatilityPercentileLow)) {
+  } else if (isChoppy && atrTooLow && volPct < thresholds.volatilityPercentileLow) {
     regime = "CHOP";
     confidence = Math.min(100, Math.round(chop.chopIndex * 150));
-    recommendations.push("BLOCK: Market is choppy - no trend following");
-  } else if (atrTooLow) {
+    recommendations.push("WARN: Market is choppy - require stronger confirmation");
+  } else if (atrTooLow && trend.direction === "SIDEWAYS") {
     regime = "DEAD";
-    confidence = 70;
-    recommendations.push("BLOCK: Insufficient movement - avoid");
-  } else if (adxWeak) {
+    confidence = 50;
+    recommendations.push("WARN: Low volatility - reduce size or wait for movement");
+  } else if (adxWeak && !trend.direction.includes("TREND")) {
     regime = "LOW_TREND_STRENGTH";
     confidence = Math.round((adx / thresholds.minADX) * 60);
     recommendations.push("WARN: Weak trend strength - require stronger confirmation");
@@ -334,13 +329,12 @@ function detectPairRegime(klines, symbol) {
     recommendations.push("VOLUME: MEME requires 1.5x volume spike");
   }
 
-  const canEnter = 
+  const canEnter =
     !atrTooHigh &&
-    !isChoppy &&
-    !atrTooLow &&
     sessionAllowed &&
-    (category !== "MEME" || volSpike.isSpike) &&
-    adx >= thresholds.minADX * 0.8;
+    adx >= thresholds.minADX * 0.7 &&
+    (isChoppy === false || (trend.direction.includes("TREND"))) &&
+    (category !== "MEME" || volSpike.ratio >= 1.1);
 
   return {
     regime,

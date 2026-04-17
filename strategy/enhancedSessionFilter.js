@@ -18,25 +18,25 @@ const { getPairCategory, getCurrentSession } = require("./enhancedRegimeDetector
 
 const SESSION_CONFIG = {
   MAJOR: {
-    allowedSessions: ["LONDON", "NY", "OVERLAP"],
-    blockedSessions: ["ASIAN"],
-    minScore: 60,
-    minATR: 0.2,
+    allowedSessions: ["LONDON", "NY", "OVERLAP", "ASIAN"],
+    blockedSessions: [],
+    minScore: 45,
+    minATR: 0.1,
     requireVolumeSpike: false,
   },
   MID: {
-    allowedSessions: ["NY", "OVERLAP"],
-    blockedSessions: ["ASIAN", "LONDON"],
-    minScore: 65,
-    minATR: 0.3,
+    allowedSessions: ["NY", "OVERLAP", "LONDON", "ASIAN"],
+    blockedSessions: [],
+    minScore: 50,
+    minATR: 0.15,
     requireVolumeSpike: false,
   },
   MEME: {
-    allowedSessions: ["NY"],
-    blockedSessions: ["ASIAN", "LONDON", "OVERLAP"],
-    minScore: 75,
-    minATR: 0.5,
-    requireVolumeSpike: true,
+    allowedSessions: ["NY", "OVERLAP", "LONDON", "ASIAN"],
+    blockedSessions: [],
+    minScore: 55,
+    minATR: 0.2,
+    requireVolumeSpike: false,
   },
 };
 
@@ -48,18 +48,18 @@ function getEnhancedSession() {
   if (utcTime >= 0 && utcTime < 6) {
     return {
       session: "ASIAN",
-      quality: "POOR",
-      reason: "Low liquidity - Asia morning",
-      minScoreBoost: 20,
+      quality: "MEDIUM",
+      reason: "Asia session - moderate liquidity",
+      minScoreBoost: 5,
     };
   }
 
   if (utcTime >= 6 && utcTime < 7) {
     return {
       session: "PRE_LONDON",
-      quality: "LOW",
-      reason: "Pre-London low liquidity",
-      minScoreBoost: 15,
+      quality: "MEDIUM",
+      reason: "Pre-London - ramping liquidity",
+      minScoreBoost: 0,
     };
   }
 
@@ -77,7 +77,7 @@ function getEnhancedSession() {
       session: "LUNCH",
       quality: "MEDIUM",
       reason: "London lunch - reduced liquidity",
-      minScoreBoost: 10,
+      minScoreBoost: 5,
     };
   }
 
@@ -103,16 +103,16 @@ function getEnhancedSession() {
     return {
       session: "NY PM",
       quality: "MEDIUM",
-      reason: "NY PM - declining liquidity",
-      minScoreBoost: 5,
+      reason: "NY PM - still active liquidity",
+      minScoreBoost: 0,
     };
   }
 
   return {
     session: "UNKNOWN",
-    quality: "LOW",
-    reason: "Off hours",
-    minScoreBoost: 25,
+    quality: "MEDIUM",
+    reason: "Off hours - but tradable",
+    minScoreBoost: 0,
   };
 }
 
@@ -170,22 +170,22 @@ function checkSession(symbol, baseScore = 50) {
 
 function getSessionMultiplier(category) {
   const session = getEnhancedSession();
-  
+
   const qualityMultipliers = {
     BEST: 1.0,
-    MEDIUM: 0.7,
-    LOW: 0.4,
-    POOR: 0.0,
+    MEDIUM: 0.85,
+    LOW: 0.6,
+    POOR: 0.4,
   };
 
   const categoryMultipliers = {
     MAJOR: 1.0,
-    MID: 0.8,
-    MEME: 0.5,
+    MID: 0.9,
+    MEME: 0.7,
   };
 
-  const qualityMult = qualityMultipliers[session.quality] || 0.5;
-  const categoryMult = categoryMultipliers[category] || 0.8;
+  const qualityMult = qualityMultipliers[session.quality] || 0.7;
+  const categoryMult = categoryMultipliers[category] || 0.85;
 
   return qualityMult * categoryMult;
 }

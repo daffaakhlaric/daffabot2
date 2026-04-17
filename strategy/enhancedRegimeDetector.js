@@ -27,46 +27,51 @@ const PAIR_THRESHOLDS = {
   MAJOR: {
     emaPeriods: [20, 50, 200],
     minTrendStrength: 0.5,
-    minATR: 0.3,
-    maxATR: 2.0,
-    minADX: 20,
+    minATR: 0.15,  // Lowered from 0.3 - BTC typically moves 0.1-0.2%
+    maxATR: 3.0,   // Increased from 2.0
+    minADX: 15,    // Lowered from 20 - allow more trades
     chopThreshold: 0.4,
     volatilityLookback: 50,
-    volatilityPercentileLow: 20,
-    volatilityPercentileHigh: 80,
+    volatilityPercentileLow: 10,  // Lowered from 20
+    volatilityPercentileHigh: 90, // Increased from 80
     minVolumeSpike: 1.2,
     minHoldSeconds: 120,
-    allowedSessions: ["LONDON", "NY", "OVERLAP"],
+    allowedSessions: ["LONDON", "NY", "OVERLAP", "ASIAN"],
     leverage: 50,
     sizeMultiplier: 1.0,
   },
   MID: {
     emaPeriods: [20, 50, 100],
     minTrendStrength: 0.55,
-    minATR: 0.5,
-    maxATR: 3.0,
-    minADX: 25,
+    minATR: 0.25,  // Lowered from 0.5
+    maxATR: 5.0,   // Increased from 3.0
+    minADX: 18,    // Lowered from 25
     chopThreshold: 0.45,
     volatilityLookback: 40,
-    volatilityPercentileLow: 25,
-    volatilityPercentileHigh: 75,
+    volatilityPercentileLow: 15,
+    volatilityPercentileHigh: 85,
     minVolumeSpike: 1.3,
     minHoldSeconds: 150,
-    allowedSessions: ["NY", "OVERLAP"],
+    allowedSessions: ["NY", "OVERLAP", "LONDON", "ASIAN"],
     leverage: 20,
     sizeMultiplier: 0.7,
   },
   MEME: {
     emaPeriods: [20, 50, 100],
     minTrendStrength: 0.6,
-    minATR: 0.8,
-    maxATR: 5.0,
-    minADX: 30,
+    minATR: 0.4,   // Lowered from 0.8
+    maxATR: 8.0,   // Increased from 5.0
+    minADX: 20,    // Lowered from 30
     chopThreshold: 0.5,
     volatilityLookback: 30,
-    volatilityPercentileLow: 30,
-    volatilityPercentileHigh: 70,
+    volatilityPercentileLow: 20,
+    volatilityPercentileHigh: 80,
     minVolumeSpike: 1.5,
+    minHoldSeconds: 180,
+    allowedSessions: ["NY", "OVERLAP", "LONDON"],
+    leverage: 15,
+    sizeMultiplier: 0.3,
+  },
     minHoldSeconds: 180,
     allowedSessions: ["NY"],
     leverage: 15,

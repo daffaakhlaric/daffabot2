@@ -161,11 +161,11 @@ function validateSMCChecklist(klines, price, pairConfig) {
       checks.rr_minimum_met = risk > 0 && tp > price;
     }
 
-    // Volume spike check - mandatory for MEME
+    // Volume spike check - optional for low liquidity
     const last5Vol = klines.slice(-5).reduce((s, k) => s + k.volume, 0);
     const avg20Vol = klines.slice(-20).reduce((s, k) => s + k.volume, 0) / 20;
     const volRatio = avg20Vol > 0 ? last5Vol / (avg20Vol * 5) : 1;
-    const minVolSpike = pairConfig?.minVolumeSpike || 1.2;
+    const minVolSpike = pairConfig?.minVolumeSpike || 0.8;  // Lowered from 1.2
     checks.volume_spike = volRatio >= minVolSpike || category !== "MEME";
 
   } catch {}
@@ -234,8 +234,8 @@ function analyze({ klines, position, pairConfig, btcKlines }) {
     const checks = validateSMCChecklist(klines, price, pairCfg);
     const confluenceScore = calculateConfluenceScore(checks, category);
 
-    // Minimum score by category
-    const minScore = pairCfg.minScore || 65;
+    // Minimum score by category - relaxed for low volatility periods
+    const minScore = pairCfg.minScore || 35;  // Lowered from 65
     if (confluenceScore < minScore) {
       return {
         action: "HOLD",
@@ -323,12 +323,12 @@ function analyze({ klines, position, pairConfig, btcKlines }) {
       }
     }
 
-    // RELAXED entry: high confluence + strong HTF
+    // RELAXED entry: HTF confirmation with minimal confluence
     if (!entrySignal) {
-      const hasGoodConfluence = confluenceScore >= (category === "MEME" ? 70 : 60);
-      const hasStrongHTF = htf && htf.confidence >= (category === "MEME" ? 80 : 75);
+      const hasMinimalConfluence = confluenceScore >= (category === "MEME" ? 25 : 20);  // Lowered from 70/60
+      const hasHTFDirection = htf && htf.confidence >= (category === "MEME" ? 50 : 45);  // Lowered from 80/75
 
-      if (hasGoodConfluence && hasStrongHTF && htf?.bias) {
+      if (hasMinimalConfluence && hasHTFDirection && htf?.bias) {
         const side = htf.bias === "BULLISH" ? "LONG" : "SHORT";
         entrySignal = buildEntry(side, price, "RELAXED", klines, pairCfg);
       }

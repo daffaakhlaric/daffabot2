@@ -290,19 +290,13 @@ function checkMicroRange(klines, category) {
   const avgPrice = last5.reduce((s, k) => s + k.close, 0) / 5;
   const rangePct = (range / avgPrice) * 100;
 
-  const maxRangePct = {
-    MAJOR: 0.4,
-    MID: 0.5,
-    MEME: 0.6,
-  }[category] || 0.4;
-
-  const valid = rangePct > maxRangePct;
+  // Removed micro range blocking - allow all ranges
+  const valid = true;
 
   return {
     valid,
     rangePct: Math.round(rangePct * 100) / 100,
-    maxAllowed: maxRangePct,
-    reason: valid ? "Price moving" : `Micro range: ${rangePct.toFixed(2)}%`,
+    reason: "Micro range check disabled",
   };
 }
 

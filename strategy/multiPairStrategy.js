@@ -278,8 +278,16 @@ function analyze({ klines, position, pairConfig, btcKlines }) {
     // === ENTRY SIGNAL GENERATION ===
     let entrySignal = null;
 
-    // TREND entry: HTF aligned + BOS + valid candle
-    if (htf?.bias === "BULLISH" && checks.structure_break && checks.entry_candle_valid) {
+    // REGIME-CONFIRMED entry: Trust regime detection when it says TRENDING
+    if (regime.regime === "TRENDING_UP" && htf?.bias === "BULLISH") {
+      entrySignal = buildEntry("LONG", price, "REGIME_TREND", klines, pairCfg);
+    }
+    else if (regime.regime === "TRENDING_DOWN" && htf?.bias === "BEARISH") {
+      entrySignal = buildEntry("SHORT", price, "REGIME_TREND", klines, pairCfg);
+    }
+
+    // TREND entry: HTF aligned + BOS + valid candle (stricter)
+    if (!entrySignal && htf?.bias === "BULLISH" && checks.structure_break && checks.entry_candle_valid) {
       // Check BTC sentiment for altcoins
       if (category !== "MAJOR" && btcSentiment) {
         const adj = adjustForBTCSentiment(regime, btcSentiment, "LONG");
@@ -294,7 +302,7 @@ function analyze({ klines, position, pairConfig, btcKlines }) {
       }
       entrySignal = buildEntry("LONG", price, "TREND", klines, pairCfg);
     }
-    else if (htf?.bias === "BEARISH" && checks.structure_break && checks.entry_candle_valid) {
+    else if (!entrySignal && htf?.bias === "BEARISH" && checks.structure_break && checks.entry_candle_valid) {
       if (category !== "MAJOR" && btcSentiment) {
         const adj = adjustForBTCSentiment(regime, btcSentiment, "SHORT");
         if (!adj.adjusted) {

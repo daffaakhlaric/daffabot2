@@ -40,10 +40,10 @@ function checkCandleClose(klines, direction) {
   const prev = klines[klines.length - 2];
 
   const avgVol = klines.slice(-10).reduce((s, k) => s + k.volume, 0) / 10;
-  const candleComplete = last.volume > avgVol * 0.3;
+  const candleComplete = last.volume > avgVol * 0.15;  // Lowered from 0.3 - allow forming candles
 
   if (!candleComplete) {
-    return { valid: false, reason: "Candle still forming (low volume)" };
+    return { valid: false, reason: "Candle still forming (very low volume)" };
   }
 
   const isBullish = direction === "LONG";
@@ -61,7 +61,7 @@ function checkCandleClose(klines, direction) {
   }
 
   const bodyRatio = bodySize / rangeSize;
-  const validBody = bodyRatio >= 0.5;
+  const validBody = bodyRatio >= 0.3;  // Lowered from 0.5 - allow weaker closes
 
   return {
     valid: validBody,
@@ -84,14 +84,14 @@ function checkDisplacement(klines, direction) {
   const prev2Range = prev2.high - prev2.low;
 
   const avgRange = (prevRange + prev2Range) / 2;
-  
+
   const displacement = lastRange / avgRange;
-  const minDisplacement = 1.3;
+  const minDisplacement = 0.8;  // Lowered from 1.3 - allow smaller ranges
 
   const isBullish = direction === "LONG";
-  const movesWithDirection = isBullish 
-    ? last.close > prev.close && prev.close > prev2.close
-    : last.close < prev.close && prev.close < prev2.close;
+  const movesWithDirection = isBullish
+    ? last.close > prev.close
+    : last.close < prev.close;
 
   const valid = displacement >= minDisplacement && movesWithDirection;
 
@@ -109,9 +109,9 @@ function checkBOS(klines, direction) {
     return { valid: false, reason: "Insufficient candles for BOS" };
   }
 
-  const lookback = 15;
-  const structStart = klines.length - lookback - 5;
-  const structEnd = klines.length - 5;
+  const lookback = 12;  // Reduced from 15 - shorter lookback for faster BOS
+  const structStart = klines.length - lookback - 3;  // Reduced from -5
+  const structEnd = klines.length - 3;  // Reduced from -5
 
   if (structStart < 0) {
     return { valid: false, reason: "Structure window too small" };
@@ -121,11 +121,11 @@ function checkBOS(klines, direction) {
   const structHigh = Math.max(...structCandles.map(k => k.high));
   const structLow = Math.min(...structCandles.map(k => k.low));
 
-  const threshold = 0.001;
+  const threshold = 0.0005;  // Lowered from 0.001 - allow micro BOS
   const currentClose = klines[klines.length - 1].close;
 
   const isBullish = direction === "LONG";
-  const bosValid = isBullish 
+  const bosValid = isBullish
     ? currentClose > structHigh * (1 + threshold)
     : currentClose < structLow * (1 - threshold);
 
@@ -262,10 +262,10 @@ function checkVolumeSpike(klines, category) {
   const avgVol = prev20Vol / 15;
 
   const minSpike = {
-    MAJOR: 1.2,
-    MID: 1.3,
-    MEME: 1.5,
-  }[category] || 1.2;
+    MAJOR: 0.9,   // Lowered from 1.2
+    MID: 1.0,     // Lowered from 1.3
+    MEME: 1.0,    // Lowered from 1.5 (by 33%)
+  }[category] || 0.9;
 
   const ratio = avgVol > 0 ? last5Vol / (avgVol * 5) : 1;
   const valid = ratio >= minSpike;
@@ -351,9 +351,9 @@ function validateEntry(klines, direction, symbol) {
   checks.wickFakeout = checkWickOnlyFakeout(klines, direction);
 
   const requiredForCategory = {
-    MAJOR: ["candleClose", "displacement", "bos", "volume"],
-    MID: ["candleClose", "displacement", "bos", "liquidity", "volume"],
-    MEME: ["candleClose", "displacement", "bos", "choch", "liquidity", "fvg", "volume"],
+    MAJOR: ["candleClose", "displacement", "bos"],  // Removed volume requirement
+    MID: ["candleClose", "displacement", "bos"],     // Simplified from 5 checks
+    MEME: ["candleClose", "displacement"],           // Simplified from 7 checks
   };
 
   const required = requiredForCategory[category] || requiredForCategory.MAJOR;
@@ -373,14 +373,14 @@ function validateEntry(klines, direction, symbol) {
   const total = required.length;
   const score = Math.round((passed / total) * 100);
 
-  let canEnter = passed >= total;
+  let canEnter = passed >= total;  // All required checks must pass
   let grade = "C";
 
   const minScore = {
-    MAJOR: 70,
-    MID: 75,
-    MEME: 85,
-  }[category] || 70;
+    MAJOR: 100,  // All checks required
+    MID: 100,    // All checks required
+    MEME: 100,   // All checks required
+  }[category] || 100;
 
   if (score >= minScore) {
     canEnter = true;

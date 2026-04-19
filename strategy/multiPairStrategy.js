@@ -234,15 +234,18 @@ function analyze({ klines, position, pairConfig, btcKlines }) {
     const checks = validateSMCChecklist(klines, price, pairCfg);
     const confluenceScore = calculateConfluenceScore(checks, category);
 
-    // Minimum score by category - relaxed for low volatility periods
-    const minScore = pairCfg.minScore || 35;  // Lowered from 65
-    if (confluenceScore < minScore) {
-      return {
-        action: "HOLD",
-        reason: `Confluence ${confluenceScore}% < ${minScore}% (${category})`,
-        source: "SMC_FILTER",
-        regime,
-      };
+    // Skip confluence check if regime confirms trend - we trust regime over SMC
+    const isTrendingRegime = regime.regime === "TRENDING_UP" || regime.regime === "TRENDING_DOWN";
+    if (!isTrendingRegime) {
+      const minScore = pairCfg.minScore || 35;  // Lowered from 65
+      if (confluenceScore < minScore) {
+        return {
+          action: "HOLD",
+          reason: `Confluence ${confluenceScore}% < ${minScore}% (${category})`,
+          source: "SMC_FILTER",
+          regime,
+        };
+      }
     }
 
     // === ANTI-FAKEOUT CHECK ===
@@ -279,10 +282,11 @@ function analyze({ klines, position, pairConfig, btcKlines }) {
     let entrySignal = null;
 
     // REGIME-CONFIRMED entry: Trust regime detection when it says TRENDING
-    if (regime.regime === "TRENDING_UP" && htf?.bias === "BULLISH") {
+    // Don't require HTF bias to match - regime detector is primary signal
+    if (regime.regime === "TRENDING_UP") {
       entrySignal = buildEntry("LONG", price, "REGIME_TREND", klines, pairCfg);
     }
-    else if (regime.regime === "TRENDING_DOWN" && htf?.bias === "BEARISH") {
+    else if (regime.regime === "TRENDING_DOWN") {
       entrySignal = buildEntry("SHORT", price, "REGIME_TREND", klines, pairCfg);
     }
 

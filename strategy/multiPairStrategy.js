@@ -224,8 +224,10 @@ function analyze({ klines, position, pairConfig, btcKlines }) {
       global.botState.pairRegime = regime;
     }
 
-    // Block if regime says no entry
-    if (!regime.canEnter) {
+    // B.13: regime check demoted — only HARD blocks (HIGH_VOL) stop here.
+    // SIDEWAYS / LOW_TREND_STRENGTH / DEAD / CHOP fall through; entry-mode branches
+    // (SCALP/RELAXED/TREND) own the actual decision based on HTF + ATR.
+    if (!regime.canEnter && regime.regime === "HIGH_VOL") {
       return {
         action: "HOLD",
         reason: `Regime: ${regime.regime} - ${regime.recommendations?.[0] || "Entry not allowed"}`,
@@ -249,8 +251,8 @@ function analyze({ klines, position, pairConfig, btcKlines }) {
     // B.2: Skip SMC checklist entirely if regime detector says TRENDING — trust the regime.
     const isTrendingRegime = regime.canEnter && /TRENDING/.test(regime.regime || "");
     if (!isTrendingRegime) {
-      // B.2: minScore floor 30 for all (40 for MEME).
-      const baseFloor = category === "MEME" ? 40 : 30;
+      // B.13: minScore floor lowered drastically — 15 for all, 20 for MEME.
+      const baseFloor = category === "MEME" ? 20 : 15;
       const minScore = Math.min(pairCfg.minScore || baseFloor, baseFloor);
       if (confluenceScore < minScore) {
         return {

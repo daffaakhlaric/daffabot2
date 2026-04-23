@@ -329,12 +329,18 @@ function detectPairRegime(klines, symbol) {
     recommendations.push("VOLUME: MEME requires 1.5x volume spike");
   }
 
-  const canEnter =
-    !atrTooHigh &&
-    sessionAllowed &&
-    adx >= thresholds.minADX * 0.7 &&
-    (isChoppy === false || (trend.direction.includes("TREND"))) &&
-    (category !== "MEME" || volSpike.ratio >= 1.1);
+  // B.13: When regime says ALLOW (trending), trust it — bypass session/adx/volume gates.
+  // Only block on the truly hard guards (extreme volatility, atrTooHigh).
+  const isTrending = regime === "TRENDING_UP" || regime === "TRENDING_DOWN";
+  const canEnter = isTrending
+    ? !atrTooHigh
+    : (
+        !atrTooHigh &&
+        sessionAllowed &&
+        adx >= thresholds.minADX * 0.7 &&
+        (isChoppy === false || trend.direction.includes("TREND")) &&
+        (category !== "MEME" || volSpike.ratio >= 1.1)
+      );
 
   return {
     regime,

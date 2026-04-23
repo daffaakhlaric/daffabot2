@@ -174,17 +174,29 @@ function validateSMCChecklist(klines, price, pairConfig) {
 }
 
 // Calculate confluence score
+// B.2: For MAJOR, only 4 essentials count (htf_bias_clear, structure_break, entry_candle_valid, rr_minimum_met)
+// Other checks still computed but not required for MAJOR scalping.
 function calculateConfluenceScore(checks, category) {
   if (!checks) return 0;
-  
-  let passed = Object.values(checks).filter(v => v === true).length;
-  
-  // MEME requires volume spike - if not, confluence = 0
+
+  if (category === "MAJOR") {
+    const essentials = [
+      checks.htf_bias_clear,
+      checks.structure_break,
+      checks.entry_candle_valid,
+      checks.rr_minimum_met,
+    ];
+    const passed = essentials.filter(Boolean).length;
+    return Math.round((passed / essentials.length) * 100);
+  }
+
+  // MEME still requires volume spike — kept (relaxed elsewhere via minVolumeSpike)
   if (category === "MEME" && !checks.volume_spike) {
     return 0;
   }
-  
-  return Math.round((passed / 8) * 100);
+
+  const passed = Object.values(checks).filter(v => v === true).length;
+  return Math.round((passed / 9) * 100);
 }
 
 // Main analysis function
@@ -234,10 +246,12 @@ function analyze({ klines, position, pairConfig, btcKlines }) {
     const checks = validateSMCChecklist(klines, price, pairCfg);
     const confluenceScore = calculateConfluenceScore(checks, category);
 
-    // Skip confluence check if regime confirms trend - we trust regime over SMC
-    const isTrendingRegime = regime.regime === "TRENDING_UP" || regime.regime === "TRENDING_DOWN";
+    // B.2: Skip SMC checklist entirely if regime detector says TRENDING — trust the regime.
+    const isTrendingRegime = regime.canEnter && /TRENDING/.test(regime.regime || "");
     if (!isTrendingRegime) {
-      const minScore = pairCfg.minScore || 35;  // Lowered from 65
+      // B.2: minScore floor 30 for all (40 for MEME).
+      const baseFloor = category === "MEME" ? 40 : 30;
+      const minScore = Math.min(pairCfg.minScore || baseFloor, baseFloor);
       if (confluenceScore < minScore) {
         return {
           action: "HOLD",
@@ -249,16 +263,20 @@ function analyze({ klines, position, pairConfig, btcKlines }) {
     }
 
     // === ANTI-FAKEOUT CHECK ===
-    const signal = htf?.bias === "BULLISH" ? "LONG" : htf?.bias === "BEARISH" ? "SHORT" : "HOLD";
-    const smcCheck = validateSMC(klines, signal, pairCfg.symbol || "BTCUSDT");
+    // Skip if regime confirms trending - we trust regime over SMC validation
+    let smcCheck = null;
+    if (!isTrendingRegime) {
+      const signal = htf?.bias === "BULLISH" ? "LONG" : htf?.bias === "BEARISH" ? "SHORT" : "HOLD";
+      smcCheck = validateSMC(klines, signal, pairCfg.symbol || "BTCUSDT");
 
-    if (!smcCheck.canEnter) {
-      return {
-        action: "HOLD",
-        reason: smcCheck.failed?.join("; ") || "SMC validation failed",
-        source: "SMC_FILTER",
-        regime,
-      };
+      if (!smcCheck.canEnter) {
+        return {
+          action: "HOLD",
+          reason: smcCheck.failed?.join("; ") || "SMC validation failed",
+          source: "SMC_FILTER",
+          regime,
+        };
+      }
     }
 
     // Additional micro range check
@@ -337,8 +355,8 @@ function analyze({ klines, position, pairConfig, btcKlines }) {
 
     // RELAXED entry: HTF confirmation with minimal confluence
     if (!entrySignal) {
-      const hasMinimalConfluence = confluenceScore >= (category === "MEME" ? 25 : 20);  // Lowered from 70/60
-      const hasHTFDirection = htf && htf.confidence >= (category === "MEME" ? 50 : 45);  // Lowered from 80/75
+      const hasMinimalConfluence = confluenceScore >= (category === "MEME" ? 25 : 15);  // B.2: 20 -> 15
+      const hasHTFDirection = htf && htf.confidence >= (category === "MEME" ? 50 : 35);  // B.2: 45 -> 35
 
       if (hasMinimalConfluence && hasHTFDirection && htf?.bias) {
         const side = htf.bias === "BULLISH" ? "LONG" : "SHORT";
@@ -346,10 +364,35 @@ function analyze({ klines, position, pairConfig, btcKlines }) {
       }
     }
 
+    // B.2: SCALP entry — high-frequency mode for MAJOR.
+    // htf.confidence >= 45 + last candle direction matches + ATR within optimal band.
+    if (!entrySignal && category === "MAJOR" && htf && htf.confidence >= 45 && htf.bias) {
+      const last = klines[klines.length - 1];
+      const candleUp = last.close > last.open;
+      const candleDown = last.close < last.open;
+      const atrPct = calcATR(klines, 14);
+      const atrMin = pairCfg.atrOptimalMin ?? 0.08;
+      const atrMax = pairCfg.atrOptimalMax ?? 2.5;
+      const atrInBand = atrPct >= atrMin && atrPct <= atrMax;
+
+      if (atrInBand) {
+        if (htf.bias === "BULLISH" && candleUp) {
+          entrySignal = buildEntry("LONG", price, "SCALP", klines, pairCfg);
+        } else if (htf.bias === "BEARISH" && candleDown) {
+          entrySignal = buildEntry("SHORT", price, "SCALP", klines, pairCfg);
+        }
+      }
+    }
+
     if (entrySignal) {
-      // Add SMC score to entry
-      entrySignal.antiFakeoutScore = smcCheck.score;
-      entrySignal.antiFakeoutGrade = smcCheck.grade;
+      // Add SMC score to entry (if available)
+      if (smcCheck) {
+        entrySignal.antiFakeoutScore = smcCheck.score;
+        entrySignal.antiFakeoutGrade = smcCheck.grade;
+      } else {
+        entrySignal.antiFakeoutScore = 0;
+        entrySignal.antiFakeoutGrade = "REGIME";  // Flagged as regime-confirmed
+      }
       entrySignal.regime = regime;
       return entrySignal;
     }
@@ -438,6 +481,7 @@ function getMaxHoldMs(setup, symbol) {
     MEME: 180 * 60 * 1000,
   }[category] || 120 * 60 * 1000;
 
+  if (/SCALP/.test(setup)) return Math.min(baseMin, 15 * 60 * 1000); // B.2: SCALP cap 15min
   if (/SNIPER|ULTRA/.test(setup)) return baseMin * 0.75;
   if (/JUDAS/.test(setup)) return baseMin * 1.5;
   return baseMin;

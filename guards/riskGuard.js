@@ -44,7 +44,8 @@ function checkDailyLossLimit(tradeHistory, equity, limitPct = 0.03) {
 }
 
 // ── CONSECUTIVE LOSSES ────────────────────────────────────
-function checkConsecLosses(tradeHistory, maxConsec = 3) {
+// B.5: 3 -> 5 losses, cooldown 4hr -> 30min
+function checkConsecLosses(tradeHistory, maxConsec = 5) {
   const trades = tradeHistory || [];
   let current_count = 0;
   let lastLossTime = null;
@@ -59,7 +60,7 @@ function checkConsecLosses(tradeHistory, maxConsec = 3) {
     }
   }
 
-  const COOLDOWN_MS = 4 * 60 * 60 * 1000; // 4 hours
+  const COOLDOWN_MS = 30 * 60 * 1000; // B.5: 4hr -> 30min
   const cooldown_until =
     current_count >= maxConsec && lastLossTime
       ? lastLossTime + COOLDOWN_MS
@@ -121,9 +122,11 @@ function checkCooldown(lastTradeTime, cooldownMs) {
 }
 
 // ── MINIMUM R:R ───────────────────────────────────────────
+// B.5: 2.0 -> 1.2 (scalp TP1 is 1.2R; full ladder still pushes blended R higher)
 function checkMinRR(entry, sl, tp1, side) {
+  const MIN_RR = 1.2;
   if (!entry || !sl || !tp1 || !side) {
-    return { valid: false, rr: 0, minimum: 2.0, reason: "Missing parameters" };
+    return { valid: false, rr: 0, minimum: MIN_RR, reason: "Missing parameters" };
   }
 
   const risk =
@@ -132,18 +135,19 @@ function checkMinRR(entry, sl, tp1, side) {
     side === "LONG" ? tp1 - entry : entry - tp1;
 
   const rr = risk > 0 ? reward / risk : 0;
-  const valid = rr >= 2.0;
+  const valid = rr >= MIN_RR;
 
   return {
     valid,
     rr: +rr.toFixed(2),
-    minimum: 2.0,
-    reason: valid ? null : `R:R ${rr.toFixed(2)} below minimum 2.0`,
+    minimum: MIN_RR,
+    reason: valid ? null : `R:R ${rr.toFixed(2)} below minimum ${MIN_RR}`,
   };
 }
 
 // ── FOMO CHECK ────────────────────────────────────────────
-function checkFOMO(price, entryZone, maxMovePct = 0.015) {
+// B.5: 1.5% -> 3% — scalps need wider chase tolerance on 150x
+function checkFOMO(price, entryZone, maxMovePct = 0.03) {
   if (!entryZone || !Array.isArray(entryZone) || entryZone.length < 2) {
     return { blocked: false, pct_moved: 0 };
   }
@@ -163,7 +167,28 @@ function checkFOMO(price, entryZone, maxMovePct = 0.015) {
 }
 
 // ── LEVERAGE CAP ──────────────────────────────────────────
+// B.5: Bypass cap for explicit 150x scalping mode (BTC scalp config).
+// Cap still applies under high ATR safeguards.
 function checkLeverageCap(requestedLeverage, atrPct) {
+  // Bypass: 150x is intentional cross-margin scalp mode — only protect against extreme vol.
+  if (requestedLeverage >= 100) {
+    if (atrPct >= 2.5) {
+      const capped = 50;
+      return {
+        approved_leverage: capped,
+        reason: `Extreme vol ATR ${atrPct.toFixed(2)}% — 150x scalp capped to ${capped}x`,
+        was_capped: true,
+        max_allowed: capped,
+      };
+    }
+    return {
+      approved_leverage: requestedLeverage,
+      reason: `Scalp mode ${requestedLeverage}x — leverage cap bypassed (ATR ${atrPct.toFixed(2)}%)`,
+      was_capped: false,
+      max_allowed: requestedLeverage,
+    };
+  }
+
   let maxAllowed = 20;
   let reason = "ATR < 0.8% — max 20x";
 
@@ -436,11 +461,12 @@ function runAllChecks({
       proposedTrade?.confluenceScore || 50
     );
 
+    // B.5: Downgraded from blocks to warnings — strategy layer now owns SMC/session decisions.
     if (!smcCheck.canEnter) {
-      blocks.push({ type: "SMC_VALIDATION", reason: smcCheck.failed?.join("; ") || "SMC checks failed" });
+      warnings.push({ type: "SMC_VALIDATION", message: smcCheck.failed?.join("; ") || "SMC checks failed" });
     }
     if (!sessionCheck.canTrade) {
-      blocks.push({ type: "SESSION_FILTER", reason: sessionCheck.reasons?.join("; ") || "Session blocked" });
+      warnings.push({ type: "SESSION_FILTER", message: sessionCheck.reasons?.join("; ") || "Session blocked" });
     }
   } else {
     warnings.push({ type: "SMC_LOADING", message: "Waiting for klines data..." });

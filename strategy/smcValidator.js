@@ -61,12 +61,14 @@ function checkCandleClose(klines, direction) {
   }
 
   const bodyRatio = bodySize / rangeSize;
-  const validBody = bodyRatio >= 0.3;  // Lowered from 0.5 - allow weaker closes
+  // B.3: Drop validBody gate — direction match alone is enough for SCALP entries.
+  // Body ratio still reported so callers can grade quality.
+  const valid = true;
 
   return {
-    valid: validBody,
+    valid,
     bodyRatio: Math.round(bodyRatio * 100) / 100,
-    reason: validBody ? "Candle valid" : `Weak candle body: ${bodyRatio.toFixed(2)}`,
+    reason: bodyRatio >= 0.3 ? "Candle valid" : `Weak body ${bodyRatio.toFixed(2)} (allowed)`,
   };
 }
 
@@ -86,7 +88,7 @@ function checkDisplacement(klines, direction) {
   const avgRange = (prevRange + prev2Range) / 2;
 
   const displacement = lastRange / avgRange;
-  const minDisplacement = 0.8;  // Lowered from 1.3 - allow smaller ranges
+  const minDisplacement = 0.5;  // B.3: 0.8 -> 0.5 — allow tiny scalp candles
 
   const isBullish = direction === "LONG";
   const movesWithDirection = isBullish
@@ -109,9 +111,9 @@ function checkBOS(klines, direction) {
     return { valid: false, reason: "Insufficient candles for BOS" };
   }
 
-  const lookback = 12;  // Reduced from 15 - shorter lookback for faster BOS
-  const structStart = klines.length - lookback - 3;  // Reduced from -5
-  const structEnd = klines.length - 3;  // Reduced from -5
+  const lookback = 8;  // B.3: 12 -> 8 — even shorter window for fast BOS
+  const structStart = klines.length - lookback - 3;
+  const structEnd = klines.length - 3;
 
   if (structStart < 0) {
     return { valid: false, reason: "Structure window too small" };
@@ -121,7 +123,7 @@ function checkBOS(klines, direction) {
   const structHigh = Math.max(...structCandles.map(k => k.high));
   const structLow = Math.min(...structCandles.map(k => k.low));
 
-  const threshold = 0.0005;  // Lowered from 0.001 - allow micro BOS
+  const threshold = 0.0002;  // B.3: 0.0005 -> 0.0002 — micro BOS for scalping
   const currentClose = klines[klines.length - 1].close;
 
   const isBullish = direction === "LONG";
@@ -344,10 +346,12 @@ function validateEntry(klines, direction, symbol) {
   checks.microRange = checkMicroRange(klines, category);
   checks.wickFakeout = checkWickOnlyFakeout(klines, direction);
 
+  // B.3: Drop CHOCH/Liquidity/FVG/microRange from required list — kept as advisory.
+  // Volume optional for MAJOR. canEnter requires 2-of-3 essentials for MAJOR/MID, 2-of-2 for MEME.
   const requiredForCategory = {
-    MAJOR: ["candleClose", "displacement", "bos"],  // Removed volume requirement
-    MID: ["candleClose", "displacement", "bos"],     // Simplified from 5 checks
-    MEME: ["candleClose", "displacement"],           // Simplified from 7 checks
+    MAJOR: ["candleClose", "displacement", "bos"],
+    MID: ["candleClose", "displacement", "bos"],
+    MEME: ["candleClose", "displacement"],
   };
 
   const required = requiredForCategory[category] || requiredForCategory.MAJOR;
@@ -367,21 +371,18 @@ function validateEntry(klines, direction, symbol) {
   const total = required.length;
   const score = Math.round((passed / total) * 100);
 
-  let canEnter = passed >= total;  // All required checks must pass
+  // B.3: 2-of-3 essentials passes (MEME still needs both 2-of-2).
+  const minPassed = category === "MEME" ? 2 : 2;
+  let canEnter = passed >= minPassed;
   let grade = "C";
 
-  const minScore = {
-    MAJOR: 100,  // All checks required
-    MID: 100,    // All checks required
-    MEME: 100,   // All checks required
-  }[category] || 100;
-
-  if (score >= minScore) {
-    canEnter = true;
+  if (canEnter) {
     if (score >= 90) grade = "A+";
     else if (score >= 80) grade = "A";
     else if (score >= 70) grade = "B";
   }
+
+  const minScore = Math.round((minPassed / total) * 100);
 
   return {
     canEnter,

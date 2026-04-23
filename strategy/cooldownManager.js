@@ -13,32 +13,33 @@
 
 const { getPairCategory } = require("./enhancedRegimeDetector");
 
+// B.4: Aggressive scalping cooldowns. MAJOR cut hard for 150x scalp loop.
 const COOLDOWN_CONFIG = {
   MAJOR: {
-    afterSL: 10 * 60 * 1000,      // 10 min after SL
-    afterWIN: 3 * 60 * 1000,      // 3 min after WIN
-    afterLOSS: 10 * 60 * 1000,    // 10 min after LOSS
-    afterSCRATCH: 5 * 60 * 1000,  // 5 min after scratch
-    sameDirection: 15 * 60 * 1000, // 15 min same direction
+    afterSL: 3 * 60 * 1000,        // B.4: 10min -> 3min
+    afterWIN: 30 * 1000,           // B.4: 3min -> 30s
+    afterLOSS: 2 * 60 * 1000,      // B.4: 10min -> 2min
+    afterSCRATCH: 30 * 1000,       // B.4: 5min -> 30s
+    sameDirection: 2 * 60 * 1000,  // B.4: 15min -> 2min
   },
   MID: {
-    afterSL: 12 * 60 * 1000,
-    afterWIN: 5 * 60 * 1000,
-    afterLOSS: 12 * 60 * 1000,
-    afterSCRATCH: 8 * 60 * 1000,
-    sameDirection: 20 * 60 * 1000,
+    afterSL: 5 * 60 * 1000,
+    afterWIN: 60 * 1000,
+    afterLOSS: 4 * 60 * 1000,
+    afterSCRATCH: 60 * 1000,
+    sameDirection: 4 * 60 * 1000,
   },
   MEME: {
-    afterSL: 15 * 60 * 1000,
-    afterWIN: 8 * 60 * 1000,
-    afterLOSS: 15 * 60 * 1000,
-    afterSCRATCH: 10 * 60 * 1000,
-    sameDirection: 25 * 60 * 1000,
+    afterSL: 8 * 60 * 1000,
+    afterWIN: 2 * 60 * 1000,
+    afterLOSS: 8 * 60 * 1000,
+    afterSCRATCH: 3 * 60 * 1000,
+    sameDirection: 10 * 60 * 1000,
   },
 };
 
-const FAST_LOSS_THRESHOLD_MS = 20 * 1000;
-const FAST_LOSS_COOLDOWN_MS = 30 * 60 * 1000;
+const FAST_LOSS_THRESHOLD_MS = 10 * 1000;       // B.4: 20s -> 10s
+const FAST_LOSS_COOLDOWN_MS = 5 * 60 * 1000;    // B.4: 30min -> 5min
 
 const PAIR_COOLDOWNS = {};
 const GLOBAL_STATS = {
@@ -122,7 +123,7 @@ function checkCooldown(symbol, direction, currentTime = Date.now()) {
     }
   }
 
-  const dailyLossLimit = 3;
+  const dailyLossLimit = 10;  // B.4: 3 -> 10 (real cap is -4% equity in riskGuard)
   const todayLosses = PAIR_COOLDOWNS["_dailyLosses"] || 0;
   if (todayLosses >= dailyLossLimit) {
     const resetTime = new Date();

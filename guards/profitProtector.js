@@ -88,14 +88,15 @@ function checkPostWinCooldown(tradeHistory, currentTime = Date.now()) {
     ? (winProfitUsd / lastTrade.sizeUsdt) * 100
     : 0;
 
+  // B.6: Scalp-mode post-win cooldowns (was 1m/3m/5m)
   if (winProfitPct < 0.5) {
-    cooldownMs = 1 * 60 * 1000;  // 1-2 min for small win
+    cooldownMs = 20 * 1000;     // small win — 20s
     profitReason = "small win";
   } else if (winProfitPct < 1.0) {
-    cooldownMs = 3 * 60 * 1000;  // 3 min for medium win
+    cooldownMs = 45 * 1000;     // medium win — 45s
     profitReason = "medium win";
   } else {
-    cooldownMs = 5 * 60 * 1000;  // 5 min for large win (not 15!)
+    cooldownMs = 90 * 1000;     // large win — 90s
     profitReason = "large win";
   }
 
@@ -139,19 +140,13 @@ function checkWinStreakProtection(tradeHistory, proposedScore = 65) {
   let blocked = false;
   let reason = null;
 
-  if (consecutiveWins >= 3) {
-    minScoreRequired = 75;  // A+ only
-    strictness = "A_PLUS_ONLY";
+  // B.6: Drop restrictions for streaks <=5 — let scalper compound. Kick in only at 6+.
+  if (consecutiveWins >= 6) {
+    minScoreRequired = 70;
+    strictness = "ELEVATED_6PLUS";
     if (proposedScore < minScoreRequired) {
       blocked = true;
-      reason = `WIN_STREAK_3+: Only A+ setups allowed (${proposedScore} < ${minScoreRequired})`;
-    }
-  } else if (consecutiveWins === 2) {
-    minScoreRequired = 65;  // +10 from default
-    strictness = "ELEVATED";
-    if (proposedScore < minScoreRequired) {
-      blocked = true;
-      reason = `WIN_STREAK_2: Score must be ${minScoreRequired}+ (got ${proposedScore})`;
+      reason = `WIN_STREAK_6+: Score must be ${minScoreRequired}+ (got ${proposedScore})`;
     }
   }
 
@@ -170,7 +165,7 @@ function checkWinStreakProtection(tradeHistory, proposedScore = 65) {
 /**
  * Cap trades at 2 per hour to prevent overtrading/chop
  */
-function checkMaxTradesPerHour(tradeHistory, currentTime = Date.now(), maxPerHour = 2) {
+function checkMaxTradesPerHour(tradeHistory, currentTime = Date.now(), maxPerHour = 15) {  // B.6: 2 -> 15
   const trades = tradeHistory || [];
   const oneHourAgo = currentTime - 60 * 60 * 1000;
 
@@ -204,21 +199,20 @@ function checkMaxTradesPerSession(tradeHistory, currentTime = Date.now()) {
 
   // Determine current session (UTC)
   const utcHour = new Date(currentTime).getUTCHours();
+  // B.6: Asia 1->20, London/NY 3->30 for high-frequency scalping
   let currentSession = "ASIA";
-  let sessionStart = 22; // Default Asia
-  let maxTradesInSession = 1;
+  let sessionStart = 22;
+  let maxTradesInSession = 20;
 
-  // London session: 7:00-16:00 UTC
   if (utcHour >= 7 && utcHour < 16) {
     currentSession = "LONDON";
     sessionStart = 7;
-    maxTradesInSession = 3;
+    maxTradesInSession = 30;
   }
-  // New York session: 12:00-21:00 UTC
   else if (utcHour >= 12 && utcHour < 21) {
     currentSession = "NEW_YORK";
     sessionStart = 12;
-    maxTradesInSession = 3;
+    maxTradesInSession = 30;
   }
 
   // Find session start timestamp (today at sessionStart hour UTC)
@@ -255,6 +249,7 @@ function checkMaxTradesPerSession(tradeHistory, currentTime = Date.now()) {
  * When session is profitable, boost minimum score requirement
  * Normal: 55 → Green: 70
  */
+// B.6: DISABLED — scalp mode treats every signal equally. Function preserved for telemetry.
 function checkQualityFilterBoost(tradeHistory, equity, proposedScore = 55) {
   const trades = tradeHistory || [];
   const todayStart = new Date();
@@ -265,25 +260,14 @@ function checkQualityFilterBoost(tradeHistory, equity, proposedScore = 55) {
   const dailyPnL = todayTrades.reduce((s, t) => s + (t.pnlUSDT || 0), 0);
   const sessionGreen = dailyPnL > 0;
 
-  let requiredScore = 55; // Default
-  let reason = null;
-
-  if (sessionGreen) {
-    requiredScore = 70; // Boost when profitable
-    if (proposedScore < requiredScore) {
-      reason = `SESSION_GREEN: Score boosted from 55 to 70 (got ${proposedScore})`;
-    }
-  }
-
-  const blocked = sessionGreen && proposedScore < requiredScore;
-
   return {
-    blocked,
-    reason,
+    blocked: false,
+    reason: null,
     session_green: sessionGreen,
-    required_score: requiredScore,
+    required_score: 55,
     proposed_score: proposedScore,
-    score_gap: proposedScore - requiredScore,
+    score_gap: proposedScore - 55,
+    disabled: true,
   };
 }
 

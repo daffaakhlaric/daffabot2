@@ -61,10 +61,11 @@ function detectPsychState(tradeHistory, sessionTrades, equity, peakEquity) {
   let state = "NORMAL";
   const reasons = [];
 
-  if (consecLosses >= 3) {
+  // B.7: Scalping tolerates more losses — ON_TILT 3->6, TILT_RISK 2->4
+  if (consecLosses >= 6) {
     state = "ON_TILT";
     reasons.push(`${consecLosses} consecutive losses`);
-  } else if (consecLosses >= 2) {
+  } else if (consecLosses >= 4) {
     state = "TILT_RISK";
     reasons.push(`${consecLosses} consecutive losses`);
   }
@@ -178,12 +179,12 @@ function checkRevengeTrade(tradeHistory, proposedTrade) {
   }
 
   score = Math.min(100, score);
-  // New thresholds: <70 warn, >=70 soft block, >=85 hard block
-  const recommendation = score >= 85 ? "BLOCK_HARD" : score >= 70 ? "BLOCK_SOFT" : score >= 30 ? "WARN" : "ALLOW";
-  const cooldown_required_ms = score >= 70 ? Math.max(0, 15 * 60 * 1000 - timeSinceLast) : 0;
+  // B.7: BLOCK threshold 70 -> 85 (only hard-revenge-cases block)
+  const recommendation = score >= 95 ? "BLOCK_HARD" : score >= 85 ? "BLOCK_SOFT" : score >= 50 ? "WARN" : "ALLOW";
+  const cooldown_required_ms = score >= 85 ? Math.max(0, 5 * 60 * 1000 - timeSinceLast) : 0;
 
   return {
-    is_revenge: score >= 70,
+    is_revenge: score >= 85,
     revenge_score: score,
     triggers,
     cooldown_required_ms,
@@ -212,8 +213,8 @@ function checkCounterTrend(proposedSide, htfBias, regime, streakData) {
     };
   }
 
-  // Hard block in strong trending regime
-  if (reg === "TRENDING_BULL" || reg === "TRENDING_BEAR") {
+  // B.7: Allow counter-trend in RANGING with score>=60. Still block in strong trend regime.
+  if (reg === "TRENDING_BULL" || reg === "TRENDING_BEAR" || reg === "TRENDING_UP" || reg === "TRENDING_DOWN") {
     return {
       is_counter_trend: true,
       allowed: false,
@@ -223,13 +224,13 @@ function checkCounterTrend(proposedSide, htfBias, regime, streakData) {
     };
   }
 
-  // Allow with high score requirement
+  // Ranging/chop — allow with score>=60 (was 80)
   return {
     is_counter_trend: true,
     allowed: true,
-    reason: `Counter-trend: requires confluence>=80 + reversal confirmation`,
-    required_score_if_allowed: 80,
-    reversal_confirmation_required: true,
+    reason: `Counter-trend in ${reg}: requires confluence>=60`,
+    required_score_if_allowed: 60,
+    reversal_confirmation_required: false,
   };
 }
 
@@ -258,36 +259,37 @@ function checkPostWinEuphoria(tradeHistory, proposedTrade) {
   let blocked = false;
   let reason = null;
 
-  // AGGRESSIVE BOT_EUPHORIA: 2+ consecutive wins tighten rules
-  if (consecutive_wins >= 2) {
+  // B.7: Scalp mode — euphoria thresholds raised, locks shortened.
+  if (consecutive_wins >= 4) {
     euphoria_level = "BOT_EUPHORIA";
-    min_wait_ms = 3 * 60 * 1000;  // 3 min minimum after 2 wins
-    min_confluence_score = 70;     // Score must be 70+
-    size_cap_multiplier = 1.0;    // No compounding
+    min_wait_ms = 30 * 1000;
+    min_confluence_score = 60;
+    size_cap_multiplier = 1.0;
   }
 
-  if (consecutive_wins >= 3) {
+  if (consecutive_wins >= 6) {
     euphoria_level = "BOT_EUPHORIA_EXTREME";
-    min_wait_ms = 5 * 60 * 1000;  // 5 min after 3 wins
-    min_confluence_score = 75;
-    size_cap_multiplier = 0.8;    // Reduce size 20%
+    min_wait_ms = 60 * 1000;
+    min_confluence_score = 65;
+    size_cap_multiplier = 0.9;
   }
 
-  if (consecutive_wins >= 5) {
+  // EUPHORIA_LOCK 5->8 wins, lock 15min->3min
+  if (consecutive_wins >= 8) {
     euphoria_level = "EUPHORIA_LOCK";
-    min_wait_ms = 15 * 60 * 1000; // 15 min after 5 wins (protect big streak)
-    min_confluence_score = 85;
-    size_cap_multiplier = 0.5;    // Reduce size 50%
+    min_wait_ms = 3 * 60 * 1000;
+    min_confluence_score = 75;
+    size_cap_multiplier = 0.6;
     blocked = true;
-    reason = `🚫 EUPHORIA_LOCK: ${consecutive_wins} wins — wait 15min before next`;
+    reason = `EUPHORIA_LOCK: ${consecutive_wins} wins — wait 3min`;
   }
 
-  // Impulsive flag (within 1 min of last win)
-  if (lastWinTime && timeSinceLastWin < 1 * 60 * 1000) {
+  // B.7: Scalp mode allows fast re-entry — only flag if streak is large.
+  if (lastWinTime && timeSinceLastWin < 15 * 1000) {
     flags.push("IMPULSIVE_HOTKEY");
-    if (consecutive_wins >= 2) {
+    if (consecutive_wins >= 6) {
       blocked = true;
-      reason = `⚠️ IMPULSIVE ENTRY: Win ${Math.round(timeSinceLastWin / 1000)}s ago + ${consecutive_wins} streak`;
+      reason = `IMPULSIVE ENTRY: Win ${Math.round(timeSinceLastWin / 1000)}s ago + ${consecutive_wins} streak`;
     }
   }
 
@@ -363,22 +365,21 @@ function checkOvertrading(tradeHistory) {
     level = "BLOCK";
     reason = "Whipsaw detected: 3+ trades alternating L/S in 30min";
     cooldown_until = now + 2 * 60 * 60 * 1000;
-  } else if (trades_today > 12) {
+  // B.7: Scalp limits — daily 12->40, hourly 5->15
+  } else if (trades_today > 40) {
     level = "BLOCK";
-    reason = `Daily trade limit: ${trades_today} trades today (max 12)`;
+    reason = `Daily trade limit: ${trades_today} trades today (max 40)`;
     const endOfDay = new Date(); endOfDay.setHours(23, 59, 59, 999);
     cooldown_until = endOfDay.getTime();
-  } else if (trades_this_hour > 5) {
+  } else if (trades_this_hour > 15) {
     level = "BLOCK";
-    reason = `Overtrading: ${trades_this_hour} trades in 1 hour (max 5)`;
-    cooldown_until = now + 60 * 60 * 1000;
-  } else if (trades_today > 8 || trades_this_hour > 3) {
+    reason = `Overtrading: ${trades_this_hour} trades in 1 hour (max 15)`;
+    cooldown_until = now + 30 * 60 * 1000;
+  } else if (trades_today > 30 || trades_this_hour > 12) {
     level = "WARN";
     reason = `High frequency: ${trades_today} trades today, ${trades_this_hour}/hr`;
-  } else if (last_trade_interval_ms < 5 * 60 * 1000 && last_trade_interval_ms !== Infinity) {
-    level = "WARN";
-    reason = `Rapid re-entry: ${Math.round(last_trade_interval_ms / 60000)}min since last trade`;
   }
+  // B.7: Removed rapid re-entry warning — scalping is rapid by design
 
   return {
     overtrading_detected: level !== "NONE",

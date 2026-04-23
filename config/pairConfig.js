@@ -14,40 +14,48 @@ const PAIRS = [
   // === MAJOR PAIRS ===
   {
     symbol: "BTCUSDT",
+    exchangeSymbol: "BTC-USDT",
     displayName: "BTC/USDT",
-    productType: "usdt-futures",
+    productType: "perpetual",
     category: "MAJOR",
-    leverage: 50,
-    positionSizeUSDT: 0.40,
-    
-    // Entry filters
-    minScore: 65,      // Lowered from 70 for more opportunities
-    minScoreTrend: 70,
-    minScoreSniper: 75,
-    
-    // ATR thresholds
-    atrOptimalMin: 0.3,
-    atrOptimalMax: 2.0,
-    
-    // SL/TP
-    botSLPct: 0.6,     // Wider SL for BTC
-    botTrailActivate: 1.2,
-    trailDrop: 0.4,
-    
-    // Session
-    allowedSessions: ["LONDON", "NY", "OVERLAP"],
-    
-    // Anti-fakeout
-    minHoldMinutes: 2,
-    minVolumeSpike: 1.2,
+
+    // === 150x CROSS — $57 CAPITAL ===
+    leverage: 150,
+    marginMode: "CROSSED",
+    positionSizeUSDT: 2,            // $2 margin × 150 = $300 notional (3.5% equity per trade)
+
+    // === TIGHT SL/TP FOR 150x ===
+    botSLPct: 0.25,                 // 0.25% SL (liqui ~0.66%, 2.6x buffer)
+    tp1Pct: 0.30,                   // TP1 → 50% close (quick profit)
+    tp2Pct: 0.50,                   // TP2 → 30% close
+    tp3Pct: 0.80,                   // TP3 → 20% close (runner)
+    botTrailActivate: 0.35,
+    trailDrop: 0.15,
+    breakEvenTriggerPct: 0.20,      // Move SL to BE at +0.20%
+
+    // === RELAXED ENTRY FILTERS (was 65/70/75) ===
+    minScore: 50,                   // was 65 — allow B-grade
+    minScoreTrend: 55,              // was 70
+    minScoreSniper: 65,             // was 75
+
+    // === BROADER VOLATILITY RANGE ===
+    atrOptimalMin: 0.08,            // was 0.3 — allow low-vol scalps
+    atrOptimalMax: 2.5,             // was 2.0
+
+    // === ALL SESSIONS ALLOWED (was LONDON/NY only) ===
+    allowedSessions: ["LONDON", "NY", "OVERLAP", "ASIAN", "PRE_LONDON"],
+
+    // === SHORT HOLD (scalping) ===
+    minHoldMinutes: 0.5,            // was 2 — allow 30s scalps
+    minVolumeSpike: 1.0,            // was 1.2 — removed mandatory spike
     requireVolumeSpike: false,
-    
-    // AI params
-    aiMinHTFConfidence: 60,
-    aiMinSMCScore: 55,
-    botEMAPeriod: 50,
-    botVolumeMin: 1.2,
-    
+
+    // === LOWER AI THRESHOLDS ===
+    aiMinHTFConfidence: 50,         // was 60
+    aiMinSMCScore: 45,              // was 55
+    botEMAPeriod: 20,               // was 50 — faster signal
+    botVolumeMin: 1.0,              // was 1.2
+
     priority: 1,
     enabled: true,
   },

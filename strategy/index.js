@@ -26,11 +26,12 @@ const enhancedSessionFilter = require("./enhancedSessionFilter");
 const mtfEngine = require("./mtfEngine");
 const tpExitManager = require("./tpExitManager");
 const pairScorer = require("./pairScorer");
+const scalpEngine = require("./scalpEngine");
 
 module.exports = {
   multiPairStrategy,
   btcStrategy,
-  
+
   // New modules (v2.0)
   enhancedRegimeDetector,
   smcValidator,
@@ -39,11 +40,12 @@ module.exports = {
   cooldownManager,
   enhancedSessionFilter,
   mtfEngine,
-  
+  scalpEngine,
+
   // Utilities
   tpExitManager,
   pairScorer,
-  
+
   // Legacy export
   analyze: multiPairStrategy.analyze,
 };

@@ -592,10 +592,7 @@ async function momentumIgnition({ klines_5m, klines_1m, price, current_candle, a
   const cached = getCached("momentum");
   if (cached) return cached;
 
-  // DISABLED — secondary signal, too many tokens per call
-  aiLog("MOMENTUM_DISABLED", 0, "Skipped — non-essential");
-  return null;
-
+  // B.9: Re-enabled — scalp engine needs momentum signal as a primary entry source.
   const t0 = Date.now();
   const kl5 = klines_5m || klines_1m;
   const kl1 = klines_1m || klines_5m;

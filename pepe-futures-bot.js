@@ -4,7 +4,7 @@ require("dotenv").config();
 const https = require("https");
 const crypto = require("crypto");
 
-const { multiPairStrategy, btcStrategy } = require("./strategy");
+const { multiPairStrategy, btcStrategy, scalpEngine } = require("./strategy");
 const { getBTCSentiment, getPairCategory, getCurrentSession } = require("./strategy/enhancedRegimeDetector");
 const { recordExit } = require("./strategy/cooldownManager");
 const orchestrator = require("./botOrchestrator");
@@ -16,6 +16,9 @@ const { tpCalculator } = require("./utils");
 // Multi-pair support
 const pairManager = require("./pairManager");
 const { PAIRS, getEnabledPairs, getPairBySymbol } = require("./config");
+
+// A.1: Exchange adapter — defaults to BingX (env EXCHANGE=bitget for legacy)
+const exchange = require("./adapters");
 
 // ================= CONFIG =================
 const CONFIG = {
@@ -29,8 +32,8 @@ const CONFIG = {
   LEVERAGE: 50,             // 50x leverage
   POSITION_SIZE_USDT: 0.40, // Margin: $0.40 → Notional: $20 (0.40 × 50)
 
-  TRADE_COOLDOWN_MS: 5 * 60 * 1000,
-  CHECK_INTERVAL: 20000,
+  TRADE_COOLDOWN_MS: 60 * 1000,   // B.10: 5min -> 1min
+  CHECK_INTERVAL: 5000,           // B.10: 20s -> 5s loop tick
 
   DRY_RUN:               process.env.DRY_RUN               !== "false",
   AI_ENABLED:            process.env.AI_ENABLED            !== "false",
@@ -104,7 +107,7 @@ function loadTradeHistoryFromDashboard() {
 
 // ── STARTUP COOLDOWN ───────────────────────────────────────
 // Prevent instant trade on bot start (give time to assess market)
-const STARTUP_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes
+const STARTUP_COOLDOWN_MS = 30 * 1000; // B.10: 2min -> 30s
 const botStartTime = Date.now();
 
 // ── GLOBAL BOT STATE (shared with dashboard) ──────────────
@@ -253,73 +256,34 @@ function generateMockKlines(symbol, basePrice = null, bars = 100) {
   return klines.reverse();
 }
 
-// Fetch real-time ticker price (for display & decisions)
+// Fetch real-time ticker price (for display & decisions) — via exchange adapter
 async function getTickerPrice(symbol = CONFIG.SYMBOL) {
-  const res = await request(
-    "GET",
-    `/api/v2/mix/market/ticker?symbol=${symbol}&productType=${CONFIG.PRODUCT_TYPE}`
-  );
-
-  if (res?.data) {
-    const tick = Array.isArray(res.data) ? res.data[0] : res.data;
-    return parseFloat(tick?.lastPr || tick?.last || tick?.close || 0) || null;
+  try {
+    const p = await exchange.getTickerPrice(symbol);
+    if (p) return p;
+  } catch (err) {
+    log(`⚠️ ${exchange.exchangeName} ticker err: ${err.message}`);
   }
-
-  // Fallback: return mock price for DRY_RUN or when API unavailable
   if (CONFIG.DRY_RUN) {
     const mockPrices = { BTCUSDT: 74000, PEPEUSDT: 0.000016, SOLUSDT: 210, DOGEUSDT: 0.35 };
     return mockPrices[symbol] || 50000;
   }
-
   return null;
 }
 
 async function getKlines(symbol = CONFIG.SYMBOL) {
-  const res = await request(
-    "GET",
-    `/api/v2/mix/market/candles?symbol=${symbol}&productType=${CONFIG.PRODUCT_TYPE}&granularity=1m&limit=100`
-  );
-
-  if (Array.isArray(res.data) && res.data.length > 0) {
-    return res.data.map(c => ({
-      open: +c[1],
-      high: +c[2],
-      low: +c[3],
-      close: +c[4],
-      volume: +c[5],
-    })).reverse();
-  }
-
-  // Fallback: generate mock candles for DRY_RUN or when API unavailable
-  if (CONFIG.DRY_RUN) {
-    return generateMockKlines(symbol);
-  }
-
-  return [];
+  return fetchKlinesForSymbol(symbol, "1m", 100);
 }
 
-// Parameterized klines fetch for multi-pair support
+// Parameterized klines fetch for multi-pair support — via exchange adapter
 async function fetchKlinesForSymbol(symbol, granularity = "1m", limit = 100) {
-  const res = await request(
-    "GET",
-    `/api/v2/mix/market/candles?symbol=${symbol}&productType=${CONFIG.PRODUCT_TYPE}&granularity=${granularity}&limit=${limit}`
-  );
-
-  if (Array.isArray(res.data) && res.data.length > 0) {
-    return res.data.map(c => ({
-      open: +c[1],
-      high: +c[2],
-      low: +c[3],
-      close: +c[4],
-      volume: +c[5],
-    })).reverse();
+  try {
+    const candles = await exchange.getKlines(symbol, granularity, limit);
+    if (Array.isArray(candles) && candles.length > 0) return candles;
+  } catch (err) {
+    log(`⚠️ ${exchange.exchangeName} klines err (${symbol} ${granularity}): ${err.message}`);
   }
-
-  // Fallback: generate mock candles for DRY_RUN or when API unavailable
-  if (CONFIG.DRY_RUN) {
-    return generateMockKlines(symbol, null, limit);
-  }
-
+  if (CONFIG.DRY_RUN) return generateMockKlines(symbol, null, limit);
   return [];
 }
 
@@ -359,22 +323,7 @@ async function fetchAllPairKlines() {
 }
 
 async function getKlinesHTF(granularity, limit, symbol = CONFIG.SYMBOL) {
-  const res = await request(
-    "GET",
-    `/api/v2/mix/market/candles?symbol=${symbol}&productType=${CONFIG.PRODUCT_TYPE}&granularity=${granularity}&limit=${limit}`
-  );
-  if (Array.isArray(res.data) && res.data.length > 0) {
-    return res.data.map(c => ({
-      open: +c[1], high: +c[2], low: +c[3], close: +c[4], volume: +c[5],
-    })).reverse();
-  }
-
-  // Fallback: generate mock candles for DRY_RUN or when API unavailable
-  if (CONFIG.DRY_RUN) {
-    return generateMockKlines(symbol, null, limit);
-  }
-
-  return [];
+  return fetchKlinesForSymbol(symbol, granularity, limit);
 }
 
 // ================= ORDER EXECUTION =================
@@ -387,56 +336,57 @@ function calcSizeBTC(price) {
   return Math.max(0.00005, Math.floor(raw * 100000) / 100000);
 }
 
-// Set leverage sebelum open posisi
+// Set leverage sebelum open posisi — via exchange adapter
 async function setLeverage() {
-  const res = await request("POST", "/api/v2/mix/account/set-leverage", {
-    symbol:      currentSymbol,
-    productType: CONFIG.PRODUCT_TYPE,
-    marginCoin:  "USDT",
-    leverage:    String(CONFIG.LEVERAGE),
-  });
-  if (res?.code === "00000") {
-    log(`⚙️ Leverage set: ${CONFIG.LEVERAGE}x on ${currentSymbol}`);
-  } else {
-    log(`⚠️ Set leverage response: ${res?.msg || JSON.stringify(res)}`);
-  }
+  const res = await exchange.setLeverage(currentSymbol, CONFIG.LEVERAGE, "BOTH");
+  const ok = res?.body?.code === 0 || res?.body?.code === "00000" || res?.status === 200;
+  if (ok) log(`⚙️ Leverage set: ${CONFIG.LEVERAGE}x on ${currentSymbol} via ${exchange.exchangeName}`);
+  else    log(`⚠️ Set leverage response: ${res?.body?.msg || res?.error || JSON.stringify(res?.body)}`);
   return res;
 }
 
-// Kirim market order ke Bitget
+// Kirim market order via exchange adapter.
 // side: "buy" | "sell"    tradeSide: "open" | "close"
-async function placeOrder(side, tradeSide, size) {
-  const body = {
-    symbol:      currentSymbol,
-    productType: CONFIG.PRODUCT_TYPE,
-    marginMode:  "isolated",
-    marginCoin:  "USDT",
-    size:        String(size),
-    side,
-    tradeSide,
-    orderType:   "market",
-    force:       "gtc",
+// extras: { slPrice, tpPrice }  — used for atomic SL on supporting exchanges (BingX)
+async function placeOrder(side, tradeSide, size, extras = {}) {
+  const isClose = tradeSide === "close";
+  const positionSide = extras.positionSide || "BOTH";
+
+  // Determine actual order side. For "close" tradeSide, side is already inverted by caller.
+  const orderSide = side.toLowerCase() === "buy" ? "BUY" : "SELL";
+
+  log(`📤 ORDER → ${orderSide} ${tradeSide.toUpperCase()} ${size} @ ${currentSymbol} (${exchange.exchangeName})`);
+
+  const params = {
+    symbol: currentSymbol,
+    side: orderSide,
+    positionSide,
+    quantity: size,
+    reduceOnly: !!isClose,
   };
-
-  log(`📤 ORDER → ${side.toUpperCase()} ${tradeSide.toUpperCase()} ${size} @ ${currentSymbol}`);
-  const res = await request("POST", "/api/v2/mix/order/place-order", body);
-
-  if (res?.code === "00000") {
-    log(`✅ ORDER OK — orderId: ${res.data?.orderId || "?"}`);
-  } else {
-    log(`❌ ORDER FAILED — code: ${res?.code} msg: ${res?.msg}`);
+  if (!isClose && exchange.supportsAtomicSL) {
+    if (typeof extras.slPrice === "number" && extras.slPrice > 0) params.slPrice = extras.slPrice;
+    if (typeof extras.tpPrice === "number" && extras.tpPrice > 0) params.tpPrice = extras.tpPrice;
   }
+
+  const res = await exchange.placeMarketOrder(params);
+  const ok = res?.body?.code === 0 || res?.body?.code === "00000" || res?.status === 200;
+  if (ok) log(`✅ ORDER OK — orderId: ${res?.body?.data?.orderId || res?.body?.data?.order?.orderId || "?"}`);
+  else    log(`❌ ORDER FAILED — code: ${res?.body?.code} msg: ${res?.body?.msg || res?.error}`);
   return res;
 }
 
-// Ambil posisi real dari Bitget (untuk close)
+// Ambil posisi real dari exchange (untuk close)
 async function fetchRealPosition(symbol = currentSymbol) {
-  const res = await request(
-    "GET",
-    `/api/v2/mix/position/single-position?symbol=${symbol}&productType=${CONFIG.PRODUCT_TYPE}&marginCoin=USDT`
-  );
-  const pos = Array.isArray(res.data) ? res.data[0] : res.data;
-  return (pos && parseFloat(pos.total || 0) > 0) ? pos : null;
+  const pos = await exchange.getPosition(symbol);
+  if (!pos) return null;
+  // Adapt to legacy shape used by callers (`pos.total`)
+  return {
+    ...pos.raw,
+    total: pos.size,
+    holdSide: pos.side.toLowerCase(),
+    openPriceAvg: pos.entryPrice,
+  };
 }
 
 // ================= MAX HOLD TIME HELPER =================
@@ -470,19 +420,32 @@ async function openPosition(side, price, entryConfig, setup = "TREND") {
     margin = CONFIG.POSITION_SIZE_USDT;
   }
 
+  const slPctEarly = entryConfig.sl ?? 0.7;
+  const slPriceAtomic = entryConfig.sl_price ??
+    (side === "LONG" ? price * (1 - slPctEarly / 100) : price * (1 + slPctEarly / 100));
+
   if (!CONFIG.DRY_RUN) {
     await setLeverage();
 
     const orderSide = side === "LONG" ? "buy" : "sell";
-    const res       = await placeOrder(orderSide, "open", size);
+    // A.2: Pass atomic SL/TP — BingX adapter wires it natively into the entry order.
+    // Bitget adapter ignores these (bot-monitored SL backstop still active).
+    const res = await placeOrder(orderSide, "open", size, {
+      slPrice: +slPriceAtomic.toFixed(6),
+      tpPrice: entryConfig.tp1 ? +entryConfig.tp1.toFixed(6) : undefined,
+    });
 
-    if (res?.code !== "00000") {
+    const ok = res?.body?.code === 0 || res?.body?.code === "00000" || res?.status === 200 || res?.code === "00000";
+    if (!ok) {
       log(`❌ OPEN DIBATALKAN — order gagal`);
       return; // Jangan set state kalau order gagal
     }
+    if (exchange.supportsAtomicSL) {
+      log(`🛡️ ATOMIC SL set @ ${slPriceAtomic.toFixed(6)} (${exchange.exchangeName})`);
+    }
   }
 
-  const sl = entryConfig.sl ?? 0.7;
+  const sl = slPctEarly;
 
   // ⭐ NEW: Ensure multi-level TP targets (1.5%, 2.5%, 4%)
   const tpLevels = tpCalculator.calculateMultiLevelTP(price, side, {
@@ -546,14 +509,15 @@ async function closePosition(price, reason = "UNKNOWN") {
   if (!pos) return;
 
   if (!CONFIG.DRY_RUN) {
-    // Ambil size real dari Bitget supaya full close
+    // Ambil size real dari exchange supaya full close
     const realPos   = await fetchRealPosition();
     const size      = realPos?.total || calcSizeBTC(pos.entry);
     const closeSide = pos.side === "LONG" ? "sell" : "buy";
     const res       = await placeOrder(closeSide, "close", size);
 
-    if (res?.code !== "00000") {
-      log(`❌ CLOSE GAGAL — coba manual di Bitget!`);
+    const ok = res?.body?.code === 0 || res?.body?.code === "00000" || res?.status === 200 || res?.code === "00000";
+    if (!ok) {
+      log(`❌ CLOSE GAGAL — coba manual di ${exchange.exchangeName}!`);
       // Tetap clear state supaya bot tidak stuck
     }
   }
@@ -944,6 +908,30 @@ async function run() {
         decision.source = "MULTIPAIR_ONLY";
       }
 
+      // B.12: SCALP_ENGINE fallback — high-frequency micro-momentum signal
+      // Triggers only when no active position AND primary strategy returned HOLD.
+      // MAJOR pairs only (BTC/ETH); scalpEngine returns null otherwise.
+      if (
+        !state.activePosition &&
+        decision &&
+        (decision.action === "HOLD" || !decision.action)
+      ) {
+        try {
+          const scalpSig = scalpEngine.generateScalpSignal({
+            symbol:     currentSymbol,
+            klines,
+            price,
+            pairConfig: currentPairConfig,
+          });
+          if (scalpSig && (scalpSig.action === "LONG" || scalpSig.action === "SHORT")) {
+            log(`⚡ SCALP_ENGINE entry: ${scalpSig.action} ${currentSymbol} @ ${price} | ${scalpSig.reason}`);
+            decision = scalpSig;
+          }
+        } catch (err) {
+          log(`⚠️ scalpEngine error: ${err.message}`);
+        }
+      }
+
       // Pastikan decision selalu ada
       if (!decision) decision = { action: "HOLD", reason: "No decision generated", source: "GUARD" };
 
@@ -978,9 +966,7 @@ async function run() {
         global.botState.pairRegime = decision.regime;
       }
 
-      // ⭐ Check if ASIA session is blocked (00:00-06:00 UTC = 07:00-13:00 WIB)
-      const utcNow = new Date().getUTCHours();
-      const isAsiaPeriod = utcNow >= 0 && utcNow < 6;  // 00:00-05:59 UTC = 07:00-12:59 WIB
+      // B.10: ASIA blocking log removed — session is allowed; quality handled in filters.
 
       // Enhanced logging with confidence scores + AI mode
       const scoreStr = [
@@ -991,14 +977,8 @@ async function run() {
         judasConf !== null ? `JUDAS=${judasConf}%` : null,
       ].filter(Boolean).join(" | ");
 
-      let logMsg;
-      if (isAsiaPeriod && decision.action !== "HOLD") {
-        // ⭐ If ASIA and trying to enter, show BLOCKED message instead
-        logMsg = `🔴 ASIA SESSION BLOCKED — ${decision.action} setup rejected (low liquidity period 07:00-13:00 WIB)`;
-      } else {
-        const modeTag = aiEnabled ? "🤖" : "🔴";
-        logMsg = `${modeTag} ${decision.action} [${decision.source || "UNKNOWN"}]${scoreStr ? " | " + scoreStr : ""}${decision.reason ? " — " + decision.reason : ""}`;
-      }
+      const modeTag = aiEnabled ? "🤖" : "🔴";
+      const logMsg = `${modeTag} ${decision.action} [${decision.source || "UNKNOWN"}]${scoreStr ? " | " + scoreStr : ""}${decision.reason ? " — " + decision.reason : ""}`;
 
       log(logMsg);
 
@@ -1213,11 +1193,21 @@ async function run() {
             continue;
           }
 
-          // ⭐ ASIA SESSION BLOCK — NO ENTRIES ALLOWED (00:00-06:00 UTC = 07:00-13:00 WIB)
-          const utcHour = new Date().getUTCHours();
-          if (utcHour >= 0 && utcHour < 6) {  // 00:00-05:59 UTC = 07:00-12:59 WIB (fully safe until LONDON)
-            log(`🔴 ENTRY BLOCKED: ASIA SESSION (${utcHour.toString().padStart(2,'0')}:00 UTC) — no trading 07:00-13:00 WIB`);
-            global.botState.cooldownReason = `ASIA_BLOCKED — ${new Date().toLocaleTimeString()}`;
+          // B.10: ASIA hard-block removed — session quality handled by enhancedSessionFilter.
+
+          // B.10: 150x SL safety — refuse entry if SL distance > 0.4% (would liquidate too easily).
+          const slPctDecision = decision.entry?.sl ?? decision.sl;
+          if (typeof slPctDecision === "number" && slPctDecision > 0.4) {
+            log(`🚫 ENTRY REFUSED: SL ${slPctDecision.toFixed(2)}% > 0.4% safety cap (150x scalp mode)`);
+            global.botState.cooldownReason = `SL_TOO_WIDE — ${slPctDecision.toFixed(2)}%`;
+            continue;
+          }
+
+          // C.1: Equity floor — refuse entry if liveEquity below MIN_EQUITY (default $30)
+          const MIN_EQUITY = parseFloat(process.env.MIN_EQUITY_USD || "30");
+          if (typeof liveEquity === "number" && liveEquity < MIN_EQUITY) {
+            log(`🚫 ENTRY REFUSED: equity $${liveEquity.toFixed(2)} < floor $${MIN_EQUITY}`);
+            global.botState.cooldownReason = `EQUITY_FLOOR — $${liveEquity.toFixed(2)} < $${MIN_EQUITY}`;
             continue;
           }
 

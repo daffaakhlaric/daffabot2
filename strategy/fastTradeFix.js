@@ -15,17 +15,18 @@
 
 const { getPairCategory, getPairThresholds, calcATR } = require("./enhancedRegimeDetector");
 
+// B.11: Scalp mode — MAJOR min-hold cut to 30s; SL cooldown 10min -> 2min
 const MIN_HOLD_MS = {
-  MAJOR: 2 * 60 * 1000,  // 2 minutes
-  MID: 2.5 * 60 * 1000,  // 2.5 minutes  
-  MEME: 3 * 60 * 1000,   // 3 minutes
+  MAJOR: 30 * 1000,       // B.11: 2min -> 30s for scalping
+  MID: 90 * 1000,
+  MEME: 2 * 60 * 1000,
 };
 
-const MIN_HOLD_AFTER_SL = 10 * 60 * 1000;  // 10 min after SL
-const MIN_HOLD_AFTER_WIN = 3 * 60 * 1000;   // 3 min after WIN
-const MIN_HOLD_AFTER_LOSS = 5 * 60 * 1000;  // 5 min after LOSS
+const MIN_HOLD_AFTER_SL = 2 * 60 * 1000;    // B.11: 10min -> 2min
+const MIN_HOLD_AFTER_WIN = 30 * 1000;
+const MIN_HOLD_AFTER_LOSS = 60 * 1000;
 
-const FAST_TRADE_THRESHOLD_MS = 20 * 1000;  // 20 seconds - anything faster is a bug
+const FAST_TRADE_THRESHOLD_MS = 8 * 1000;   // B.11: 20s -> 8s (true bug threshold)
 const ATR_THRESHOLD_MULTIPLIER = 1.5;
 
 const RECENT_EXITS = {};
@@ -73,7 +74,12 @@ function checkMinimumHold(symbol, positionOpenedAt) {
   return { allowed: true, minHoldMs, holdMs };
 }
 
-function checkIntrabarBreakout(klines, direction) {
+function checkIntrabarBreakout(klines, direction, setup = null) {
+  // B.11: Disabled for SCALP — fake-breakout filter kills high-frequency entries.
+  if (setup && /SCALP/i.test(setup)) {
+    return { allowed: true, reason: "Intrabar check skipped for SCALP" };
+  }
+
   if (!klines || klines.length < 3) {
     return { allowed: false, reason: "Insufficient candles" };
   }
@@ -82,12 +88,12 @@ function checkIntrabarBreakout(klines, direction) {
   const prev = klines[klines.length - 2];
 
   const isBullish = direction === "LONG";
-  const breakout = isBullish 
+  const breakout = isBullish
     ? last.high > prev.high
     : last.low < prev.low;
 
   if (breakout) {
-    const closeInRange = isBullish 
+    const closeInRange = isBullish
       ? last.close < prev.high
       : last.close > prev.low;
 
@@ -134,19 +140,23 @@ function checkCandleCloseConfirmation(klines) {
 }
 
 function checkMicroRange(klines, symbol) {
+  // B.11: MAJOR scalping needs tight ranges — never block on micro range for MAJOR.
   if (!klines || klines.length < 5) {
     return { allowed: true, reason: "Insufficient data" };
   }
 
   const category = getPairCategory(symbol);
   const last5 = klines.slice(-5);
-  
+
   const range = Math.max(...last5.map(k => k.high)) - Math.min(...last5.map(k => k.low));
   const avgPrice = last5.reduce((s, k) => s + k.close, 0) / 5;
   const rangePct = (range / avgPrice) * 100;
 
+  if (category === "MAJOR") {
+    return { allowed: true, rangePct, reason: "Micro range allowed for MAJOR scalp" };
+  }
+
   const maxRangePct = {
-    MAJOR: 0.3,
     MID: 0.4,
     MEME: 0.5,
   }[category] || 0.3;
@@ -317,12 +327,13 @@ function validateEntry({
   direction,
   positionOpenedAt,
   currentTime = Date.now(),
+  setup = null,
 }) {
   const category = getPairCategory(symbol);
   const checks = {};
 
   checks.minHold = checkMinimumHold(symbol, positionOpenedAt);
-  checks.intrabar = checkIntrabarBreakout(klines, direction);
+  checks.intrabar = checkIntrabarBreakout(klines, direction, setup);
   checks.candleClose = checkCandleCloseConfirmation(klines);
   checks.microRange = checkMicroRange(klines, symbol);
   checks.atrThreshold = checkATRThreshold(klines, symbol, direction);

@@ -102,8 +102,9 @@ function checkMicroMomentum(klines, htfBias) {
 // 3. ATR + volume sanity
 function checkAtrAndVolume(klines, pairCfg) {
   const atrPct = calcATR ? calcATR(klines, 14) : 0;
-  const atrMin = pairCfg?.atrOptimalMin ?? 0.08;
-  const atrMax = pairCfg?.atrOptimalMax ?? 2.5;
+  // B.13.5: ATR band floor relaxed (0.08 -> 0.03) — admits quiet markets.
+  const atrMin = pairCfg?.atrOptimalMin ?? 0.03;
+  const atrMax = pairCfg?.atrOptimalMax ?? 5.0;
   const atrInBand = atrPct >= atrMin && atrPct <= atrMax;
 
   // Volume: last candle volume vs avg of prior 10
@@ -198,14 +199,15 @@ function generateScalpSignal({ symbol, klines, price, pairConfig, htf = null } =
   }
 
   const category = getPairCategory(symbol);
-  // B.13: Extended to MID (SOL/BNB/XRP). MEME still excluded — too noisy for tight SLs.
-  if (category !== "MAJOR" && category !== "MID") return null;
+  // B.13.5: scalpEngine now serves ALL categories — MEME uses the same essentials
+  // but the SL hard cap (0.4%) is the only safety floor on tight scalps.
+  // (Caller may still gate MEME via cooldown/risk-guard layers.)
 
   const htfBias = htf || calcHtfBias(klines, price, pairConfig);
   if (!htfBias || !htfBias.bias) return null;
 
-  // HTF confidence floor — match multiPairStrategy SCALP gate
-  const minHtfConf = 45;
+  // B.13.5: HTF confidence floor lowered 45 -> 25 to admit weaker trends.
+  const minHtfConf = 25;
   if (htfBias.confidence < minHtfConf) return null;
 
   const closes = klines.map(k => k.close);

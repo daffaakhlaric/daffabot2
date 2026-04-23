@@ -248,21 +248,11 @@ function analyze({ klines, position, pairConfig, btcKlines }) {
     const checks = validateSMCChecklist(klines, price, pairCfg);
     const confluenceScore = calculateConfluenceScore(checks, category);
 
-    // B.2: Skip SMC checklist entirely if regime detector says TRENDING — trust the regime.
+    // B.13.5: Confluence-floor block removed entirely — entry-mode branches
+    // (SCALP/RELAXED/TREND) own the actual decision; this filter was rejecting
+    // every MEME setup at 0% confluence even after lowering. Score still computed
+    // and exposed downstream as advisory.
     const isTrendingRegime = regime.canEnter && /TRENDING/.test(regime.regime || "");
-    if (!isTrendingRegime) {
-      // B.13: minScore floor lowered drastically — 15 for all, 20 for MEME.
-      const baseFloor = category === "MEME" ? 20 : 15;
-      const minScore = Math.min(pairCfg.minScore || baseFloor, baseFloor);
-      if (confluenceScore < minScore) {
-        return {
-          action: "HOLD",
-          reason: `Confluence ${confluenceScore}% < ${minScore}% (${category})`,
-          source: "SMC_FILTER",
-          regime,
-        };
-      }
-    }
 
     // === ANTI-FAKEOUT CHECK ===
     // Skip if regime confirms trending - we trust regime over SMC validation
@@ -414,7 +404,14 @@ function analyze({ klines, position, pairConfig, btcKlines }) {
     };
 
   } catch (err) {
-    return { action: "HOLD", error: err.message };
+    // B.13: surface the actual exception in source+reason so dashboard shows it.
+    return {
+      action: "HOLD",
+      reason: `analyze() exception: ${err.message}`,
+      source: "STRATEGY_ERROR",
+      error: err.message,
+      stack: err.stack,
+    };
   }
 }
 

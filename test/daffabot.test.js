@@ -69,7 +69,7 @@ test("scalpEngine: returns null on insufficient klines", () => {
   assert.strictEqual(sig, null);
 });
 
-test("scalpEngine: returns null for non-MAJOR pair", () => {
+test("scalpEngine: emits signal for MEME pair on clear trend (B.13.5)", () => {
   const { generateScalpSignal } = require("../strategy/scalpEngine");
   const sig = generateScalpSignal({
     symbol: "PEPEUSDT",
@@ -77,7 +77,9 @@ test("scalpEngine: returns null for non-MAJOR pair", () => {
     price: 70000 + 60 * 30,
     pairConfig: { symbol: "PEPEUSDT" },
   });
-  assert.strictEqual(sig, null);
+  // MEME is now allowed — should emit on a clean uptrend
+  assert.ok(sig, "MEME should now be allowed by scalpEngine");
+  assert.strictEqual(sig.action, "LONG");
 });
 
 test("scalpEngine: emits LONG on sustained uptrend (BTCUSDT)", () => {
@@ -129,7 +131,7 @@ test("scalpEngine: SL distance never exceeds hard cap 0.4%", () => {
   }
 });
 
-test("scalpEngine: HTF confidence floor (45) blocks weak setups", () => {
+test("scalpEngine: HTF confidence floor (25) blocks weak setups", () => {
   const { generateScalpSignal } = require("../strategy/scalpEngine");
   // Choppy noise: HTF bias unstable, confidence low
   const klines = genKlines({ count: 60, vol: 200 });
@@ -139,7 +141,7 @@ test("scalpEngine: HTF confidence floor (45) blocks weak setups", () => {
     klines,
     price,
     pairConfig: { symbol: "BTCUSDT", atrOptimalMin: 0.0, atrOptimalMax: 5.0 },
-    htf: { bias: "BULLISH", confidence: 30 }, // forced low conf
+    htf: { bias: "BULLISH", confidence: 10 }, // forced below 25 floor
   });
   assert.strictEqual(sig, null, "low HTF confidence must block scalp entry");
 });

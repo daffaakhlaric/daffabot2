@@ -899,13 +899,14 @@ async function run() {
         }
       } else {
         // No AI - use multiPairStrategy as primary strategy
-        decision = multiPairStrategy.analyze({ 
-          klines, 
-          position: state.activePosition, 
+        decision = multiPairStrategy.analyze({
+          klines,
+          position: state.activePosition,
           pairConfig: currentPairConfig,
           btcKlines: btcKlines,
         });
-        decision.source = "MULTIPAIR_ONLY";
+        // B.13: preserve real source (e.g. SMC_FILTER, MICRO_RANGE) for dashboard visibility
+        if (!decision.source) decision.source = "MULTIPAIR_ONLY";
       }
 
       // B.12: SCALP_ENGINE fallback — high-frequency micro-momentum signal
@@ -1046,13 +1047,11 @@ async function run() {
           continue;
         }
 
-        // Check for micro-chop before entry
+        // B.13: Micro-chop check demoted to warning — strategy already owns the call.
         const chopCheck = fastTradeFix.checkMicroRange(klines, currentSymbol);
         if (!chopCheck.allowed) {
-          log(`⛔ MICRO CHOP BLOCK — ${chopCheck.reason}`);
-          global.botState.cooldownReason = `MICRO_CHOP: ${chopCheck.reason}`;
-          _tickRunning = false;
-          continue;
+          log(`⚠️ MICRO_CHOP (advisory) — ${chopCheck.reason}`);
+          global.botState.cooldownReason = null;
         }
 
         // Require minimum signal score (A/A+ only)

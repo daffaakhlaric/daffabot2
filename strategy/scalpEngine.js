@@ -198,8 +198,8 @@ function generateScalpSignal({ symbol, klines, price, pairConfig, htf = null } =
   }
 
   const category = getPairCategory(symbol);
-  // Scalp engine is MAJOR-only by default. Other categories use multiPairStrategy.
-  if (category !== "MAJOR") return null;
+  // B.13: Extended to MID (SOL/BNB/XRP). MEME still excluded — too noisy for tight SLs.
+  if (category !== "MAJOR" && category !== "MID") return null;
 
   const htfBias = htf || calcHtfBias(klines, price, pairConfig);
   if (!htfBias || !htfBias.bias) return null;

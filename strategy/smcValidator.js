@@ -371,8 +371,9 @@ function validateEntry(klines, direction, symbol) {
   const total = required.length;
   const score = Math.round((passed / total) * 100);
 
-  // B.3: 2-of-3 essentials passes (MEME still needs both 2-of-2).
-  const minPassed = category === "MEME" ? 2 : 2;
+  // B.13: relaxed further — 1-of-3 essentials passes (MEME 1-of-2).
+  // SMC is now advisory; the entry-mode layer (RELAXED/SCALP/TREND) owns the real decision.
+  const minPassed = 1;
   let canEnter = passed >= minPassed;
   let grade = "C";
 

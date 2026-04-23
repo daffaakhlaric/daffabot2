@@ -156,10 +156,11 @@ function checkMicroRange(klines, symbol) {
     return { allowed: true, rangePct, reason: "Micro range allowed for MAJOR scalp" };
   }
 
+  // B.13: MID/MEME also need scalp-friendly thresholds — drastically lowered.
   const maxRangePct = {
-    MID: 0.4,
-    MEME: 0.5,
-  }[category] || 0.3;
+    MID: 0.10,   // B.13: 0.4 -> 0.10
+    MEME: 0.15,  // B.13: 0.5 -> 0.15
+  }[category] || 0.10;
 
   if (rangePct < maxRangePct) {
     return {
